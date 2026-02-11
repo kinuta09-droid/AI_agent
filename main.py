@@ -109,6 +109,14 @@ TOOLS = [
         "function": "tool_lora_factory.run_lora_factory",
         "needs_arg": False,
     },
+    {
+        "name": "analytics",
+        "description": "エージェントのパフォーマンスやスケジューラ、エラーログを分析する",
+        "function": "tool_analytics.run_analytics",
+        "needs_arg": True,
+        "arg_name": "question",
+        "arg_prompt": "分析したいこと（例: エージェントの成功率は？）: ",
+    },
 ]
 
 
