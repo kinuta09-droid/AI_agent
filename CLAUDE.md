@@ -87,17 +87,31 @@ py agent_trigger.py            # Trigger webhook
 4. **Bug fix re-implementation**: After fixing a bug, ask: "Now discard this fix and implement the most elegant solution from scratch"
 5. **No mercy**: Do not approve changes with TODO/FIXME left behind
 
-## Output Style: Explanatory
+## Output Style: Explanatory + Learning
 - When making changes, always explain **why** (not just what)
 - For non-trivial logic, include a brief rationale in the response
 - When introducing new patterns, explain trade-offs vs alternatives
 - For bug fixes, explain the root cause before the fix
+- **Learning mode**: When the user asks about unfamiliar concepts, provide:
+  - A one-paragraph summary
+  - A concrete code example
+  - A "gotcha" or common mistake to avoid
+- **Decision log**: For architectural decisions, document: Decision → Reason → Alternatives considered
 
 ## Custom Commands (Claude Code)
 - `/sync` — Load 7-day context from Git, Obsidian, and learning_db
 - `/techdebt` — Scan for duplicate code, dead code, TODOs, and consistency issues
 - `/grill` — Adversarial code review of recent changes
 - `/subagent-task` — Generate a delegation template for sub-agent tasks
+- `/visualize` — Generate architecture diagrams and flow visualizations
+
+## Visualization Protocol
+- When explaining complex systems, generate **ASCII diagrams** or **Mermaid flowcharts**
+- For data flows: use sequence diagrams
+- For architecture: use component diagrams
+- For state machines: use state diagrams
+- Offer to generate **HTML presentations** for comprehensive explanations
+- Always label nodes, edges, and include a legend if >5 elements
 
 ## Sub-agent Delegation Protocol
 
