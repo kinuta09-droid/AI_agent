@@ -54,14 +54,38 @@ py agent_trigger.py            # Trigger webhook
 
 ## Plan Mode Protocol
 - Complex tasks (3+ files, new features, architectural changes): always start in Plan Mode
-- Include verification steps in every plan
-- If implementation goes wrong, return to Plan Mode immediately and re-plan
+- **Verification plan is MANDATORY**: Every plan must include HOW to prove it works
+- If implementation goes wrong, **STOP immediately** and return to Plan Mode — never push through
 - Never micromanage — give intent, let Claude execute
 
+### Plan Template (Required for complex tasks)
+```
+## Goal
+[What we're trying to achieve]
+
+## Steps
+1. [Step] → [Expected result]
+2. ...
+
+## Verification
+- [ ] [How to prove each step worked]
+- [ ] [Test command or manual check]
+
+## Rollback
+[How to undo if something goes wrong]
+```
+
 ## Review Protocol
-- After implementation, ask Claude to "grill" the changes (adversarial review)
+- After implementation, run `/grill` to trigger adversarial self-review
 - Verify behavior diff against main branch when applicable
 - Run relevant `test_*.py` files before committing
+
+### Grill Me Rules
+1. **Before PR**: Claude must challenge every change — "Why is this necessary?"
+2. **Edge cases**: Identify at least 3 edge cases per function change
+3. **Evidence**: Show diff or execution results to prove correctness
+4. **Bug fix re-implementation**: After fixing a bug, ask: "Now discard this fix and implement the most elegant solution from scratch"
+5. **No mercy**: Do not approve changes with TODO/FIXME left behind
 
 ## Output Style: Explanatory
 - When making changes, always explain **why** (not just what)
