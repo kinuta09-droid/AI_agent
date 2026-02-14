@@ -226,7 +226,9 @@ def tool_merge_weekly_reports() -> str:
     week_str = today.strftime('%Y-W%U') 
     
     summary_filename = f"{week_str}_Weekly_Summary.md"
-    summary_path = os.path.join(target_dir, summary_filename)
+    summary_dir = os.path.join(archive_dir, 'Summary')
+    os.makedirs(summary_dir, exist_ok=True)
+    summary_path = os.path.join(summary_dir, summary_filename)
     archive_sub_dir = os.path.join(archive_dir, week_str)
 
     if not os.path.exists(target_dir):
@@ -273,7 +275,7 @@ def tool_merge_weekly_reports() -> str:
             except Exception as e:
                 print(f"Error moving {file}: {e}")
 
-        return f"Success: Created [[{summary_filename}]]. Merged {len(files_processed)} files. Originals moved to 50_Archive/{week_str}."
+        return f"Success: Created 50_Archive/Summary/{summary_filename}. Merged {len(files_processed)} files. Originals moved to 50_Archive/{week_str}."
 
     except Exception as e:
         return f"Error merging reports: {e}"

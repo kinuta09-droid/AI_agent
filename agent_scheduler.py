@@ -21,6 +21,7 @@ from agent_hello import (
     tool_scan_crypto_market,
     tool_analyze_crypto,
     generate_performance_dashboard,
+    tool_merge_weekly_reports,
 )
 
 # Calendar sync (optional — missing dependency won't break scheduler)
@@ -120,6 +121,12 @@ SCHEDULE = [
         "name": "Performance Dashboard",
         "func": generate_performance_dashboard
     },
+    {
+        "time": "23:30",
+        "name": "Weekly Archive (30_Main → 50_Archive)",
+        "func": tool_merge_weekly_reports,
+        "weekday": 6,  # 日曜日のみ (0=月, 6=日)
+    },
 ]
 
 # ---------------------------------------------------------
@@ -144,7 +151,9 @@ def run_scheduler():
             # 分が変わった瞬間のみチェック
             if current_time != last_run_minute:
                 for task in SCHEDULE:
-                    if current_time == task["time"]:
+                    if current_time == task["time"] and (
+                        "weekday" not in task or now.weekday() == task["weekday"]
+                    ):
                         task_name = task['name']
                         logger.info(f"🚀 {current_time} Executing {task_name}...")
                         send_discord_notification(f"⏳ **Processing Started**: {task_name}")
