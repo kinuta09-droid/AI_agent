@@ -24,6 +24,7 @@ from lib_shared import (
     WORK_DIR,
     retry,
     safe_json_loads,
+    EDITORIAL_STYLE_RULES,
 )
 
 from tool_obsidian import (
@@ -384,19 +385,10 @@ def search_and_save_topic(topic: str, search_query: str = "",
 
     ## 📚 References
     - [記事タイトル](URL) の形式でソースを列挙。
-    
+
     ---
-    
-    【文体ルール（最重要）】
-    - 冒頭に「# 」見出しは絶対に付けないこと。
-    - 末尾にハッシュタグ（#curated 等）は付けないこと。
-    - あなたは学者ではなく編集者。堅い漢語や「〜であると考えられる」のような論文調は禁止。
-    - 「〜です」「〜でしょう」「〜ですが」のような、自然で現代的な敬体を使う。
-    - 冗長な前置き、「いかがでしたでしょうか」などの無駄な結びは一切排除。
-    - 1段落は最大3文。それ以上になるなら箇条書きに分割する。
-    - 専門用語は初出時にだけ（）で短く補足。2回目以降はそのまま使う。
-    - 絵文字は見出しのみ。本文中には使わない。
-    - 読者が「なるほど」と唸るような洞察を1つは入れること。"""
+
+    {EDITORIAL_STYLE_RULES}"""
 
         gen_response = client.models.generate_content(
             model=MODEL_NAME, contents=summary_prompt

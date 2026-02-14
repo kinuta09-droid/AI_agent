@@ -14,7 +14,7 @@ import requests
 sys.stdout.reconfigure(encoding='utf-8')
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(r'C:\AI_agent\.env')
 
 COMFYUI_HOST = os.getenv("COMFYUI_HOST", "127.0.0.1")
 COMFYUI_PORT = int(os.getenv("COMFYUI_PORT", "8188"))

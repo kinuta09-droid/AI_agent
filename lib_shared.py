@@ -78,6 +78,18 @@ PERFORMANCE_DASHBOARD_PATH = os.path.join(VAULT_ROOT, "Dev_Logs", "Agent_Perform
 # 除外したいフォルダ
 EXCLUDE_DIRS = {'.git', '.obsidian', 'Dev_Logs', 'Trash'}
 
+# Gemini 共通文体ルール（ニュース／キュレーション等で共有）
+EDITORIAL_STYLE_RULES = """【文体ルール】
+- 冒頭に「# 」見出しは付けないこと（テンプレートが自動付与するため）。
+- 末尾にハッシュタグ（#curated 等）は付けないこと。
+- あなたは学者ではなく編集者。堅い漢語や「〜であると考えられる」のような論文調は禁止。
+- 「〜です」「〜でしょう」「〜ですが」のような、自然で現代的な敬体を使う。
+- 冗長な前置き、「いかがでしたでしょうか」などの無駄な結びは一切排除。
+- 1段落は最大3文。それ以上になるなら箇条書きに分割する。
+- 専門用語は初出時にだけ（）で短く補足。2回目以降はそのまま使う。
+- 絵文字は見出しのみ。本文中には使わない。
+- 読者が「なるほど」と唸るような洞察を1つは入れること。"""
+
 # ---------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------
@@ -145,6 +157,37 @@ def retry(max_retries=MAX_RETRIES, initial_delay=2):
             raise
         return wrapper
     return decorator_retry
+
+def fetch_fear_greed_index() -> tuple[int, str]:
+    """Fear & Greed Index を取得。失敗時はデフォルト(50, 'Neutral')を返す。"""
+    try:
+        fng_resp = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
+        fng_data = fng_resp.json()['data'][0]
+        return int(fng_data['value']), fng_data['value_classification']
+    except Exception as e:
+        print(f"  ⚠️ F&G fetch failed: {e}")
+        return 50, "Neutral"
+
+
+def load_json(path: str, default=None):
+    """JSONファイルを読み込む。存在しない/パース失敗時は default を返す。"""
+    if default is None:
+        default = {}
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return default
+
+
+def save_json(path: str, data):
+    """JSONファイルを保存する。親ディレクトリがなければ作成する。"""
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 def find_file_in_vault(filename: str) -> str | None:
     """Vault内でファイルを検索し、見つかった場合はパスを返す"""

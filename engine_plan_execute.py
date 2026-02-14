@@ -5,7 +5,6 @@ agent_hello.py から抽出された実行エンジン。
 Plan-and-Execute, ReAct Loop, Self-Improvement Protocol を提供する。
 """
 
-import os
 import json
 import datetime
 import time
@@ -13,7 +12,7 @@ import traceback
 
 from lib_shared import (
     client, MODEL_NAME, MAX_STEPS,
-    safe_json_loads,
+    safe_json_loads, load_json, save_json,
     LEARNING_DB_PATH, PERFORMANCE_DASHBOARD_PATH, VAULT_ROOT,
 )
 
@@ -62,6 +61,9 @@ def _get_tools_config():
     # crypto tools from tool_crypto
     from tool_crypto import tool_analyze_crypto, tool_scan_crypto_market, tool_audit_predictions
 
+    # briefing tool
+    from tool_briefing_manager import tool_generate_briefing
+
     config_tools = [
         {"name": "tool_web_search", "usage": "tool_web_search(query)", "description": "Web検索 (Tavily)"},
         {"name": "tool_vault_search", "usage": "tool_vault_search(keywords)", "description": "Vault内を検索"},
@@ -76,6 +78,7 @@ def _get_tools_config():
         {"name": "tool_scan_crypto_market", "usage": "tool_scan_crypto_market()", "description": "主要20銘柄一括スキャン"},
         {"name": "tool_audit_predictions", "usage": "tool_audit_predictions()", "description": "予測ログの答え合わせ"},
         {"name": "tool_curate_topics", "usage": "tool_curate_topics()", "description": "ナレッジトピック提案"},
+        {"name": "tool_generate_briefing", "usage": "tool_generate_briefing()", "description": "デイリーブリーフィング生成（Crypto + Vault更新の3項目要約）"},
     ]
     tools_map = {
         "tool_web_search": _ah.tool_web_search,
@@ -91,6 +94,7 @@ def _get_tools_config():
         "tool_scan_crypto_market": tool_scan_crypto_market,
         "tool_audit_predictions": tool_audit_predictions,
         "tool_curate_topics": _tool_curate_wrapper,
+        "tool_generate_briefing": tool_generate_briefing,
     }
 
     # Calendar/Task tools を動的に追加
@@ -567,19 +571,12 @@ def _generate_final_summary(user_query: str, results: list) -> str:
 
 def _load_learning_db() -> dict:
     """学習DBを読み込む。存在しなければ空のDBを返す。"""
-    if os.path.exists(LEARNING_DB_PATH):
-        try:
-            with open(LEARNING_DB_PATH, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
-    return {"executions": []}
+    return load_json(LEARNING_DB_PATH, default={"executions": []})
 
 
 def _save_learning_db(db: dict) -> None:
     """学習DBを保存する。"""
-    with open(LEARNING_DB_PATH, 'w', encoding='utf-8') as f:
-        json.dump(db, f, ensure_ascii=False, indent=2)
+    save_json(LEARNING_DB_PATH, db)
 
 
 def log_execution(query: str, plan: list, results: list,

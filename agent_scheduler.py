@@ -38,7 +38,7 @@ except ImportError:
     _HAS_DAILY_NOTE = False
 
 # Load environment variables
-load_dotenv()
+load_dotenv(r'C:\AI_agent\.env')
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_LOG_CHANNEL_ID = os.getenv("DISCORD_LOG_CHANNEL_ID")
 

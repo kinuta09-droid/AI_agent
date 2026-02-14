@@ -6,7 +6,6 @@ agent_hello.py から抽出された暗号通貨分析ツール。
 """
 
 import os
-import json
 import datetime
 import time
 import uuid
@@ -18,6 +17,7 @@ import requests as req
 from lib_shared import (
     client, tavily_client, MODEL_NAME, retry,
     VAULT_ROOT, CRYPTO_DIR_NAME, TRADE_LOG_PATH,
+    fetch_fear_greed_index, load_json, save_json,
 )
 
 
@@ -116,17 +116,6 @@ def _analyze_market_drivers(symbol: str, change_pct_24h: float) -> tuple:
     return "\n".join(summary_lines), risk_level
 
 
-def _fetch_fear_greed_index() -> tuple[int, str]:
-    """Fear & Greed Index を取得。失敗時はデフォルト(50, 'Neutral')を返す。"""
-    try:
-        fng_resp = req.get("https://api.alternative.me/fng/?limit=1", timeout=10)
-        fng_data = fng_resp.json()['data'][0]
-        return int(fng_data['value']), fng_data['value_classification']
-    except Exception as e:
-        print(f"  ⚠️ F&G fetch failed: {e}")
-        return 50, "Neutral"
-
-
 def _check_divergence(df, rsi_col: str = 'rsi', window: int = 20) -> bool:
     """
     強気RSIダイバージェンス検知:
@@ -160,20 +149,12 @@ def _check_divergence(df, rsi_col: str = 'rsi', window: int = 20) -> bool:
 
 def _load_trade_log() -> list:
     """trade_log.json を読み込む。存在しなければ空リストを返す。"""
-    if not os.path.exists(TRADE_LOG_PATH):
-        return []
-    try:
-        with open(TRADE_LOG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return []
+    return load_json(TRADE_LOG_PATH, default=[])
 
 
 def _save_trade_log(logs: list):
     """trade_log.json を保存する。"""
-    os.makedirs(os.path.dirname(TRADE_LOG_PATH), exist_ok=True)
-    with open(TRADE_LOG_PATH, "w", encoding="utf-8") as f:
-        json.dump(logs, f, indent=2, ensure_ascii=False)
+    save_json(TRADE_LOG_PATH, logs)
 
 
 def _save_prediction(symbol: str, signal: str, entry_price: float,
@@ -244,7 +225,7 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
     ema200 = float(latest['ema200']) if pd.notna(latest['ema200']) else current_price
 
     # 3. Fear & Greed Index の取得
-    fng_value, fng_class = _fetch_fear_greed_index()
+    fng_value, fng_class = fetch_fear_greed_index()
 
     # 4. Next-Gen: レジーム検知 + SMC + ダイバージェンス + マーケットドライバー
     regime, adx, atr_pct, dmp, dmn = _detect_regime(df)
@@ -531,7 +512,7 @@ def tool_scan_crypto_market() -> str:
     exchange = ccxt.binance({'enableRateLimit': True})
 
     # Fear & Greed Index（全銘柄共通）
-    fng_value, fng_class = _fetch_fear_greed_index()
+    fng_value, fng_class = fetch_fear_greed_index()
 
     results = []
     for symbol in SCAN_SYMBOLS:

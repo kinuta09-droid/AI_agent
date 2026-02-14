@@ -85,6 +85,7 @@ from agent_hello import (
     run_plan_and_execute,
     extract_patterns,
     generate_performance_dashboard,
+    tool_generate_briefing,
 )
 
 from lib_shared import (
@@ -593,6 +594,33 @@ async def _send_long_message(interaction: discord.Interaction, content: str,
         await interaction.followup.send(embed=embed, file=file, **kwargs)
 
 
+async def _send_with_fallback(interaction: discord.Interaction, result: str,
+                              title: str = "Result", emoji: str = "📋",
+                              embed: discord.Embed = None, file: discord.File = None):
+    """interaction.followup + NotFound 時のチャンネル直接送信フォールバック。"""
+    try:
+        if embed or file:
+            view = _create_obsidian_view(result)
+            kwargs = {}
+            if view:
+                kwargs["view"] = view
+            await interaction.followup.send(embed=embed, file=file, **kwargs)
+        else:
+            await _send_long_message(interaction, result, title=title)
+    except discord.NotFound:
+        try:
+            mention = f"{interaction.user.mention} {emoji} **{title}** (Interaction Timed Out)"
+            if len(result) > 1900:
+                fb_file = discord.File(io.StringIO(result), filename=f"{title.replace(' ', '_')}.md")
+                await interaction.channel.send(content=mention, file=fb_file)
+            else:
+                await interaction.channel.send(f"{mention}\n\n{result}")
+        except Exception as e:
+            print(f"[Discord] ❌ Failed to send fallback message: {e}")
+    except Exception as e:
+        print(f"[Discord] ❌ Failed to send result: {e}")
+
+
 # ---------------------------------------------------------
 # Slash Commands
 # ---------------------------------------------------------
@@ -760,24 +788,20 @@ async def cmd_news(interaction: discord.Interaction):
         result = f"Error: {e}"
 
     await asyncio.to_thread(_log_to_daily_note, "command", "/news", result)
-    # Final result
+    await _send_with_fallback(interaction, result, title="Daily News", emoji="📰")
+
+
+@tree.command(name="briefing", description="デイリーブリーフィング生成（Crypto + Vault更新の3項目要約）")
+async def cmd_briefing(interaction: discord.Interaction):
+    await interaction.response.defer()
+
     try:
-        # result contains news text, usually no file path unless we scan it?
-        # Actually news doesn't save to file and return path in result string usually?
-        # But let's apply the wrapper anyway just in case.
-        await _send_long_message(interaction, result, title="Daily News")
-    except discord.NotFound:
-         # Fallback
-        try:
-            if len(result) > 1900:
-                 file = discord.File(io.StringIO(result), filename=f"Daily_News.md")
-                 await interaction.channel.send(content=f"{interaction.user.mention} 📰 **Daily News** (Interaction Timed Out)", file=file)
-            else:
-                 await interaction.channel.send(f"{interaction.user.mention} 📰 **Daily News**\n\n{result}")
-        except Exception as e:
-            print(f"[Discord] ❌ Failed to send fallback message: {e}")
+        result = await asyncio.to_thread(tool_generate_briefing)
     except Exception as e:
-         print(f"[Discord] ❌ Failed to send result: {e}")
+        result = f"Error: {e}"
+
+    await asyncio.to_thread(_log_to_daily_note, "command", "/briefing", result)
+    await _send_with_fallback(interaction, result, title="Daily Briefing", emoji="📋")
 
 
 @tree.command(name="crypto", description="仮想通貨のクオンツ分析")
@@ -792,43 +816,18 @@ async def cmd_crypto(interaction: discord.Interaction, symbol: str = "BTC/USDT")
 
     await asyncio.to_thread(_log_to_daily_note, "command", f"/crypto {symbol}", result)
 
-    # 分析レポートは常に長いので Embed + ファイル添付
     display_content = _format_discord_content(result)
     embed = discord.Embed(
         title=f"Crypto Analysis: {symbol}",
         description=display_content[:1500] if len(display_content) > 1500 else display_content,
         color=0xf0b90b  # Binance yellow
     )
-    # Final result
-    try:
-        
-        view = _create_obsidian_view(result)
-        kwargs = {}
-        if view:
-            kwargs["view"] = view
-
-        if len(result) > 1500:
-            clean = symbol.replace('/', '_')
-            file = discord.File(
-                io.StringIO(result),
-                filename=f"Crypto_{clean}_{datetime.datetime.now().strftime('%Y-%m-%d')}.md"
-            )
-            await interaction.followup.send(embed=embed, file=file, **kwargs)
-        else:
-            await interaction.followup.send(embed=embed, **kwargs)
-    except discord.NotFound:
-        # Fallback
-        try:
-            if len(result) > 1500:
-                 clean = symbol.replace('/', '_')
-                 file = discord.File(io.StringIO(result), filename=f"Crypto_{clean}.md")
-                 await interaction.channel.send(content=f"{interaction.user.mention} 🪙 **Crypto Analysis** (Interaction Timed Out)", embed=embed, file=file)
-            else:
-                 await interaction.channel.send(content=f"{interaction.user.mention} 🪙 **Crypto Analysis**", embed=embed)
-        except Exception as e:
-            print(f"[Discord] ❌ Failed to send fallback message: {e}")
-    except Exception as e:
-         print(f"[Discord] ❌ Failed to send result: {e}")
+    clean = symbol.replace('/', '_')
+    file = discord.File(
+        io.StringIO(result),
+        filename=f"Crypto_{clean}_{datetime.datetime.now().strftime('%Y-%m-%d')}.md"
+    ) if len(result) > 1500 else None
+    await _send_with_fallback(interaction, result, title="Crypto Analysis", emoji="🪙", embed=embed, file=file)
 
 
 @tree.command(name="scan", description="主要20銘柄の一括スキャン")
@@ -848,34 +847,11 @@ async def cmd_scan(interaction: discord.Interaction):
         description=display_content[:1500] if len(display_content) > 1500 else display_content,
         color=0x00bfff
     )
-    # Final result
-    try:
-        
-        view = _create_obsidian_view(result)
-        kwargs = {}
-        if view:
-            kwargs["view"] = view
-
-        if len(result) > 1500:
-            file = discord.File(
-                io.StringIO(result),
-                filename=f"Market_Scan_{datetime.datetime.now().strftime('%Y-%m-%d')}.md"
-            )
-            await interaction.followup.send(embed=embed, file=file, **kwargs)
-        else:
-            await interaction.followup.send(embed=embed, **kwargs)
-    except discord.NotFound:
-        # Fallback
-        try:
-            if len(result) > 1500:
-                 file = discord.File(io.StringIO(result), filename=f"Market_Scan.md")
-                 await interaction.channel.send(content=f"{interaction.user.mention} 🔭 **Market Scan** (Interaction Timed Out)", embed=embed, file=file)
-            else:
-                 await interaction.channel.send(content=f"{interaction.user.mention} 🔭 **Market Scan**", embed=embed)
-        except Exception as e:
-            print(f"[Discord] ❌ Failed to send fallback message: {e}")
-    except Exception as e:
-         print(f"[Discord] ❌ Failed to send result: {e}")
+    file = discord.File(
+        io.StringIO(result),
+        filename=f"Market_Scan_{datetime.datetime.now().strftime('%Y-%m-%d')}.md"
+    ) if len(result) > 1500 else None
+    await _send_with_fallback(interaction, result, title="Market Scan", emoji="🔭", embed=embed, file=file)
 
 
 
@@ -938,24 +914,8 @@ async def cmd_agent(interaction: discord.Interaction, goal: str):
         result = f"Error: {e}"
 
     await asyncio.to_thread(_log_to_daily_note, "command", f"/agent {goal}", result)
+    await _send_with_fallback(interaction, f"✅ **Mission Complete**\n\n{result}", title="Agent Result", emoji="✅")
 
-    # Final result
-    try:
-        await _send_long_message(interaction, f"✅ **Mission Complete**\n\n{result}", title="Agent Result")
-    except discord.NotFound:
-        # Interaction might have timed out, try sending to channel directly
-        try:
-            if len(result) > 1900:
-                 # Split or send as file if needed, reusing logic slightly simplified
-                 file = discord.File(io.StringIO(result), filename=f"Agent_Result.md")
-                 await interaction.channel.send(content=f"{interaction.user.mention} ✅ **Mission Complete** (Interaction Timed Out, sending here)", file=file)
-            else:
-                 await interaction.channel.send(f"{interaction.user.mention} ✅ **Mission Complete**\n\n{result}")
-        except Exception as e:
-            print(f"[Discord] ❌ Failed to send fallback message: {e}")
-    except Exception as e:
-         print(f"[Discord] ❌ Failed to send result: {e}")
-         
 # ---------------------------------------------------------
 # The Explorer: Interactive Views
 # ---------------------------------------------------------

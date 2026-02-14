@@ -18,7 +18,7 @@ import feedparser
 from lib_shared import (
     client, tavily_client, MODEL_NAME,
     WORK_DIR, VAULT_ROOT, NEWS_DIR_NAME, DAILY_NOTE_DIR_NAME,
-    retry
+    retry, EDITORIAL_STYLE_RULES,
 )
 
 @retry(max_retries=3)
@@ -190,7 +190,8 @@ def tool_fetch_daily_news(days: int = 1) -> str:
 - 元記事のURLがあれば要約の末尾に [元記事](URL) のリンクを付ける。
 - 最後に「---」の後、1行で全体のインサイトを書く。
 - 冒頭に「# 」見出しは付けない（テンプレートが自動付与するため）。
-"""
+
+{EDITORIAL_STYLE_RULES}"""
         editorial_resp = client.models.generate_content(
             model=MODEL_NAME, contents=editorial_prompt
         )

@@ -11,7 +11,7 @@ import datetime
 sys.stdout.reconfigure(encoding='utf-8')
 
 from dotenv import load_dotenv
-load_dotenv('C:\\AI_agent\\.env')
+load_dotenv(r'C:\AI_agent\.env')
 
 # ---------------------------------------------------------
 # Configuration
