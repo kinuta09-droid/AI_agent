@@ -3,6 +3,8 @@
 token.json
 credentials.json
 .credentials.json
+credentials_gmail.json
+token_gmail.json
 
 # Python
 __pycache__/

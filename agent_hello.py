@@ -25,6 +25,7 @@ from tool_obsidian import (
     tool_vault_search, tool_create_note, tool_read_note, tool_update_note, tool_merge_weekly_reports
 )
 from tool_briefing_manager import tool_generate_briefing, add_provider
+from tool_gmail_manager import tool_gmail_check
 
 
 # ---------------------------------------------------------

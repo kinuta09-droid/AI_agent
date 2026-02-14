@@ -86,6 +86,7 @@ from agent_hello import (
     extract_patterns,
     generate_performance_dashboard,
     tool_generate_briefing,
+    tool_gmail_check,
 )
 
 from lib_shared import (
@@ -558,8 +559,21 @@ def _create_obsidian_view(content: str) -> discord.ui.View | None:
              name = "LoRA Dataset"
              unique_links[name] = uri
 
-    if unique_links:
-        return OpenInObsidianView(unique_links)
+    # 4. Gmail URL の検出 → 外部リンクボタン
+    gmail_links = {}
+    for match in re.finditer(r"\(Gmail(\d*):\s*(https://[^)]+)\)", content):
+        num = match.group(1) or "1"
+        url = match.group(2).strip()
+        gmail_links[f"Gmail {num}"] = url
+
+    if unique_links or gmail_links:
+        view = OpenInObsidianView(unique_links)
+        for label, url in gmail_links.items():
+            if len(view.children) < 5:
+                view.add_item(discord.ui.Button(
+                    label=label, url=url, style=discord.ButtonStyle.link
+                ))
+        return view
     return None
 
 
@@ -568,7 +582,8 @@ def _format_discord_content(content: str) -> str:
     # Obsidianリンク [[...]] を太字 **...** に置換して見やすくする
     display_content = re.sub(r"\[\[(.*?)\]\]", r"**\1**", content)
     # (Path: ...) も表示上は邪魔なので削除する
-    display_content = re.sub(r"\(Path:.*?\)", "", display_content).strip()
+    display_content = re.sub(r"\(Path:.*?\)", "", display_content)
+    display_content = re.sub(r"\(Gmail\d*:.*?\)", "", display_content).strip()
     return display_content
 
 
@@ -802,6 +817,20 @@ async def cmd_briefing(interaction: discord.Interaction):
 
     await asyncio.to_thread(_log_to_daily_note, "command", "/briefing", result)
     await _send_with_fallback(interaction, result, title="Daily Briefing", emoji="📋")
+
+
+@tree.command(name="gmail_check", description="直近の重要メール要約")
+@app_commands.describe(hours="何時間前まで遡るか（デフォルト: 12）")
+async def cmd_gmail_check(interaction: discord.Interaction, hours: int = 12):
+    await interaction.response.defer()
+
+    try:
+        result = await asyncio.to_thread(tool_gmail_check, hours)
+    except Exception as e:
+        result = f"Error: {e}"
+
+    await asyncio.to_thread(_log_to_daily_note, "command", f"/gmail_check {hours}h", result)
+    await _send_with_fallback(interaction, result, title="Gmail Check", emoji="📧")
 
 
 @tree.command(name="crypto", description="仮想通貨のクオンツ分析")

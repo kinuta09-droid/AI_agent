@@ -64,6 +64,9 @@ def _get_tools_config():
     # briefing tool
     from tool_briefing_manager import tool_generate_briefing
 
+    # gmail tool
+    from tool_gmail_manager import tool_gmail_check
+
     config_tools = [
         {"name": "tool_web_search", "usage": "tool_web_search(query)", "description": "Web検索 (Tavily)"},
         {"name": "tool_vault_search", "usage": "tool_vault_search(keywords)", "description": "Vault内を検索"},
@@ -79,6 +82,7 @@ def _get_tools_config():
         {"name": "tool_audit_predictions", "usage": "tool_audit_predictions()", "description": "予測ログの答え合わせ"},
         {"name": "tool_curate_topics", "usage": "tool_curate_topics()", "description": "ナレッジトピック提案"},
         {"name": "tool_generate_briefing", "usage": "tool_generate_briefing()", "description": "デイリーブリーフィング生成（Crypto + Vault更新の3項目要約）"},
+        {"name": "tool_gmail_check", "usage": "tool_gmail_check(hours=12)", "description": "直近の重要メール要約（AIトリアージ + Obsidian保存）"},
     ]
     tools_map = {
         "tool_web_search": _ah.tool_web_search,
@@ -95,6 +99,7 @@ def _get_tools_config():
         "tool_audit_predictions": tool_audit_predictions,
         "tool_curate_topics": _tool_curate_wrapper,
         "tool_generate_briefing": tool_generate_briefing,
+        "tool_gmail_check": tool_gmail_check,
     }
 
     # Calendar/Task tools を動的に追加
