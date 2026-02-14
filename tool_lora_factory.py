@@ -14,7 +14,7 @@ from lib_comfy_client import ComfyUIClient
 
 # Gemini フィルタ用（lazy — import失敗してもタグ付け自体は動く）
 try:
-    from agent_hello import client as gemini_client, MODEL_NAME, safe_json_loads
+    from lib_shared import client as gemini_client, MODEL_NAME, safe_json_loads
     _HAS_GEMINI = True
 except ImportError:
     _HAS_GEMINI = False
@@ -285,7 +285,13 @@ def run_lora_factory() -> str:
             errors.append(f"{fname}: {e}")
 
     # --- 6. サマリー ---
+    # --- 6. サマリー ---
     print()
+    
+    # Obsidian Link Generation
+    from lib_obsidian_utils import get_obsidian_uri
+    obsidian_uri = get_obsidian_uri(output_base)
+    
     summary_parts = [
         f"✅ LoRA Dataset Factory 完了",
         f"  プロジェクト: {project_name}",
@@ -293,6 +299,10 @@ def run_lora_factory() -> str:
         f"  処理: {len(results)}/{len(images)} 枚成功",
         f"  出力: {output_base}",
     ]
+    
+    if obsidian_uri:
+        summary_parts.append(f"  🔗 Link: [Open in Obsidian]({obsidian_uri})")
+
     if errors:
         summary_parts.append(f"\n  ⚠️ エラー ({len(errors)} 件):")
         for err in errors:

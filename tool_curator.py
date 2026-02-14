@@ -10,10 +10,13 @@ import sys
 import datetime
 import re
 import random
+import concurrent.futures
+import json
+import time
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-from agent_hello import (
+from lib_shared import (
     client,
     tavily_client,
     MODEL_NAME,
@@ -21,6 +24,9 @@ from agent_hello import (
     WORK_DIR,
     retry,
     safe_json_loads,
+)
+
+from tool_obsidian import (
     _extract_and_integrate_sections,
     _determine_parent_moc,
 )
@@ -34,6 +40,7 @@ KB_DIR = os.path.join(WORK_DIR, "30_Main", KB_DIR_NAME)
 PROFILE_DIR = os.path.join(VAULT_ROOT, "00_System")
 PROFILE_PATH = os.path.join(PROFILE_DIR, "User_Profile.md")
 TEMPLATE_PATH = os.path.join(VAULT_ROOT, "99_Assets", "Templates", "Tpl_Permanent.md")
+CACHE_PATH = os.path.join(WORK_DIR, "external_trends_cache.json")
 
 
 # ---------------------------------------------------------
@@ -114,6 +121,19 @@ def fetch_external_trends(max_results: int = 5) -> str:
     """Tavily APIで最新のテクノロジー・社会トレンドを取得し、
     Geminiプロンプトに注入するための文字列を返す。"""
     print("[Curator] 🌍 Fetching external trends...")
+    
+    # Check cache
+    if os.path.exists(CACHE_PATH):
+        try:
+            mtime = os.path.getmtime(CACHE_PATH)
+            if time.time() - mtime < 86400: # 24 hours
+                with open(CACHE_PATH, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    print(f"[Curator] ⚡ Using cached external trends ({len(data.get('content', ''))} chars)")
+                    return data.get("content", "")
+        except Exception as e:
+            print(f"[Curator] ⚠️ Cache read failed: {e}")
+
     try:
         response = tavily_client.search(
             query="major technology and social trends 2026",
@@ -130,7 +150,15 @@ def fetch_external_trends(max_results: int = 5) -> str:
             f"{i}. {r['title']}: {r['content'][:200]}"
             for i, r in enumerate(results, 1)
         )
-        print(f"[Curator] 🌍 Fetched {len(results)} external trends")
+        print(f"[Curator] 🌍 Fetched {len(results)} external trends from API")
+        
+        # Save cache
+        try:
+            with open(CACHE_PATH, 'w', encoding='utf-8') as f:
+                json.dump({"content": trend_text, "timestamp": time.time()}, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"[Curator] ⚠️ Cache write failed: {e}")
+            
         return trend_text
     except Exception as e:
         print(f"[Curator] ⚠️ External trend fetch failed: {e}")
@@ -141,7 +169,7 @@ def fetch_external_trends(max_results: int = 5) -> str:
 # Function 2: Suggestion Generator (Entropy Injector v4.0)
 # ---------------------------------------------------------
 
-@retry(max_retries=3)
+@retry(max_retries=5, initial_delay=5)
 def get_curation_suggestions(context: str, mode: str = "normal",
                              rejected_topics: list = None,
                              reject_count: int = 0,
@@ -460,7 +488,7 @@ def search_and_save_topic(topic: str, search_query: str = "",
         f.write(final_content)
 
     print(f"[Curator] ✅ Saved: {save_path}")
-    return f"Success: Created [[{KB_DIR_NAME}/{filename}]]"
+    return f"Success: Created [[{KB_DIR_NAME}/{filename}]] (Path: {save_path})"
 
 
 # ---------------------------------------------------------
@@ -506,8 +534,15 @@ def update_user_profile(question: str, answer: str) -> str:
 
 def run_curation() -> str:
     """対話なしで Curation を実行し、結果を返す。"""
-    context = read_main_context()
-    trends = fetch_external_trends()
+    
+    # Pre-fetch contexts in parallel (Context reading is fast, waiting for trends might be slow if not cached)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        future_context = executor.submit(read_main_context)
+        future_trends = executor.submit(fetch_external_trends)
+        
+        context = future_context.result()
+        trends = future_trends.result()
+
     suggestions = get_curation_suggestions(
         context, "normal", external_trends=trends
     )
@@ -518,16 +553,35 @@ def run_curation() -> str:
         "deepen": "🔬", "expand": "🌐", "jump": "🚀",
         "consistent": "🔬", "bridge": "🌐", "entropy": "🚀",
     }
+    MAX_WORKERS = 3
     results = []
-    for t in topics:
-        branch = t.get("branch", "")
-        icon = _branch_label.get(branch, "📚")
-        r = search_and_save_topic(
-            t["title"], t.get("search_query", ""),
-            t.get("source_note", ""), branch,
-            t.get("reasoning", ""),
-        )
-        results.append(f"- {icon} {t['title']}: {r}")
+    
+    print(f"[Curator] 🚀 Starting parallel execution for {len(topics)} topics...")
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        future_to_topic = {
+            executor.submit(
+                search_and_save_topic, 
+                t["title"], 
+                t.get("search_query", ""),
+                t.get("source_note", ""), 
+                t.get("branch", ""),
+                t.get("reasoning", "")
+            ): t for t in topics
+        }
+        
+        for future in concurrent.futures.as_completed(future_to_topic):
+            t = future_to_topic[future]
+            branch = t.get("branch", "")
+            icon = _branch_label.get(branch, "📚")
+            try:
+                r = future.result()
+                # r format: "Success: Created [[...]] (Path: C:\...)"
+                results.append(f"- {icon} {t['title']}: {r}")
+            except Exception as e:
+                print(f"[Curator] ❌ Error processing {t['title']}: {e}")
+                results.append(f"- {icon} {t['title']}: Error ({e})")
+
     return "\n".join(results)
 
 

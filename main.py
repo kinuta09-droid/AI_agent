@@ -11,7 +11,7 @@ import importlib
 sys.stdout.reconfigure(encoding='utf-8')
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(r'C:\AI_agent\.env')
 
 # ---------------------------------------------------------
 # Gemini Client (lightweight init)
@@ -19,9 +19,9 @@ load_dotenv()
 
 from google import genai
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GOOGLE_API_KEY)
 
 # ---------------------------------------------------------
 # Tool Registry
@@ -31,13 +31,13 @@ TOOLS = [
     {
         "name": "daily_news",
         "description": "最新ニュースを収集・要約してObsidianに保存する",
-        "function": "agent_hello.tool_fetch_daily_news",
+        "function": "tool_web.tool_fetch_daily_news",
         "needs_arg": False,
     },
     {
         "name": "crypto_analysis",
         "description": "仮想通貨の詳細クオンツ分析を行う（ADX、SMC、Kelly基準）",
-        "function": "agent_hello.tool_analyze_crypto",
+        "function": "tool_crypto.tool_analyze_crypto",
         "needs_arg": True,
         "arg_name": "symbol",
         "arg_prompt": "通貨ペアを入力 (例: BTC/USDT): ",
@@ -46,7 +46,7 @@ TOOLS = [
     {
         "name": "market_scan",
         "description": "主要20銘柄の仮想通貨一括スキャン",
-        "function": "agent_hello.tool_scan_crypto_market",
+        "function": "tool_crypto.tool_scan_crypto_market",
         "needs_arg": False,
     },
     {
@@ -72,7 +72,7 @@ TOOLS = [
     {
         "name": "agent",
         "description": "AIエージェントに自由な指示を与えて自律実行させる（ReActループ）",
-        "function": "agent_hello.run_react_loop",
+        "function": "engine_plan_execute.run_react_loop",
         "needs_arg": True,
         "arg_name": "goal",
         "arg_prompt": "エージェントへの指示: ",
@@ -80,7 +80,7 @@ TOOLS = [
     {
         "name": "prediction_audit",
         "description": "過去の仮想通貨予測を実際の価格と照合して精度を検証する",
-        "function": "agent_hello.tool_audit_predictions",
+        "function": "tool_crypto.tool_audit_predictions",
         "needs_arg": False,
     },
     {
@@ -239,7 +239,12 @@ def main():
 
     while True:
         try:
-            user_input = input("あなた: ").strip()
+            # Windows terminal encoding fix for input
+            try:
+                user_input = input("あなた: ").strip()
+            except UnicodeDecodeError:
+                print("⚠️ 文字コードエラーが発生しました。もう一度入力してください。")
+                continue
         except (EOFError, KeyboardInterrupt):
             print("\n👋 お疲れさまでした！")
             break

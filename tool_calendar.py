@@ -114,7 +114,7 @@ def _get_calendar_service():
         else:
             flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
             creds = flow.run_local_server(port=0)
-        with open(TOKEN_PATH, 'w') as token:
+        with open(TOKEN_PATH, 'w', encoding='utf-8') as token:
             token.write(creds.to_json())
 
     return build('calendar', 'v3', credentials=creds)

@@ -7,15 +7,17 @@ Discord Bot を通じて agent_hello.py のツールを操作し、
 
 import os
 import sys
+import re
 import io
 import asyncio
+from lib_obsidian_utils import get_obsidian_uri, get_obsidian_uri_from_link
 import datetime
 import signal
-import re
 import time
 import tempfile
 import wave
 import threading
+import subprocess
 
 try:
     import discord.ext.voice_recv as voice_recv
@@ -83,6 +85,9 @@ from agent_hello import (
     run_plan_and_execute,
     extract_patterns,
     generate_performance_dashboard,
+)
+
+from lib_shared import (
     client as gemini_client,
     MODEL_NAME,
     VAULT_ROOT,
@@ -479,17 +484,113 @@ async def _dispatch_agent(interaction: discord.Interaction, goal: str):
             print(f"[Discord] Failed to send fallback: {e}")
 
 
+# ---------------------------------------------------------
+# Obsidian Helper Views
+# ---------------------------------------------------------
+
+class OpenInObsidianView(discord.ui.View):
+    def __init__(self, links: dict[str, str]):
+        """
+        links: {filename: uri} の辞書
+        """
+        super().__init__(timeout=None)
+        
+        # リンク数に応じてボタンを追加 (最大5個まで)
+        # 5個を超える場合はドロップダウン (TODO: 実装簡略化のため一旦ボタンのみ、溢れたら無視)
+        count = 0
+        for name, uri in links.items():
+            if count >= 5:
+                break
+            # ラベルが長すぎる場合は切り詰め
+            label = f"📂 {name}"[:80]
+            
+            # URLではなく、コールバックでローカルコマンド(os.startfile)を実行する
+            btn = discord.ui.Button(label=label, style=discord.ButtonStyle.primary)
+            
+            # 変数をキャプチャするためにデフォルト引数を使用
+            async def callback(interaction: discord.Interaction, uri=uri, name=name):
+                try:
+                    if uri.startswith("obsidian://"):
+                        # Windows only: ローカルでURIを開く
+                        os.startfile(uri)
+                        await interaction.response.send_message(f"🚀 Opening **{name}** in Obsidian...", ephemeral=True, delete_after=3)
+                    else:
+                        await interaction.response.send_message("❌ Invalid URI scheme.", ephemeral=True)
+                except Exception as e:
+                    await interaction.response.send_message(f"❌ Failed to open: {e}", ephemeral=True)
+            
+            btn.callback = callback
+            self.add_item(btn)
+            count += 1
+
+def _create_obsidian_view(content: str) -> discord.ui.View | None:
+    """コンテンツ内のパス([[...]]含む)を検出し、Obsidianを開くボタンViewを作成する"""
+    unique_links = {}
+
+    # 1. (Path: ...) の検出（絶対パス）
+    for match in re.finditer(r"\(Path:\s*([A-Z]:\\[^)]+)\)", content):
+        path = match.group(1).strip()
+        uri = get_obsidian_uri(path)
+        if uri:
+            name = os.path.basename(path)
+            unique_links[name] = uri
+
+    # 2. [[...]] の検出（相対パス/ファイル名）
+    for match in re.finditer(r"\[\[(.*?)\]\]", content):
+        link_text = match.group(1).strip()
+        # パイプ | で表示名が指定されている場合がある [[file|label]] -> fileを採用
+        if "|" in link_text:
+            link_text = link_text.split("|")[0]
+            
+        uri = get_obsidian_uri_from_link(link_text)
+        if uri:
+            # 拡張子がない場合は補完して表示名にする
+            name = link_text if "." in link_text else f"{link_text}.md"
+            unique_links[name] = uri
+            
+    # 3. LoRA出力パスの検出
+    match = re.search(r"出力:\s*([A-Z]:\\[^\n]+)", content)
+    if match:
+        path = match.group(1).strip()
+        uri = get_obsidian_uri(path)
+        if uri:
+             name = "LoRA Dataset"
+             unique_links[name] = uri
+
+    if unique_links:
+        return OpenInObsidianView(unique_links)
+    return None
+
+
+def _format_discord_content(content: str) -> str:
+    """Discord表示用にメッセージを整形する（[[...]]削除など）"""
+    # Obsidianリンク [[...]] を太字 **...** に置換して見やすくする
+    display_content = re.sub(r"\[\[(.*?)\]\]", r"**\1**", content)
+    # (Path: ...) も表示上は邪魔なので削除する
+    display_content = re.sub(r"\(Path:.*?\)", "", display_content).strip()
+    return display_content
+
+
 async def _send_long_message(interaction: discord.Interaction, content: str,
                               title: str = "Result", color: int = 0x00ff00):
-    """2000文字を超える場合は Embed + ファイル添付で送信する。"""
-    if len(content) <= 2000:
-        await interaction.followup.send(content)
+    """2000文字を超える場合は Embed + ファイル添付で送信する。Obsidianボタンも付与。"""
+    
+    
+    display_content = _format_discord_content(content)
+    view = _create_obsidian_view(content)
+    
+    kwargs = {}
+    if view:
+        kwargs["view"] = view
+
+    if len(display_content) <= 2000:
+        await interaction.followup.send(display_content, **kwargs)
     else:
         # サマリー（最初の1500文字）を Embed で、全文を .md ファイルで添付
-        summary = content[:1500] + "\n\n*... (full report attached)*"
+        summary = display_content[:1500] + "\n\n*... (full report attached)*"
         embed = discord.Embed(title=title, description=summary, color=color)
         file = discord.File(io.StringIO(content), filename=f"{title}.md")
-        await interaction.followup.send(embed=embed, file=file)
+        await interaction.followup.send(embed=embed, file=file, **kwargs)
 
 
 # ---------------------------------------------------------
@@ -661,6 +762,9 @@ async def cmd_news(interaction: discord.Interaction):
     await asyncio.to_thread(_log_to_daily_note, "command", "/news", result)
     # Final result
     try:
+        # result contains news text, usually no file path unless we scan it?
+        # Actually news doesn't save to file and return path in result string usually?
+        # But let's apply the wrapper anyway just in case.
         await _send_long_message(interaction, result, title="Daily News")
     except discord.NotFound:
          # Fallback
@@ -689,22 +793,29 @@ async def cmd_crypto(interaction: discord.Interaction, symbol: str = "BTC/USDT")
     await asyncio.to_thread(_log_to_daily_note, "command", f"/crypto {symbol}", result)
 
     # 分析レポートは常に長いので Embed + ファイル添付
+    display_content = _format_discord_content(result)
     embed = discord.Embed(
         title=f"Crypto Analysis: {symbol}",
-        description=result[:1500] if len(result) > 1500 else result,
+        description=display_content[:1500] if len(display_content) > 1500 else display_content,
         color=0xf0b90b  # Binance yellow
     )
     # Final result
     try:
+        
+        view = _create_obsidian_view(result)
+        kwargs = {}
+        if view:
+            kwargs["view"] = view
+
         if len(result) > 1500:
             clean = symbol.replace('/', '_')
             file = discord.File(
                 io.StringIO(result),
                 filename=f"Crypto_{clean}_{datetime.datetime.now().strftime('%Y-%m-%d')}.md"
             )
-            await interaction.followup.send(embed=embed, file=file)
+            await interaction.followup.send(embed=embed, file=file, **kwargs)
         else:
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, **kwargs)
     except discord.NotFound:
         # Fallback
         try:
@@ -731,21 +842,28 @@ async def cmd_scan(interaction: discord.Interaction):
 
     await asyncio.to_thread(_log_to_daily_note, "command", "/scan", result)
 
+    display_content = _format_discord_content(result)
     embed = discord.Embed(
         title="Market Scan",
-        description=result[:1500] if len(result) > 1500 else result,
+        description=display_content[:1500] if len(display_content) > 1500 else display_content,
         color=0x00bfff
     )
     # Final result
     try:
+        
+        view = _create_obsidian_view(result)
+        kwargs = {}
+        if view:
+            kwargs["view"] = view
+
         if len(result) > 1500:
             file = discord.File(
                 io.StringIO(result),
                 filename=f"Market_Scan_{datetime.datetime.now().strftime('%Y-%m-%d')}.md"
             )
-            await interaction.followup.send(embed=embed, file=file)
+            await interaction.followup.send(embed=embed, file=file, **kwargs)
         else:
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, **kwargs)
     except discord.NotFound:
         # Fallback
         try:
@@ -989,7 +1107,14 @@ class CurateView(discord.ui.View):
             await asyncio.to_thread(
                 _log_to_daily_note, "command", f"/curate -> {topic['title']}", result
             )
-            await interaction.followup.send(f"✅ {result}")
+            view = _create_obsidian_view(result)
+            display_result = _format_discord_content(result)
+            
+            kwargs = {}
+            if view:
+                kwargs["view"] = view
+            
+            await interaction.followup.send(f"✅ {display_result}", **kwargs)
 
         return callback
 
@@ -1239,7 +1364,14 @@ async def cmd_topic(interaction: discord.Interaction, query: str):
         await asyncio.to_thread(
             _log_to_daily_note, "command", f"/topic {query}", result
         )
-        await interaction.followup.send(f"✅ {result}")
+        view = _create_obsidian_view(result)
+        display_result = _format_discord_content(result)
+        
+        kwargs = {}
+        if view:
+            kwargs["view"] = view
+
+        await interaction.followup.send(f"✅ {display_result}", **kwargs)
 
     except Exception as e:
         await interaction.followup.send(f"Error: {e}")
@@ -1450,10 +1582,11 @@ async def on_message(message: discord.Message):
     await asyncio.to_thread(_log_to_daily_note, "chat", message.content, result)
 
     # Discord に応答
+    view = _create_obsidian_view(result)
     if len(result) <= 2000:
-        await message.reply(result)
+        await message.reply(result, view=view)
     else:
-        await message.reply(result[:1900] + "\n\n*... (truncated)*")
+        await message.reply(result[:1900] + "\n\n*... (truncated)*", view=view)
 
 
 # ---------------------------------------------------------
@@ -1484,6 +1617,16 @@ async def on_ready():
 
 def run_bot():
     """main.py から呼び出し可能なエントリーポイント"""
+    # Imported from main.py -> Spawn fresh process to avoid Session Closed error (global client reuse)
+    if __name__ != "__main__":
+        print(f"[Discord] 🚀 Spawning independent bot process via subprocess...")
+        try:
+            subprocess.run([sys.executable, os.path.abspath(__file__)], check=False)
+        except KeyboardInterrupt:
+            print("\n[Discord] 🛑 Broker stopped.")
+        return
+
+    # Standalone execution (or via subprocess)
     _kill_existing_bot()
     _write_pid()
     print("[Discord] 🤖 Starting Antigravity Discord Bot...")

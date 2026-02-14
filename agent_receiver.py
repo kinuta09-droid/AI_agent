@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # C:\AI_agent\agent_receiver.py
 import http.server
 import socketserver
