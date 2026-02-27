@@ -1,5 +1,8 @@
-from agent_hello import tool_create_note
+import sys
 import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from agent_hello import tool_create_note
 
 # Mock dependencies if needed, or just rely on agent_hello being runnable
 # We assume environment variables are set or defaults are handled gracefully in agent_hello imports

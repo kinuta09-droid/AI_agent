@@ -1,289 +1,163 @@
-# -*- coding: utf-8 -*-
-"""
-Antigravity Universal Launcher
-自然言語で指示するだけで、適切なツールを自動選択・実行する統合エントリーポイント。
-"""
-
 import os
 import sys
 import importlib
+import subprocess
+import time
+import signal
+from dotenv import load_dotenv
 
+# Windows console encoding fix
 sys.stdout.reconfigure(encoding='utf-8')
 
-from dotenv import load_dotenv
 load_dotenv(r'C:\AI_agent\.env')
 
 # ---------------------------------------------------------
 # Gemini Client (lightweight init)
 # ---------------------------------------------------------
-
 from google import genai
-
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
+MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-flash")
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
 # ---------------------------------------------------------
 # Tool Registry
 # ---------------------------------------------------------
-
 TOOLS = [
-    {
-        "name": "daily_news",
-        "description": "最新ニュースを収集・要約してObsidianに保存する",
-        "function": "tool_web.tool_fetch_daily_news",
-        "needs_arg": False,
-    },
-    {
-        "name": "crypto_analysis",
-        "description": "仮想通貨の詳細クオンツ分析を行う（ADX、SMC、Kelly基準）",
-        "function": "tool_crypto.tool_analyze_crypto",
-        "needs_arg": True,
-        "arg_name": "symbol",
-        "arg_prompt": "通貨ペアを入力 (例: BTC/USDT): ",
-        "default_arg": "BTC/USDT",
-    },
-    {
-        "name": "market_scan",
-        "description": "主要20銘柄の仮想通貨一括スキャン",
-        "function": "tool_crypto.tool_scan_crypto_market",
-        "needs_arg": False,
-    },
-    {
-        "name": "curate",
-        "description": "興味に基づいてトピックを提案・調査し、ナレッジノートを作成する",
-        "function": "tool_curator.run_curation",
-        "needs_arg": False,
-    },
-    {
-        "name": "setup",
-        "description": "初回セットアップ: 興味のあるトピックを一括調査してナレッジベースを構築",
-        "function": "tool_curator.run_setup",
-        "needs_arg": False,
-    },
-    {
-        "name": "topic_search",
-        "description": "指定したキーワードで調査し、ナレッジノートを作成する",
-        "function": "tool_curator.search_and_save_topic",
-        "needs_arg": True,
-        "arg_name": "topic",
-        "arg_prompt": "調べたいキーワード: ",
-    },
-    {
-        "name": "agent",
-        "description": "AIエージェントに自由な指示を与えて自律実行させる（ReActループ）",
-        "function": "engine_plan_execute.run_react_loop",
-        "needs_arg": True,
-        "arg_name": "goal",
-        "arg_prompt": "エージェントへの指示: ",
-    },
-    {
-        "name": "prediction_audit",
-        "description": "過去の仮想通貨予測を実際の価格と照合して精度を検証する",
-        "function": "tool_crypto.tool_audit_predictions",
-        "needs_arg": False,
-    },
-    {
-        "name": "discord_bot",
-        "description": "Discord Botを起動する（常駐プロセス、Ctrl+Cで停止）",
-        "function": "bot_discord.run_bot",
-        "needs_arg": False,
-        "long_running": True,
-    },
-    {
-        "name": "scheduler",
-        "description": "スケジューラーを起動する（定時タスクの自動実行、Ctrl+Cで停止）",
-        "function": "agent_scheduler.run_scheduler",
-        "needs_arg": False,
-        "long_running": True,
-    },
-    {
-        "name": "n8n_backup",
-        "description": "n8nワークフローをバックアップする",
-        "function": "n8n_patrol.fetch_all_workflows",
-        "needs_arg": False,
-    },
-    {
-        "name": "lora_dataset",
-        "description": "LoRA学習用データセットを作成する（ComfyUI WD14自動タグ付け + フォルダ整理）",
-        "function": "tool_lora_factory.run_lora_factory",
-        "needs_arg": False,
-    },
-    {
-        "name": "analytics",
-        "description": "エージェントのパフォーマンスやスケジューラ、エラーログを分析する",
-        "function": "tool_analytics.run_analytics",
-        "needs_arg": True,
-        "arg_name": "question",
-        "arg_prompt": "分析したいこと（例: エージェントの成功率は？）: ",
-    },
+    {"name": "daily_news", "description": "最新ニュースを収集・要約してObsidianに保存する", "function": "tools.tool_web.tool_fetch_daily_news", "needs_arg": False},
+    {"name": "crypto_analysis", "description": "仮想通貨の詳細クオンツ分析を行う", "function": "tools.tool_crypto.tool_analyze_crypto", "needs_arg": True, "arg_name": "symbol", "arg_prompt": "通貨ペア (例: BTC/USDT): ", "default_arg": "BTC/USDT"},
+    {"name": "market_scan", "description": "主要20銘柄の仮想通貨一括スキャン", "function": "tools.tool_crypto.tool_scan_crypto_market", "needs_arg": False},
+    {"name": "curate", "description": "興味に基づいてトピックを提案・調査し、ナレッジノートを作成する", "function": "tools.tool_curator.run_curation", "needs_arg": False},
+    {"name": "setup", "description": "初回セットアップ: ナレッジベースを構築", "function": "tools.tool_curator.run_setup", "needs_arg": False},
+    {"name": "topic_search", "description": "指定したキーワードで調査し、ナレッジノートを作成する", "function": "tools.tool_curator.search_and_save_topic", "needs_arg": True, "arg_name": "topic", "arg_prompt": "キーワード: "},
+    {"name": "agent", "description": "AIエージェントに自律実行させる", "function": "engine_plan_execute.run_react_loop", "needs_arg": True, "arg_name": "goal", "arg_prompt": "指示: "},
+    {"name": "prediction_audit", "description": "過去の仮想通貨予測を実際の価格と照合して精度を検証する", "function": "tools.tool_crypto.tool_audit_predictions", "needs_arg": False},
+    {"name": "discord_bot", "description": "Discord Botを起動する", "function": "bot_discord.run_bot", "needs_arg": False, "long_running": True},
+    {"name": "scheduler", "description": "スケジューラーを起動する", "function": "agent_scheduler.run_scheduler", "needs_arg": False, "long_running": True},
+    {"name": "n8n_backup", "description": "n8nワークフローをバックアップする", "function": "n8n_patrol.fetch_all_workflows", "needs_arg": False},
+    {"name": "lora_dataset", "description": "LoRA学習用データセットを作成する", "function": "tools.tool_lora_factory.run_lora_factory", "needs_arg": False},
+    {"name": "analytics", "description": "エージェントのパフォーマンスやエラーログを分析する", "function": "tools.tool_analytics.run_analytics", "needs_arg": True, "arg_name": "question", "arg_prompt": "分析したいこと: "},
 ]
 
-
 # ---------------------------------------------------------
-# Lazy Import Helper
+# Utils
 # ---------------------------------------------------------
-
 _module_cache = {}
 
 def _get_function(func_path: str):
-    """'module.func_name' → 実際の関数オブジェクトを返す（lazy import）"""
     module_name, func_name = func_path.rsplit(".", 1)
     if module_name not in _module_cache:
         _module_cache[module_name] = importlib.import_module(module_name)
     return getattr(_module_cache[module_name], func_name)
 
-
 # ---------------------------------------------------------
-# AI Router
+# Parallel Launcher & Monitor
 # ---------------------------------------------------------
+def run_and_monitor():
+    """Bot と Scheduler を別ウィンドウで起動し、監視（自動再起動）する"""
+    print("\n" + "="*50)
+    print("  🛰️ ARMS Parallel Launcher & Monitor")
+    print("  - Starting Discord Bot & Scheduler...")
+    print("  - Auto-restart enabled (5s delay)")
+    print("  - Ctrl+C to stop all and return to menu")
+    print("="*50 + "\n")
 
-def route_to_tool(user_input: str) -> dict:
-    """Gemini でユーザー入力を解析し、最適なツールと引数を返す。"""
-    tool_list = "\n".join(
-        f"- {t['name']}: {t['description']}" for t in TOOLS
-    )
+    python_exe = sys.executable
+    processes = {}
 
-    prompt = f"""あなたはタスクルーターです。ユーザーの入力に最も適したツールを1つ選んでください。
+    def start_process(name, script):
+        print(f"  [Launcher] Starting {name}...")
+        # 新しいコンソールウィンドウで起動 (Windows)
+        return subprocess.Popen(
+            [python_exe, script]
+            # creationflags=subprocess.CREATE_NEW_CONSOLE
+        )
 
-【利用可能なツール】
-{tool_list}
-
-【ユーザー入力】
-{user_input}
-
-以下のJSON形式のみで出力してください:
-{{"tool": "ツール名", "arg": "引数（不要ならnull）"}}
-
-ルール:
-- tool は上記リストの name と完全一致させること
-- 引数が必要なツール(crypto_analysis, topic_search, agent)は、ユーザーの入力から引数を抽出すること
-- crypto_analysis の arg はシンボル（例: "BTC/USDT"）。通貨名だけなら "/USDT" を補完
-- topic_search の arg は調査キーワード
-- agent の arg はエージェントへの指示文
-- どのツールにも該当しない場合は agent を選び、arg にユーザー入力をそのまま入れること"""
+    processes["discord_bot"] = start_process("Discord Bot", "bot_discord.py")
+    processes["scheduler"] = start_process("Scheduler", "agent_scheduler.py")
 
     try:
+        while True:
+            time.sleep(5)
+            for name, proc in processes.items():
+                if proc.poll() is not None:
+                    print(f"  [Monitor] ⚠️ {name} has stopped (code: {proc.returncode}). Restarting...")
+                    script = "bot_discord.py" if name == "discord_bot" else "agent_scheduler.py"
+                    processes[name] = start_process(name, script)
+    except KeyboardInterrupt:
+        print("\n  [Launcher] 🛑 Stopping all processes...")
+        for proc in processes.values():
+            proc.terminate()
+        print("  [Launcher] All processes terminated.")
+
+# ---------------------------------------------------------
+# AI Router & Menu Functions
+# ---------------------------------------------------------
+def route_to_tool(user_input: str) -> dict:
+    tool_list = "\n".join(f"- {t['name']}: {t['description']}" for t in TOOLS)
+    prompt = f"あなたはタスクルーターです。ユーザーの入力に最も適したツールを選んでください。\n\n【ツール】\n{tool_list}\n\n【入力】\n{user_input}\n\nJSON形式: {{\"tool\": \"name\", \"arg\": \"val\"}}"
+    try:
         response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
-        text = response.text.strip()
-        # JSONを抽出
-        import json
-        import re
-        # ```json ... ``` を除去
-        text = re.sub(r'^```(?:json)?\s*', '', text)
-        text = re.sub(r'\s*```$', '', text)
+        import json, re
+        text = re.sub(r'```json\s*|\s*```', '', response.text.strip())
         return json.loads(text)
-    except Exception as e:
-        print(f"  [Router] ルーティング失敗: {e}")
+    except:
         return {"tool": "agent", "arg": user_input}
 
-
-# ---------------------------------------------------------
-# Tool Executor
-# ---------------------------------------------------------
-
-def execute_tool(tool_name: str, arg: str = None) -> str:
-    """指定されたツールを実行し、結果を返す。"""
+def execute_tool(tool_name: str, arg: str = None):
     tool = next((t for t in TOOLS if t["name"] == tool_name), None)
     if not tool:
-        print(f"  ⚠️ 不明なツール: {tool_name}")
-        print("  → agent にフォールバックします")
         tool = next(t for t in TOOLS if t["name"] == "agent")
         arg = arg or tool_name
 
-    # 長時間実行の警告
-    if tool.get("long_running"):
-        print(f"  ⚠️ {tool['name']} は常駐プロセスです。Ctrl+C で停止できます。")
-
-    # 引数が必要なのに未指定の場合、対話で取得
     if tool.get("needs_arg") and not arg:
-        default = tool.get("default_arg", "")
-        prompt_text = tool.get("arg_prompt", f"{tool.get('arg_name', '引数')}: ")
-        if default:
-            prompt_text = prompt_text.rstrip(": ") + f" (デフォルト: {default}): "
-        user_arg = input(f"  {prompt_text}").strip()
-        arg = user_arg if user_arg else default
+        prompt = tool.get("arg_prompt", "Input: ")
+        arg = input(f"  {prompt}").strip() or tool.get("default_arg")
 
-    # 関数を取得して実行
     try:
         func = _get_function(tool["function"])
-        if tool.get("needs_arg") and arg:
-            result = func(arg)
-        else:
-            result = func()
-        return result if result else "(完了)"
-    except KeyboardInterrupt:
-        return "\n⏹️ 中断しました。"
+        return func(arg) if tool.get("needs_arg") else func()
     except Exception as e:
-        return f"❌ エラー: {e}"
+        return f"❌ Error: {e}"
 
-
-# ---------------------------------------------------------
-# Main Loop
-# ---------------------------------------------------------
-
-def main():
-    print()
-    print("=" * 50)
-    print("  🚀 Antigravity Launcher")
-    print("  何でも聞いてください（exit で終了）")
-    print("=" * 50)
-    print()
-
-    # ツール一覧を表示
-    print("📋 利用可能なツール:")
-    for t in TOOLS:
-        flag = " [常駐]" if t.get("long_running") else ""
-        print(f"  • {t['name']}: {t['description']}{flag}")
-    print()
+def menu_loop():
+    print("\n" + "="*50)
+    print("  🚀 Antigravity AI Router")
+    print("  0: Auto Launch (Bot + Scheduler)")
+    for i, t in enumerate(TOOLS, 1):
+        print(f"  {i}: {t['name']} - {t['description']}")
+    print("="*50 + "\n")
 
     while True:
         try:
-            # Windows terminal encoding fix for input
-            try:
-                user_input = input("あなた: ").strip()
-            except UnicodeDecodeError:
-                print("⚠️ 文字コードエラーが発生しました。もう一度入力してください。")
+            cmd = input("あなた (または番号): ").strip()
+            if cmd.lower() in ("exit", "quit", "q"): break
+            
+            if cmd == "0":
+                run_and_monitor()
                 continue
+
+            if cmd.isdigit():
+                idx = int(cmd) - 1
+                if 0 <= idx < len(TOOLS):
+                    res = execute_tool(TOOLS[idx]["name"])
+                    print(f"\n---\n{res}\n---")
+                    continue
+
+            route = route_to_tool(cmd)
+            print(f"  🎯 → [{route['tool']}]")
+            res = execute_tool(route["tool"], route.get("arg"))
+            print(f"\n---\n{res}\n---")
         except (EOFError, KeyboardInterrupt):
-            print("\n👋 お疲れさまでした！")
             break
-
-        if not user_input:
-            continue
-        if user_input.lower() in ("exit", "quit", "q", "終了"):
-            print("👋 お疲れさまでした！")
-            break
-
-        # AI ルーティング
-        print("  🤔 ルーティング中...")
-        route = route_to_tool(user_input)
-        tool_name = route.get("tool", "agent")
-        arg = route.get("arg")
-
-        # null/None の正規化
-        if arg in (None, "null", "None", ""):
-            arg = None
-
-        print(f"  🎯 → [{tool_name}]", end="")
-        if arg:
-            print(f" (arg: {arg})", end="")
-        print()
-
-        # 実行
-        result = execute_tool(tool_name, arg)
-
-        # 結果表示
-        print()
-        print("-" * 40)
-        if result and len(result) > 2000:
-            print(result[:2000])
-            print(f"\n  ... ({len(result)} 文字中 2000文字を表示)")
-        else:
-            print(result)
-        print("-" * 40)
-        print()
-
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--menu":
+        menu_loop()
+    else:
+        # デフォルトは並列起動。Ctrl+Cでメニューへ。
+        try:
+            run_and_monitor()
+            print("\n  [System] Back to menu mode.")
+            menu_loop()
+        except KeyboardInterrupt:
+            pass

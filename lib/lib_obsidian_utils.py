@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
 import urllib.parse
-from lib_shared import VAULT_ROOT
+from lib.lib_shared import VAULT_ROOT
 
 def get_obsidian_uri(file_path: str) -> str:
     """

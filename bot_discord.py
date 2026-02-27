@@ -10,7 +10,7 @@ import sys
 import re
 import io
 import asyncio
-from lib_obsidian_utils import get_obsidian_uri, get_obsidian_uri_from_link
+from lib.lib_obsidian_utils import get_obsidian_uri, get_obsidian_uri_from_link
 import datetime
 import signal
 import time
@@ -41,8 +41,8 @@ sys.stdout.reconfigure(encoding='utf-8')
 PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_discord.pid")
 
 
-def _kill_existing_bot():
-    """PID ファイルに記録された旧プロセスを停止する。"""
+def _check_existing_bot():
+    """PID ファイルを確認し、既にボットが動作しているかチェックする。"""
     if not os.path.exists(PID_FILE):
         return
     try:
@@ -50,13 +50,19 @@ def _kill_existing_bot():
             old_pid = int(f.read().strip())
         if old_pid == os.getpid():
             return
-        os.kill(old_pid, signal.SIGTERM)
-        print(f"[Discord] 🛑 Killed previous bot process (PID {old_pid})")
-    except (ProcessLookupError, ValueError, OSError):
-        pass  # プロセスが既に終了済みまたは無効な PID
-    except PermissionError:
-        print(f"[Discord] ⚠️ Could not kill PID {old_pid} (permission denied)")
+        
+        # Windows でプロセスが存在するか確認
+        import ctypes
+        PROCESS_QUERY_INFORMATION = 0x0400
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, old_pid)
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            print(f"[Discord] ⚠️ Another bot instance is already running (PID {old_pid}). Exiting.")
+            sys.exit(0) # 正常終了として扱う（ループ防止）
+    except (ValueError, OSError):
+        pass
     finally:
+        # 古いPIDファイルを削除（または後続の _write_pid で上書き）
         try:
             os.remove(PID_FILE)
         except OSError:
@@ -76,27 +82,34 @@ def _cleanup_pid():
     except OSError:
         pass
 
-# agent_hello.py と同じディレクトリなので直接 import
-from agent_hello import (
-    tool_fetch_daily_news,
-    tool_analyze_crypto,
-    tool_scan_crypto_market,
-    tool_audit_predictions,
-    run_plan_and_execute,
-    extract_patterns,
-    generate_performance_dashboard,
-    tool_generate_briefing,
-    tool_gmail_check,
-)
+# ---------------------------------------------------------
+# Modular Imports
+# ---------------------------------------------------------
 
-from lib_shared import (
+from lib.lib_shared import (
     client as gemini_client,
     MODEL_NAME,
     VAULT_ROOT,
     DAILY_NOTE_DIR_NAME,
 )
 
-from tool_curator import (
+from engine_plan_execute import (
+    run_plan_and_execute,
+    extract_patterns,
+    generate_performance_dashboard,
+)
+
+from tools.tool_web import (
+    tool_fetch_daily_news,
+)
+
+from tools.tool_crypto import (
+    tool_analyze_crypto,
+    tool_scan_crypto_market,
+    tool_audit_predictions,
+)
+
+from tools.tool_curator import (
     read_main_context,
     get_curation_suggestions,
     search_and_save_topic,
@@ -104,7 +117,24 @@ from tool_curator import (
     fetch_external_trends,
 )
 
-from tool_calendar import (
+from tools.tool_obsidian import (
+    tool_vault_search,
+    tool_create_note,
+    tool_read_note,
+    tool_update_note,
+    tool_merge_weekly_reports,
+)
+
+from tools.tool_briefing_manager import (
+    tool_generate_briefing,
+    add_provider,
+)
+
+from tools.tool_gmail_manager import (
+    tool_gmail_check,
+)
+
+from tools.tool_calendar import (
     tool_get_calendar,
     tool_add_event,
     tool_create_task,
@@ -112,6 +142,13 @@ from tool_calendar import (
     tool_sync_to_daily_note,
 )
 
+# 新機能: 記事生成 UI
+from commands import bot_commands_article
+from commands import bot_commands_curator
+from commands import bot_commands_calendar
+from commands import bot_commands_tools
+from commands import bot_commands_agent
+from commands import bot_commands_client
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
@@ -340,7 +377,6 @@ def _log_to_daily_note(log_type: str, user_input: str, ai_output: str = ""):
     """Obsidian 50_Archive/Chatlog に Discord ログを保存する。"""
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     time_str = datetime.datetime.now().strftime("%H:%M")
-    
     # Save to 50_Archive/Chatlog
     log_dir = os.path.join(VAULT_ROOT, "50_Archive", "Chatlog")
     daily_path = os.path.join(log_dir, f"{today}.md")
@@ -745,12 +781,12 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
     await interaction.response.defer()
 
     # 1. Intent 解析
-    intent, params = _parse_chat_intent(message)
+    intent, params = _parse_chat_intent(message.content)
 
     # 2. Tool Dispatch
     if intent == "curate":
         await _dispatch_curate(interaction, params.get("query", ""))
-        await asyncio.to_thread(_log_to_daily_note, "chat", message, "[curate] Suggestions presented")
+        await asyncio.to_thread(_log_to_daily_note, "chat", message.content, "[curate] Suggestions presented")
         return
     elif intent == "tasks":
         result = await asyncio.to_thread(tool_get_tasks, "today")
@@ -775,7 +811,7 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
         sys_msg = f"今日は{today_str}です。日本語で簡潔に応答してください。"
         try:
             response = gemini_client.models.generate_content(
-                model=MODEL_NAME, contents=message,
+                model=MODEL_NAME, contents=message.content,
                 config={"system_instruction": sys_msg},
             )
             result = (response.text or "").strip() or "(応答なし)"
@@ -783,7 +819,7 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
             result = f"Gemini API Error: {e}"
 
     # Obsidian にログ
-    await asyncio.to_thread(_log_to_daily_note, "chat", message, result)
+    await asyncio.to_thread(_log_to_daily_note, "chat", message.content, result)
 
     # Discord に応答
     title_map = {
@@ -795,706 +831,67 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
 
 @tree.command(name="news", description="今日のニュースを収集・保存")
 async def cmd_news(interaction: discord.Interaction):
-    await interaction.response.defer()
-
-    try:
-        result = await asyncio.to_thread(tool_fetch_daily_news)
-    except Exception as e:
-        result = f"Error: {e}"
-
-    await asyncio.to_thread(_log_to_daily_note, "command", "/news", result)
-    await _send_with_fallback(interaction, result, title="Daily News", emoji="📰")
+    await bot_commands_tools.cmd_news(interaction)
 
 
 @tree.command(name="briefing", description="デイリーブリーフィング生成（Crypto + Vault更新の3項目要約）")
 async def cmd_briefing(interaction: discord.Interaction):
-    await interaction.response.defer()
-
-    try:
-        result = await asyncio.to_thread(tool_generate_briefing)
-    except Exception as e:
-        result = f"Error: {e}"
-
-    await asyncio.to_thread(_log_to_daily_note, "command", "/briefing", result)
-    await _send_with_fallback(interaction, result, title="Daily Briefing", emoji="📋")
+    await bot_commands_tools.cmd_briefing(interaction)
 
 
 @tree.command(name="gmail_check", description="直近の重要メール要約")
 @app_commands.describe(hours="何時間前まで遡るか（デフォルト: 12）")
 async def cmd_gmail_check(interaction: discord.Interaction, hours: int = 12):
-    await interaction.response.defer()
-
-    try:
-        result = await asyncio.to_thread(tool_gmail_check, hours)
-    except Exception as e:
-        result = f"Error: {e}"
-
-    await asyncio.to_thread(_log_to_daily_note, "command", f"/gmail_check {hours}h", result)
-    await _send_with_fallback(interaction, result, title="Gmail Check", emoji="📧")
+    await bot_commands_tools.cmd_gmail_check(interaction, hours)
 
 
 @tree.command(name="crypto", description="仮想通貨のクオンツ分析")
 @app_commands.describe(symbol="通貨ペア（例: BTC/USDT, ETH/USDT）")
 async def cmd_crypto(interaction: discord.Interaction, symbol: str = "BTC/USDT"):
-    await interaction.response.defer()
-
-    try:
-        result = await asyncio.to_thread(tool_analyze_crypto, symbol)
-    except Exception as e:
-        result = f"Error: {e}"
-
-    await asyncio.to_thread(_log_to_daily_note, "command", f"/crypto {symbol}", result)
-
-    display_content = _format_discord_content(result)
-    embed = discord.Embed(
-        title=f"Crypto Analysis: {symbol}",
-        description=display_content[:1500] if len(display_content) > 1500 else display_content,
-        color=0xf0b90b  # Binance yellow
-    )
-    clean = symbol.replace('/', '_')
-    file = discord.File(
-        io.StringIO(result),
-        filename=f"Crypto_{clean}_{datetime.datetime.now().strftime('%Y-%m-%d')}.md"
-    ) if len(result) > 1500 else None
-    await _send_with_fallback(interaction, result, title="Crypto Analysis", emoji="🪙", embed=embed, file=file)
+    await bot_commands_tools.cmd_crypto(interaction, symbol)
 
 
 @tree.command(name="scan", description="主要20銘柄の一括スキャン")
 async def cmd_scan(interaction: discord.Interaction):
-    await interaction.response.defer()
-
-    try:
-        result = await asyncio.to_thread(tool_scan_crypto_market)
-    except Exception as e:
-        result = f"Error: {e}"
-
-    await asyncio.to_thread(_log_to_daily_note, "command", "/scan", result)
-
-    display_content = _format_discord_content(result)
-    embed = discord.Embed(
-        title="Market Scan",
-        description=display_content[:1500] if len(display_content) > 1500 else display_content,
-        color=0x00bfff
-    )
-    file = discord.File(
-        io.StringIO(result),
-        filename=f"Market_Scan_{datetime.datetime.now().strftime('%Y-%m-%d')}.md"
-    ) if len(result) > 1500 else None
-    await _send_with_fallback(interaction, result, title="Market Scan", emoji="🔭", embed=embed, file=file)
-
+    await bot_commands_tools.cmd_scan(interaction)
 
 
 @tree.command(name="agent", description="AIエージェントに自律的なタスクを依頼（検索・ファイル操作など）")
 @app_commands.describe(goal="エージェントへの指示（例: 〇〇について調べてまとめて）")
 async def cmd_agent(interaction: discord.Interaction, goal: str):
-    await interaction.response.defer()
+    await bot_commands_agent.cmd_agent(interaction, goal)
 
-    # Plan-and-Execute 用コールバック
-    async def discord_pe_callback(step_data):
-        phase = step_data.get("phase", "")
-        try:
-            if phase == "plan" and step_data.get("status") == "planning":
-                await interaction.edit_original_response(
-                    content="🧠 **計画を策定中...**"
-                )
-            elif phase == "plan" and step_data.get("status") == "ready":
-                plan = step_data.get("plan", [])
-                lines = [f"{p['step']}. {p['task']}" for p in plan]
-                plan_text = "\n".join(lines)
-                await interaction.edit_original_response(
-                    content=f"📋 **実行計画:**\n{plan_text}\n\n▶️ 実行開始..."
-                )
-            elif phase == "execute" and step_data.get("status") == "running":
-                step_num = step_data.get("step", "?")
-                total = step_data.get("total", "?")
-                task = step_data.get("task", "")
-                await interaction.edit_original_response(
-                    content=f"▶️ **実行中:** Step {step_num}/{total} - {task}..."
-                )
-            elif phase == "execute" and step_data.get("status") in ("done", "error"):
-                step_num = step_data.get("step", "?")
-                total = step_data.get("total", "?")
-                task = step_data.get("task", "")
-                icon = "✅" if step_data["status"] == "done" else "❌"
-                await interaction.edit_original_response(
-                    content=f"{icon} Step {step_num}/{total} - {task}\n\n⏳ 次のステップへ..."
-                )
-            elif phase == "critique":
-                await interaction.edit_original_response(
-                    content="🔍 **結果を評価中...**"
-                )
-            elif phase == "revision":
-                attempt = step_data.get("attempt", 1)
-                await interaction.edit_original_response(
-                    content=f"🔄 **再計画中... (修正 {attempt}回目)**"
-                )
-        except Exception as e:
-            print(f"[Discord] ⚠️ Failed to update status: {e}")
-
-    try:
-        loop = asyncio.get_running_loop()
-
-        def sync_callback_wrapper(step_data):
-            asyncio.run_coroutine_threadsafe(discord_pe_callback(step_data), loop)
-
-        result = await asyncio.to_thread(run_plan_and_execute, goal, step_callback=sync_callback_wrapper)
-
-    except Exception as e:
-        result = f"Error: {e}"
-
-    await asyncio.to_thread(_log_to_daily_note, "command", f"/agent {goal}", result)
-    await _send_with_fallback(interaction, f"✅ **Mission Complete**\n\n{result}", title="Agent Result", emoji="✅")
-
-# ---------------------------------------------------------
-# The Explorer: Interactive Views
-# ---------------------------------------------------------
-
-_BRANCH_LABEL = {
-    "deepen": "🔬 深化", "expand": "🌐 水平展開", "jump": "🚀 飛躍",
-    "consistent": "🔬 安定", "bridge": "🌐 橋渡し", "entropy": "🚀 飛躍",
-}
-_BRANCH_ICON = {
-    "deepen": "🔬", "expand": "🌐", "jump": "🚀",
-    "consistent": "🔬", "bridge": "🌐", "entropy": "🚀",
-}
-
-
-def _build_curate_embed(suggestions: dict, reject_count: int = 0) -> discord.Embed:
-    """トピック提案の Embed を生成する（再利用可能）。"""
-    topics = suggestions.get("topics", [])
-    ab = suggestions.get("ab_question", {})
-
-    title = "🌳 The Explorer -- 知識の枝を伸ばそう"
-    if reject_count > 0:
-        title = f"🌳 The Explorer -- 再提案 #{reject_count}"
-
-    embed = discord.Embed(
-        title=title,
-        description="気になるトピックのボタンを押すと、AIが調査してナレッジノートを作成します。",
-        color=0x7B68EE,
-    )
-    for i, topic in enumerate(topics[:3], 1):
-        branch = topic.get("branch", "")
-        label = _BRANCH_LABEL.get(branch, "📚")
-        source = topic.get("source_note", "")
-        source_text = f" ← [[{source}]]" if source else ""
-        reasoning = topic.get("reasoning", "")
-        reasoning_text = f"\n💡 *{reasoning[:100]}*" if (branch == "entropy" and reasoning) else ""
-        embed.add_field(
-            name=f"{i}. [{label}] {topic['title']}",
-            value=f"{topic.get('description', '')}{source_text}{reasoning_text}",
-            inline=False,
-        )
-
-    if ab:
-        embed.add_field(
-            name=f"💭 {ab.get('question', 'あなたの好みは？')}",
-            value=f"**A**: {ab.get('option_a', '?')}\n**B**: {ab.get('option_b', '?')}",
-            inline=False,
-        )
-
-    return embed
-
-
-class CurateView(discord.ui.View):
-    """Interactive view for /curate with Deep Refinement Loop."""
-
-    def __init__(self, suggestions: dict, user_id: int,
-                 context: str = "", rejected_topics: list = None,
-                 reject_count: int = 0):
-        super().__init__(timeout=300)
-        self.suggestions = suggestions
-        self.user_id = user_id
-        self.context = context
-        self.rejected_topics = rejected_topics or []
-        self.reject_count = reject_count
-        self.topics = suggestions.get("topics", [])
-        self.ab_question = suggestions.get("ab_question", {})
-
-        # トピックボタン（Row 0）
-        for i, topic in enumerate(self.topics[:3]):
-            branch = topic.get("branch", "")
-            icon = _BRANCH_ICON.get(branch, "📚")
-            btn = discord.ui.Button(
-                label=f"{icon} {topic['title']}"[:80],
-                style=discord.ButtonStyle.primary,
-                custom_id=f"topic_{i}",
-                row=0,
-            )
-            btn.callback = self._make_topic_callback(i)
-            self.add_item(btn)
-
-        # A/B ボタン（Row 1）
-        if self.ab_question:
-            btn_a = discord.ui.Button(
-                label=f"A: {self.ab_question.get('option_a', '?')}"[:80],
-                style=discord.ButtonStyle.success,
-                custom_id="ab_a",
-                row=1,
-            )
-            btn_a.callback = self._make_ab_callback("option_a")
-            self.add_item(btn_a)
-
-            btn_b = discord.ui.Button(
-                label=f"B: {self.ab_question.get('option_b', '?')}"[:80],
-                style=discord.ButtonStyle.success,
-                custom_id="ab_b",
-                row=1,
-            )
-            btn_b.callback = self._make_ab_callback("option_b")
-            self.add_item(btn_b)
-
-        # 再提案ボタン（Row 2）— 旧「スキップ」を置き換え
-        skip_label = "🔄 別の提案を見る" if reject_count == 0 else f"🔄 もっと別の提案 ({reject_count}回目)"
-        btn_skip = discord.ui.Button(
-            label=skip_label[:80],
-            style=discord.ButtonStyle.secondary,
-            custom_id="skip",
-            row=2,
-        )
-        btn_skip.callback = self._refinement_callback
-        self.add_item(btn_skip)
-
-        # 終了ボタン（Row 2）
-        btn_end = discord.ui.Button(
-            label="終了",
-            style=discord.ButtonStyle.danger,
-            custom_id="end",
-            row=2,
-        )
-        btn_end.callback = self._end_callback
-        self.add_item(btn_end)
-
-    def _make_topic_callback(self, index: int):
-        async def callback(interaction: discord.Interaction):
-            if interaction.user.id != self.user_id:
-                await interaction.response.send_message(
-                    "このボタンは操作できません。", ephemeral=True
-                )
-                return
-
-            topic = self.topics[index]
-            await interaction.response.defer()
-
-            for item in self.children:
-                item.disabled = True
-            await interaction.edit_original_response(view=self)
-
-            branch = topic.get("branch", "")
-            icon = _BRANCH_ICON.get(branch, "🔍")
-            await interaction.followup.send(
-                f"{icon} **{topic['title']}** を調査中..."
-            )
-            result = await asyncio.to_thread(
-                search_and_save_topic,
-                topic["title"],
-                topic.get("search_query", ""),
-                topic.get("source_note", ""),
-                topic.get("branch", ""),
-                topic.get("reasoning", ""),
-            )
-            await asyncio.to_thread(
-                _log_to_daily_note, "command", f"/curate -> {topic['title']}", result
-            )
-            view = _create_obsidian_view(result)
-            display_result = _format_discord_content(result)
-            
-            kwargs = {}
-            if view:
-                kwargs["view"] = view
-            
-            await interaction.followup.send(f"✅ {display_result}", **kwargs)
-
-        return callback
-
-    def _make_ab_callback(self, option_key: str):
-        async def callback(interaction: discord.Interaction):
-            if interaction.user.id != self.user_id:
-                await interaction.response.send_message(
-                    "このボタンは操作できません。", ephemeral=True
-                )
-                return
-
-            answer = self.ab_question.get(option_key, "?")
-            question = self.ab_question.get("question", "?")
-
-            await interaction.response.defer(ephemeral=True)
-            await asyncio.to_thread(update_user_profile, question, answer)
-            await interaction.followup.send(
-                f"✅ 好みを記録しました: {answer}", ephemeral=True
-            )
-
-        return callback
-
-    async def _refinement_callback(self, interaction: discord.Interaction):
-        """Deep Refinement Loop: 拒否データを蓄積して再提案する。"""
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message(
-                "このボタンは操作できません。", ephemeral=True
-            )
-            return
-
-        # 現在のトピックを拒否リストに追加
-        new_rejected = self.rejected_topics.copy()
-        for t in self.topics:
-            new_rejected.append(t.get("title", ""))
-        new_reject_count = self.reject_count + 1
-
-        # ボタンを無効化 + 「考え中」表示
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(
-            content="🤔 **別の切り口を考え中...**", view=self
-        )
-
-        try:
-            # コンテキストがなければ再取得
-            ctx = self.context
-            if not ctx:
-                ctx = await asyncio.to_thread(read_main_context)
-
-            # 外部トレンド再取得 + 拒否データ付きで再生成
-            trends = await asyncio.to_thread(fetch_external_trends)
-            new_suggestions = await asyncio.to_thread(
-                get_curation_suggestions, ctx, "normal",
-                new_rejected, new_reject_count, trends,
-            )
-
-            new_topics = new_suggestions.get("topics", [])
-            if not new_topics:
-                await interaction.followup.send("これ以上の提案を生成できませんでした。")
-                return
-
-            # 新しい Embed + View を生成して送信
-            new_embed = _build_curate_embed(new_suggestions, new_reject_count)
-            new_view = CurateView(
-                new_suggestions, self.user_id,
-                context=ctx,
-                rejected_topics=new_rejected,
-                reject_count=new_reject_count,
-            )
-            await interaction.followup.send(embed=new_embed, view=new_view)
-
-        except Exception as e:
-            await interaction.followup.send(f"再提案の生成に失敗しました: {e}")
-
-    async def _end_callback(self, interaction: discord.Interaction):
-        """セッション終了。"""
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message(
-                "このボタンは操作できません。", ephemeral=True
-            )
-            return
-
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(
-            content=f"👋 探索を終了しました（{self.reject_count}回再提案）", view=self
-        )
-
-
-class SetupView(discord.ui.View):
-    """Onboarding view for /setup: dropdown with multiple topic selection."""
-
-    def __init__(self, suggestions: dict, user_id: int):
-        super().__init__(timeout=600)
-        self.suggestions = suggestions
-        self.user_id = user_id
-        self.topics = suggestions.get("topics", [])
-
-        options = []
-        for i, topic in enumerate(self.topics[:25]):
-            options.append(discord.SelectOption(
-                label=topic["title"][:100],
-                description=topic.get("description", "")[:100],
-                value=str(i),
-            ))
-
-        select = discord.ui.Select(
-            placeholder="興味のあるトピックを選んでください...",
-            min_values=1,
-            max_values=min(10, len(options)),
-            options=options,
-        )
-        select.callback = self._select_callback
-        self.add_item(select)
-
-    async def _select_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message(
-                "このメニューは操作できません。", ephemeral=True
-            )
-            return
-
-        selected_indices = [int(v) for v in interaction.data["values"]]
-        selected_topics = [
-            self.topics[i] for i in selected_indices if i < len(self.topics)
-        ]
-
-        await interaction.response.defer()
-
-        for item in self.children:
-            item.disabled = True
-        await interaction.edit_original_response(view=self)
-
-        names = ", ".join([t["title"] for t in selected_topics])
-        await interaction.followup.send(
-            f"📚 {len(selected_topics)}件のトピックを調査します: {names}\n"
-            f"しばらくお待ちください..."
-        )
-
-        results = []
-        for topic in selected_topics:
-            result = await asyncio.to_thread(
-                search_and_save_topic,
-                topic["title"],
-                topic.get("search_query", ""),
-                topic.get("source_note", ""),
-                topic.get("branch", ""),
-            )
-            results.append(f"- {topic['title']}: {result}")
-            await asyncio.sleep(1)
-
-        summary = "\n".join(results)
-        await asyncio.to_thread(
-            _log_to_daily_note, "command", f"/setup -> {names}", summary
-        )
-        await _send_long_message(
-            interaction,
-            f"✅ **セットアップ完了**\n\n{summary}",
-            title="Setup Results",
-        )
-
-
-# ---------------------------------------------------------
-# The Curator: Slash Commands
-# ---------------------------------------------------------
-
-@tree.command(name="curate", description="AIがあなたの興味に基づいてトピックを提案します")
-async def cmd_curate(interaction: discord.Interaction):
-    await interaction.response.defer()
-
-    try:
-        context = await asyncio.to_thread(read_main_context)
-        trends = await asyncio.to_thread(fetch_external_trends)
-        suggestions = await asyncio.to_thread(
-            get_curation_suggestions, context, "normal",
-            None, 0, trends,
-        )
-
-        topics = suggestions.get("topics", [])
-        if not topics:
-            await interaction.followup.send("トピック提案の生成に失敗しました。")
-            return
-
-        embed = _build_curate_embed(suggestions)
-        view = CurateView(suggestions, interaction.user.id, context=context)
-        await interaction.followup.send(embed=embed, view=view)
-
-    except Exception as e:
-        await interaction.followup.send(f"Error: {e}")
-
-    await asyncio.to_thread(_log_to_daily_note, "command", "/curate", "Suggestions presented")
-
-
-@tree.command(
-    name="setup",
-    description="初回セットアップ: 興味のあるトピックを一括選択してナレッジベースを構築",
-)
-async def cmd_setup(interaction: discord.Interaction):
-    await interaction.response.defer()
-
-    try:
-        context = await asyncio.to_thread(read_main_context)
-        suggestions = await asyncio.to_thread(
-            get_curation_suggestions, context, "setup"
-        )
-
-        topics = suggestions.get("topics", [])
-        if not topics:
-            await interaction.followup.send("トピック提案の生成に失敗しました。")
-            return
-
-        embed = discord.Embed(
-            title="🚀 Antigravity Setup -- ナレッジベース初期構築",
-            description=(
-                f"あなたの興味に基づいて **{len(topics)}件** のトピックを生成しました。\n"
-                "下のドロップダウンから気になるトピックを選んでください（最大10件）。\n"
-                "選択したトピックについてAIが調査し、ナレッジノートを自動作成します。"
-            ),
-            color=0x2ECC71,
-        )
-
-        view = SetupView(suggestions, interaction.user.id)
-        await interaction.followup.send(embed=embed, view=view)
-
-    except Exception as e:
-        await interaction.followup.send(f"Error: {e}")
-
-
-@tree.command(name="topic", description="興味のあるトピックを直接指定して調査・記録します")
-@app_commands.describe(query="調べたいキーワード（例: 古代ローマの建築技術）")
-async def cmd_topic(interaction: discord.Interaction, query: str):
-    await interaction.response.defer()
-
-    try:
-        # 1. User_Profile.md に明示的な興味として記録
-        await asyncio.to_thread(
-            update_user_profile, "Explicit Interest", query
-        )
-
-        await interaction.followup.send(
-            f"📌 **{query}** を興味リストに追加しました。調査を開始します..."
-        )
-
-        # 2. Tavily検索 → Gemini要約 → Knowledge_Base に保存
-        result = await asyncio.to_thread(search_and_save_topic, query)
-
-        await asyncio.to_thread(
-            _log_to_daily_note, "command", f"/topic {query}", result
-        )
-        view = _create_obsidian_view(result)
-        display_result = _format_discord_content(result)
-        
-        kwargs = {}
-        if view:
-            kwargs["view"] = view
-
-        await interaction.followup.send(f"✅ {display_result}", **kwargs)
-
-    except Exception as e:
-        await interaction.followup.send(f"Error: {e}")
-
-
-# ---------------------------------------------------------
-# Calendar / Task Commands
-# ---------------------------------------------------------
-
-@tree.command(name="calendar", description="Google Calendarから予定を取得します")
-@app_commands.describe(date="日付（today, tomorrow, 2026-02-15 など）")
-async def cmd_calendar(interaction: discord.Interaction, date: str = "today"):
-    await interaction.response.defer()
-
-    try:
-        result = await asyncio.to_thread(tool_get_calendar, date)
-    except Exception as e:
-        result = f"Error: {e}"
-
-    embed = discord.Embed(
-        title="📅 Calendar",
-        description=result[:2000],
-        color=0x4285F4,
-    )
-    await interaction.followup.send(embed=embed)
-
-
-@tree.command(name="add-event", description="Google Calendarに予定を追加します")
-@app_commands.describe(
-    title="予定のタイトル",
-    start_time="開始時刻（例: 明日 14:00, 2026-02-15 10:00）",
-    end_time="終了時刻（省略時は1時間後）",
-)
-async def cmd_add_event(interaction: discord.Interaction,
-                        title: str, start_time: str, end_time: str = ""):
-    await interaction.response.defer()
-
-    try:
-        result = await asyncio.to_thread(tool_add_event, title, start_time, end_time)
-    except Exception as e:
-        result = f"Error: {e}"
-
-    await interaction.followup.send(result)
-
-
-@tree.command(name="tasks", description="Todoistのタスク一覧を表示します")
-@app_commands.describe(filter="フィルター（today, overdue, week, all）")
-async def cmd_tasks(interaction: discord.Interaction, filter: str = "today"):
-    await interaction.response.defer()
-
-    try:
-        result = await asyncio.to_thread(tool_get_tasks, filter)
-    except Exception as e:
-        result = f"Error: {e}"
-
-    embed = discord.Embed(
-        title="✅ Tasks",
-        description=result[:2000],
-        color=0xE44332,
-    )
-    await interaction.followup.send(embed=embed)
-
-
-@tree.command(name="remind", description="Todoistにリマインダー（タスク）を追加します")
-@app_commands.describe(
-    content="リマインド内容",
-    due_date="期限（例: 明日, 2026-02-15, 毎日 21:00）",
-)
-async def cmd_remind(interaction: discord.Interaction,
-                     content: str, due_date: str = ""):
-    await interaction.response.defer()
-
-    try:
-        result = await asyncio.to_thread(tool_create_task, content, due_date, 1)
-    except Exception as e:
-        result = f"Error: {e}"
-
-    await interaction.followup.send(result)
-
-
-# ---------------------------------------------------------
-# Agent Stats Command
-# ---------------------------------------------------------
 
 @tree.command(name="agent-stats", description="AIエージェントの実行統計と学習状況を表示")
 async def cmd_agent_stats(interaction: discord.Interaction):
-    await interaction.response.defer()
+    await bot_commands_agent.cmd_agent_stats(interaction)
 
-    try:
-        patterns = await asyncio.to_thread(extract_patterns)
 
-        if patterns.get("message"):
-            await interaction.followup.send(f"📊 {patterns['message']}")
-            return
+@tree.command(name="client-review", description="成果物を指定ペルソナ（顧客視点）で5軸評価する。")
+@app_commands.describe(
+    deliverable="評価対象の成果物テキスト、または [[ファイル名]] の形式でノートリンクを指定",
+    job="当初の依頼内容（何を目的とした成果物か）",
+    persona="ペルソナID（未指定時は other）例: writing, client_A"
+)
+async def cmd_client_review(interaction: discord.Interaction, deliverable: str, job: str, persona: str = "other"):
+    await bot_commands_client.cmd_client_review(interaction, deliverable, job, persona)
 
-        total = patterns["total"]
-        rate = patterns["success_rate"]
-        avg_dur = patterns["avg_duration"]
-        tool_rel = patterns.get("tool_reliability", {})
-        insights = patterns.get("insights", "")
 
-        # ツール信頼性ランキング（上位5件）
-        sorted_tools = sorted(tool_rel.items(), key=lambda x: x[1], reverse=True)[:5]
-        tool_lines = "\n".join(f"  {t}: **{r:.0%}**" for t, r in sorted_tools)
+@tree.command(name="persona-add", description="新しいクライアントペルソナを登録する。")
+@app_commands.describe(
+    client_id="一意のID（半角英数）", 
+    label="表示名",
+    industry="ベースとなる業種",
+    extra_rules="追加のルール（改行やセミコロン区切り）",
+    manual_path="マニュアルファイルのパス（TXT等）"
+)
+async def cmd_persona_add(interaction: discord.Interaction, client_id: str, label: str, industry: str, extra_rules: str = "", manual_path: str = ""):
+    await bot_commands_client.cmd_persona_add(interaction, client_id, label, industry, extra_rules, manual_path)
 
-        embed = discord.Embed(
-            title="📊 Agent Performance Stats",
-            color=0x3498DB,
-        )
-        embed.add_field(
-            name="全体統計",
-            value=f"総実行: **{total}**回\n成功率: **{rate:.0%}**\n平均時間: **{avg_dur:.1f}秒**",
-            inline=False,
-        )
-        if tool_lines:
-            embed.add_field(
-                name="ツール信頼性 TOP5",
-                value=tool_lines,
-                inline=False,
-            )
-        if insights:
-            embed.add_field(
-                name="AI分析",
-                value=insights[:1000],
-                inline=False,
-            )
 
-        await interaction.followup.send(embed=embed)
-
-        # Dashboard も更新
-        await asyncio.to_thread(generate_performance_dashboard)
-
-    except Exception as e:
-        await interaction.followup.send(f"Error: {e}")
+@tree.command(name="persona-list", description="登録済みのペルソナ一覧を表示する。")
+async def cmd_persona_list(interaction: discord.Interaction):
+    await bot_commands_client.cmd_persona_list(interaction)
 
 
 # ---------------------------------------------------------
@@ -1516,6 +913,10 @@ async def on_message(message: discord.Message):
             await message.add_reaction("✅")
             print(f"  📱 Webhook log saved: {message.content[:50]}")
         return
+
+    # --- 記事生成スレッドのメッセージ処理 ---
+    if isinstance(message.channel, discord.Thread):
+        await bot_commands_article.handle_article_reply(message)
 
     # --- Chat Session Handler ---
     user_id = message.author.id
@@ -1586,6 +987,20 @@ async def on_message(message: discord.Message):
 async def on_ready():
     print(f"[Discord] ✅ Logged in as {bot.user} (ID: {bot.user.id})")
     print(f"[Discord] 🏰 Connected Guilds: {[g.id for g in bot.guilds]}")
+
+    # bot_commands_curator のヘルパー初期化
+    bot_commands_curator.init_helpers(
+        _log_to_daily_note, _create_obsidian_view, _format_discord_content,
+        _send_long_message, _send_with_fallback
+    )
+    # bot_commands_tools のヘルパー初期化
+    bot_commands_tools.init_helpers(
+        _log_to_daily_note, _format_discord_content, _send_with_fallback
+    )
+    # bot_commands_agent のヘルパー初期化
+    bot_commands_agent.init_helpers(
+        _log_to_daily_note, _send_long_message, _send_with_fallback
+    )
     try:
         if GUILD_ID:
             guild = discord.Object(id=int(GUILD_ID))
@@ -1616,7 +1031,7 @@ def run_bot():
         return
 
     # Standalone execution (or via subprocess)
-    _kill_existing_bot()
+    _check_existing_bot()
     _write_pid()
     print("[Discord] 🤖 Starting Antigravity Discord Bot...")
     try:

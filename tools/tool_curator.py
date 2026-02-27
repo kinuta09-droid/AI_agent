@@ -16,7 +16,7 @@ import time
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-from lib_shared import (
+from lib.lib_shared import (
     client,
     tavily_client,
     MODEL_NAME,
@@ -27,7 +27,7 @@ from lib_shared import (
     EDITORIAL_STYLE_RULES,
 )
 
-from tool_obsidian import (
+from tools.tool_obsidian import (
     _extract_and_integrate_sections,
     _determine_parent_moc,
 )

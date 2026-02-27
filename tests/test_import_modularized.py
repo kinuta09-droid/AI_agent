@@ -1,12 +1,12 @@
 import sys
 import os
 
-# Add current directory to path if necessary
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.append(current_dir)
+# Add parent directory to path
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
 
-print(f"Testing imports from: {current_dir}")
+print(f"Testing imports from: {parent_dir}")
 
 try:
     print("Importing tool_web_search from agent_hello...")

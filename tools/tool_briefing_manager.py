@@ -11,7 +11,7 @@ from typing import Callable
 
 import ccxt
 
-from lib_shared import (
+from lib.lib_shared import (
     client, MODEL_NAME, retry,
     VAULT_ROOT, fetch_fear_greed_index,
 )

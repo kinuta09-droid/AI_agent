@@ -1,14 +1,13 @@
 # Antigravity AI Agent - Project Rules
 
-## Architecture
-- **Core Agent**: `agent_hello.py` — Plan-and-Execute + ReAct + Self-Improvement (Gemini gemini-2.5-flash)
-- **Discord Bot**: `bot_discord.py` — Slash commands, PID guard, voice input (Whisper STT)
-- **Universal Launcher**: `main.py` — AI router for all tools
-- **Scheduler**: `agent_scheduler.py` — Cron-like (07:00 daily note, 08:00 news, 08:30 BTC, 09:00 scan, 23:00 dashboard)
-- **Knowledge Base**: Obsidian Vault (`C:\obsidian\Obsidian`)
-- **Output**: `30_Main/` in vault (source for n8n -> Google Docs -> NotebookLM pipeline)
-- **Archive**: `50_Archive/` in vault
-- **Automation**: n8n (self-hosted), backups in `C:\obsidian\Obsidian\Dev_Logs\n8n_backups\`
+## Architecture (Modular)
+- **Root**: `main.py` (entry), `bot_discord.py` (Discord host), `agent_hello.py` (compatibility bridge)
+- **`commands/`**: Bot logic split by feature (Curator, Calendar, News, etc.)
+- **`lib/`**: Core utilities, shared clients, and obsidian helpers.
+- **`tools/`**: External API integrations and specialized tools.
+- **`tests/`**: Unit tests and debugging stubs.
+- **`antigravity_env/`**: Dedicated Python virtual environment.
+- **`scripts/`**: One-off scripts and data processors.
 
 ## Tools
 | File | Purpose |
@@ -18,19 +17,20 @@
 | `tool_daily_note.py` | Daily note auto-generation from template |
 | `tool_lora_factory.py` | LoRA/ComfyUI image generation |
 
-## Coding Standards
+## Coding Standards & Stability
 - **Python**: PEP8. Always `# -*- coding: utf-8 -*-` and explicit `encoding='utf-8'` on file I/O.
+- **Imports**: **MANDATORY** use of absolute package paths (e.g., `from lib.lib_shared import ...`). Never use local imports that skip the package prefix.
+- **Guardian**: Run `py verify_project.py` before any significant commit or bot restart.
 - **Paths**: `os.path.join()` or raw strings with `\\`. Never forward slashes on Windows file ops.
 - **Launcher**: Use `py` (not `python`) on this machine.
-- **Safety**: Never delete user data in `30_Main` without confirmation.
 - **Secrets**: `.env` for all API keys. Never commit `.env`, `token.json`, `credentials.json`.
 
 ## Commands
 ```bash
-py agent_hello.py              # Run core agent
+py verify_project.py           # Pre-flight check (MANDATORY before release)
+py main.py                     # Universal launcher
 py bot_discord.py              # Start Discord bot
 py agent_scheduler.py          # Start scheduler
-py main.py                     # Universal launcher
 py n8n_patrol.py               # Patrol n8n workflows
 py agent_trigger.py            # Trigger webhook
 ```

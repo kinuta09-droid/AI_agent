@@ -25,7 +25,7 @@ TEMPLATE_PATH = os.path.join(VAULT_ROOT, "99_Assets", "Templates", "Tpl_Daily.md
 # ---------------------------------------------------------
 
 try:
-    from tool_calendar import (
+    from tools.tool_calendar import (
         tool_get_calendar,
         tool_get_tasks,
         GOOGLE_CALENDAR_ENABLED,
@@ -37,7 +37,7 @@ except ImportError:
     print("[DailyNote] Warning: tool_calendar not available")
 
 try:
-    from agent_hello import tool_fetch_daily_news
+    from lib.agent_hello import tool_fetch_daily_news
     _HAS_NEWS_TOOL = True
 except ImportError:
     _HAS_NEWS_TOOL = False

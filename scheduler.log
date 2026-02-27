@@ -1,0 +1,70 @@
+2026-02-27 17:05:53,003 - INFO - ⏳ Started. Waiting for scheduled time...
+2026-02-27 17:05:53,003 - INFO -  - 06:55: Trend Cache Refresh
+2026-02-27 17:05:53,003 - INFO -  - 07:00: Daily Note Generation
+2026-02-27 17:05:53,004 - INFO -  - 08:00: Daily News
+2026-02-27 17:05:53,004 - INFO -  - 08:30: BTC Analysis
+2026-02-27 17:05:53,004 - INFO -  - 09:00: Crypto Market Scan
+2026-02-27 17:05:53,004 - INFO -  - 09:30: YouTube Playlist Summary
+2026-02-27 17:05:53,004 - INFO -  - 17:00: Task Reminder
+2026-02-27 17:05:53,004 - INFO -  - 23:00: Performance Dashboard
+2026-02-27 17:05:53,004 - INFO -  - 23:30: Weekly Archive (30_Main → 50_Archive)
+2026-02-27 17:05:53,005 - INFO -  - 23:35: Knowledge Base Merge & Summary
+2026-02-27 17:05:53,005 - INFO -  - 23:45: Interest Profile Refresh
+2026-02-27 17:05:53,005 - INFO -  - 23:50: Mirror Inquiry Analysis
+2026-02-27 19:16:13,233 - INFO - 🛑 Scheduler stopped by user.
+2026-02-28 00:27:23,596 - INFO - ⏳ Started. Waiting for scheduled time...
+2026-02-28 00:27:23,596 - INFO -  - 07:00: Daily Note Generation
+2026-02-28 00:27:23,597 - INFO -  - 08:00: Daily News
+2026-02-28 00:27:23,597 - INFO -  - 08:30: BTC Analysis
+2026-02-28 00:27:23,597 - INFO -  - 09:00: Crypto Market Scan
+2026-02-28 00:27:23,597 - INFO -  - 23:00: Performance Dashboard
+2026-02-28 00:27:23,597 - INFO -  - 23:30: Weekly Archive (30_Main → 50_Archive)
+2026-02-28 01:08:53,969 - INFO - ⏳ Started. Waiting for scheduled time...
+2026-02-28 01:08:53,969 - INFO -  - 07:30: Daily Sync (Calendar/Tasks)
+2026-02-28 01:08:53,970 - INFO -  - 08:00: Daily News
+2026-02-28 01:08:53,970 - INFO -  - 08:30: BTC Analysis
+2026-02-28 01:08:53,970 - INFO -  - 09:00: Crypto Market Scan
+2026-02-28 01:08:53,970 - INFO -  - 23:00: Performance Dashboard
+2026-02-28 01:08:53,970 - INFO -  - 23:30: Weekly Archive (30_Main → 50_Archive)
+2026-02-28 01:11:26,920 - INFO - ⏳ Started. Waiting for scheduled time...
+2026-02-28 01:11:26,922 - INFO -  - 07:30: Daily Sync (Calendar/Tasks)
+2026-02-28 01:11:26,923 - INFO -  - 08:00: Daily News
+2026-02-28 01:11:26,923 - INFO -  - 08:30: BTC Analysis
+2026-02-28 01:11:26,923 - INFO -  - 09:00: Crypto Market Scan
+2026-02-28 01:11:26,923 - INFO -  - 23:00: Performance Dashboard
+2026-02-28 01:11:26,923 - INFO -  - 23:30: Weekly Archive (30_Main → 50_Archive)
+2026-02-28 01:12:14,524 - INFO - ⏳ Started. Waiting for scheduled time...
+2026-02-28 01:12:14,524 - INFO -  - 07:30: Daily Sync (Calendar/Tasks)
+2026-02-28 01:12:14,525 - INFO -  - 08:00: Daily News
+2026-02-28 01:12:14,525 - INFO -  - 08:30: BTC Analysis
+2026-02-28 01:12:14,525 - INFO -  - 09:00: Crypto Market Scan
+2026-02-28 01:12:14,525 - INFO -  - 23:00: Performance Dashboard
+2026-02-28 01:12:14,525 - INFO -  - 23:30: Weekly Archive (30_Main → 50_Archive)
+2026-02-28 01:12:37,363 - INFO - ⏳ Started. Waiting for scheduled time...
+2026-02-28 01:12:37,363 - INFO -  - 07:30: Daily Sync (Calendar/Tasks)
+2026-02-28 01:12:37,363 - INFO -  - 08:00: Daily News
+2026-02-28 01:12:37,363 - INFO -  - 08:30: BTC Analysis
+2026-02-28 01:12:37,363 - INFO -  - 09:00: Crypto Market Scan
+2026-02-28 01:12:37,364 - INFO -  - 23:00: Performance Dashboard
+2026-02-28 01:12:37,364 - INFO -  - 23:30: Weekly Archive (30_Main → 50_Archive)
+2026-02-28 01:16:09,066 - INFO - ⏳ Started. Waiting for scheduled time...
+2026-02-28 01:16:09,066 - INFO -  - 07:30: Daily Sync (Calendar/Tasks)
+2026-02-28 01:16:09,066 - INFO -  - 08:00: Daily News
+2026-02-28 01:16:09,067 - INFO -  - 08:30: BTC Analysis
+2026-02-28 01:16:09,067 - INFO -  - 09:00: Crypto Market Scan
+2026-02-28 01:16:09,067 - INFO -  - 23:00: Performance Dashboard
+2026-02-28 01:16:09,067 - INFO -  - 23:30: Weekly Archive (30_Main → 50_Archive)
+2026-02-28 01:20:47,213 - INFO - ⏳ Started. Waiting for scheduled time...
+2026-02-28 01:20:47,221 - INFO -  - 07:00: Daily Note Generation
+2026-02-28 01:20:47,221 - INFO -  - 08:00: Daily News
+2026-02-28 01:20:47,226 - INFO -  - 08:30: BTC Analysis
+2026-02-28 01:20:47,227 - INFO -  - 09:00: Crypto Market Scan
+2026-02-28 01:20:47,236 - INFO -  - 23:00: Performance Dashboard
+2026-02-28 01:20:47,238 - INFO -  - 23:30: Weekly Archive (30_Main → 50_Archive)
+2026-02-28 01:20:54,276 - INFO - ⏳ Started. Waiting for scheduled time...
+2026-02-28 01:20:54,277 - INFO -  - 07:00: Daily Note Generation
+2026-02-28 01:20:54,277 - INFO -  - 08:00: Daily News
+2026-02-28 01:20:54,277 - INFO -  - 08:30: BTC Analysis
+2026-02-28 01:20:54,277 - INFO -  - 09:00: Crypto Market Scan
+2026-02-28 01:20:54,277 - INFO -  - 23:00: Performance Dashboard
+2026-02-28 01:20:54,277 - INFO -  - 23:30: Weekly Archive (30_Main → 50_Archive)

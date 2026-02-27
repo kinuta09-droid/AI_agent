@@ -1,0 +1,101 @@
+# -*- coding: utf-8 -*-
+import discord
+from discord import app_commands
+import asyncio
+import io
+
+# ツールをインポート
+from engine_plan_execute import (
+    run_plan_and_execute,
+    extract_patterns,
+    generate_performance_dashboard,
+)
+
+# bot_discord から注入されるヘルパー
+_log_to_daily_note = None
+_send_long_message = None
+_send_with_fallback = None
+
+def init_helpers(log_func, send_long_func, send_fallback_func):
+    global _log_to_daily_note, _send_long_message, _send_with_fallback
+    _log_to_daily_note = log_func
+    _send_long_message = send_long_func
+    _send_with_fallback = send_fallback_func
+
+async def cmd_agent(interaction: discord.Interaction, goal: str):
+    """AIエージェントに自律的なタスクを依頼"""
+    await interaction.response.defer()
+
+    async def discord_pe_callback(step_data):
+        phase = step_data.get("phase", "")
+        try:
+            if phase == "plan" and step_data.get("status") == "planning":
+                await interaction.edit_original_response(content="🧠 **計画を策定中...**")
+            elif phase == "plan" and step_data.get("status") == "ready":
+                plan = step_data.get("plan", [])
+                lines = [f"{p['step']}. {p['task']}" for p in plan]
+                plan_text = "\n".join(lines)
+                await interaction.edit_original_response(content=f"📋 **実行計画:**\n{plan_text}\n\n▶️ 実行開始...")
+            elif phase == "execute" and step_data.get("status") == "running":
+                await interaction.edit_original_response(
+                    content=f"▶️ **実行中:** Step {step_data.get('step', '?')}/{step_data.get('total', '?')} - {step_data.get('task', '')}..."
+                )
+            elif phase == "execute" and step_data.get("status") in ("done", "error"):
+                icon = "✅" if step_data["status"] == "done" else "❌"
+                await interaction.edit_original_response(
+                    content=f"{icon} Step {step_data.get('step', '?')}/{step_data.get('total', '?')} - {step_data.get('task', '')}\n\n⏳ 次のステップへ..."
+                )
+            elif phase == "critique":
+                await interaction.edit_original_response(content="🔍 **結果を評価中...**")
+            elif phase == "revision":
+                await interaction.edit_original_response(
+                    content=f"🔄 **再計画中... (修正 {step_data.get('attempt', 1)}回目)**"
+                )
+        except Exception as e:
+            print(f"[AgentUI] Warning: Failed to update status: {e}")
+
+    try:
+        loop = asyncio.get_running_loop()
+        def sync_callback_wrapper(step_data):
+            asyncio.run_coroutine_threadsafe(discord_pe_callback(step_data), loop)
+        result = await asyncio.to_thread(run_plan_and_execute, goal, step_callback=sync_callback_wrapper)
+    except Exception as e:
+        result = f"Error: {e}"
+
+    if _log_to_daily_note:
+        await asyncio.to_thread(_log_to_daily_note, "command", f"/agent {goal}", result)
+    
+    if _send_with_fallback:
+        await _send_with_fallback(interaction, f"✅ **Mission Complete**\n\n{result}", title="Agent Execution", emoji="🤖")
+    else:
+        await interaction.followup.send(f"✅ **Mission Complete**\n\n{result[:1900]}")
+
+async def cmd_agent_stats(interaction: discord.Interaction):
+    """AIエージェントの実行統計と学習状況を表示"""
+    await interaction.response.defer()
+    try:
+        patterns = await asyncio.to_thread(extract_patterns)
+        if patterns.get("message"):
+            await interaction.followup.send(f"📊 {patterns['message']}")
+            return
+
+        embed = discord.Embed(title="📊 Agent Performance Stats", color=0x3498DB)
+        embed.add_field(
+            name="全体統計",
+            value=f"総実行: **{patterns['total']}**回\n成功率: **{patterns['success_rate']:.0%}**\n平均時間: **{patterns['avg_duration']:.1f}秒**",
+            inline=False,
+        )
+        tool_rel = patterns.get("tool_reliability", {})
+        sorted_tools = sorted(tool_rel.items(), key=lambda x: x[1], reverse=True)[:5]
+        if sorted_tools:
+            tool_lines = "\n".join(f"  {t}: **{r:.0%}**" for t, r in sorted_tools)
+            embed.add_field(name="ツール信頼性 TOP5", value=tool_lines, inline=False)
+        
+        insights = patterns.get("insights", "")
+        if insights:
+            embed.add_field(name="AI分析", value=insights[:1000], inline=False)
+
+        await interaction.followup.send(embed=embed)
+        await asyncio.to_thread(generate_performance_dashboard)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {e}")

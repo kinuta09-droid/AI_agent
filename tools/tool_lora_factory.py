@@ -10,11 +10,11 @@ import shutil
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-from lib_comfy_client import ComfyUIClient
+from lib.lib_comfy_client import ComfyUIClient
 
 # Gemini フィルタ用（lazy — import失敗してもタグ付け自体は動く）
 try:
-    from lib_shared import client as gemini_client, MODEL_NAME, safe_json_loads
+    from lib.lib_shared import gemini_client, MODEL_NAME, safe_json_loads
     _HAS_GEMINI = True
 except ImportError:
     _HAS_GEMINI = False
@@ -289,7 +289,7 @@ def run_lora_factory() -> str:
     print()
     
     # Obsidian Link Generation
-    from lib_obsidian_utils import get_obsidian_uri
+    from lib.lib_obsidian_utils import get_obsidian_uri
     obsidian_uri = get_obsidian_uri(output_base)
     
     summary_parts = [

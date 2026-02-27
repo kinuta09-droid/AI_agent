@@ -14,7 +14,7 @@ import pandas as pd
 import pandas_ta as ta_lib
 import requests as req
 
-from lib_shared import (
+from lib.lib_shared import (
     client, tavily_client, MODEL_NAME, retry,
     VAULT_ROOT, CRYPTO_DIR_NAME, TRADE_LOG_PATH,
     fetch_fear_greed_index, load_json, save_json,

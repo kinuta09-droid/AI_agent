@@ -10,9 +10,9 @@ import json
 import datetime
 import time
 import re
-from lib_shared import (
+from lib.lib_shared import (
     WORK_DIR, VAULT_ROOT, EXCLUDE_DIRS,
-    find_file_in_vault, client, MODEL_NAME, retry
+    find_file_in_vault, client, MODEL_NAME, retry, fetch_fear_greed_index
 )
 
 def tool_vault_search(keywords: str) -> str:

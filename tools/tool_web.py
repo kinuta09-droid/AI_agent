@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 from youtube_transcript_api import YouTubeTranscriptApi
 import feedparser
 
-from lib_shared import (
+from lib.lib_shared import (
     client, tavily_client, MODEL_NAME,
     WORK_DIR, VAULT_ROOT, NEWS_DIR_NAME, DAILY_NOTE_DIR_NAME,
     retry, EDITORIAL_STYLE_RULES,

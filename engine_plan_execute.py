@@ -10,7 +10,7 @@ import datetime
 import time
 import traceback
 
-from lib_shared import (
+from lib.lib_shared import (
     client, MODEL_NAME, MAX_STEPS,
     safe_json_loads, load_json, save_json,
     LEARNING_DB_PATH, PERFORMANCE_DASHBOARD_PATH, VAULT_ROOT,
@@ -24,7 +24,7 @@ from lib_shared import (
 def _tool_curate_wrapper() -> str:
     """The Curator のトピック提案をReActツールとして公開する。"""
     try:
-        from tool_curator import read_main_context, get_curation_suggestions
+        from tools.tool_curator import read_main_context, get_curation_suggestions
         context = read_main_context()
         suggestions = get_curation_suggestions(context, "normal")
         topics = suggestions.get("topics", [])
@@ -49,7 +49,7 @@ def _get_tools_config():
 
     # Calendar/Task tools (lazy import)
     try:
-        from tool_calendar import (
+        from tools.tool_calendar import (
             tool_get_calendar, tool_add_event,
             tool_create_task, tool_get_tasks,
             tool_sync_to_daily_note,
@@ -59,13 +59,13 @@ def _get_tools_config():
         _has_calendar = False
 
     # crypto tools from tool_crypto
-    from tool_crypto import tool_analyze_crypto, tool_scan_crypto_market, tool_audit_predictions
+    from tools.tool_crypto import tool_analyze_crypto, tool_scan_crypto_market, tool_audit_predictions
 
     # briefing tool
-    from tool_briefing_manager import tool_generate_briefing
+    from tools.tool_briefing_manager import tool_generate_briefing
 
     # gmail tool
-    from tool_gmail_manager import tool_gmail_check
+    from tools.tool_gmail_manager import tool_gmail_check
 
     config_tools = [
         {"name": "tool_web_search", "usage": "tool_web_search(query)", "description": "Web検索 (Tavily)"},
@@ -714,53 +714,61 @@ def extract_patterns() -> dict:
 
 def get_enhanced_prompt(user_query: str) -> str:
     """過去の学習から関連情報を取得し、Planner プロンプトに追記する文字列を返す。"""
+    parts = []
+    
+    # 顧客評価・自己改善ループからの学習パッチ注入
+    try:
+        from engine_self_improve import get_approved_patch_hints
+        patches = get_approved_patch_hints()
+        if patches:
+            parts.append(patches)
+    except Exception as e:
+        print(f"[SelfImprove] Error loading patches: {e}")
+
     db = _load_learning_db()
     execs = db.get("executions", [])
 
-    if len(execs) < 5:
-        return ""
+    if len(execs) >= 5:
+        # 直近の失敗パターンを収集
+        recent_failures = []
+        for e in reversed(execs[-20:]):
+            if e["outcome"] == "failed" and e.get("failure_reason"):
+                recent_failures.append(
+                    f"- クエリ「{e['query'][:50]}」→ {e['failure_reason'][:100]}"
+                )
+            if len(recent_failures) >= 3:
+                break
 
-    # 直近の失敗パターンを収集
-    recent_failures = []
-    for e in reversed(execs[-20:]):
-        if e["outcome"] == "failed" and e.get("failure_reason"):
-            recent_failures.append(
-                f"- クエリ「{e['query'][:50]}」→ {e['failure_reason'][:100]}"
-            )
-        if len(recent_failures) >= 3:
-            break
+        # ツール信頼性の低いものを警告
+        tool_calls = {}
+        tool_success = {}
+        for e in execs:
+            is_ok = e["outcome"] in ("success", "partial")
+            for t in e.get("tools_used", []):
+                if not t:
+                    continue
+                tool_calls[t] = tool_calls.get(t, 0) + 1
+                if is_ok:
+                    tool_success[t] = tool_success.get(t, 0) + 1
 
-    # ツール信頼性の低いものを警告
-    tool_calls = {}
-    tool_success = {}
-    for e in execs:
-        is_ok = e["outcome"] in ("success", "partial")
-        for t in e.get("tools_used", []):
-            if not t:
-                continue
-            tool_calls[t] = tool_calls.get(t, 0) + 1
-            if is_ok:
-                tool_success[t] = tool_success.get(t, 0) + 1
+        low_reliability = []
+        for t, count in tool_calls.items():
+            if count >= 3:
+                rate = tool_success.get(t, 0) / count
+                if rate < 0.8:
+                    low_reliability.append(f"- {t}: 成功率 {rate:.0%}（要注意）")
 
-    low_reliability = []
-    for t, count in tool_calls.items():
-        if count >= 3:
-            rate = tool_success.get(t, 0) / count
-            if rate < 0.8:
-                low_reliability.append(f"- {t}: 成功率 {rate:.0%}（要注意）")
+        # 平均ステップ数
+        avg_steps = sum(e.get("plan_steps", 0) for e in execs) / len(execs)
 
-    # 平均ステップ数
-    avg_steps = sum(e.get("plan_steps", 0) for e in execs) / len(execs)
-
-    parts = []
-    if recent_failures:
-        parts.append("【過去の失敗から学んだ注意事項】")
-        parts.extend(recent_failures)
-    if low_reliability:
-        parts.append("【信頼性の低いツール】")
-        parts.extend(low_reliability)
-    if avg_steps:
-        parts.append(f"【参考】平均的なタスクは {avg_steps:.1f} ステップで完了している")
+        if recent_failures:
+            parts.append("【過去の失敗から学んだ注意事項】")
+            parts.extend(recent_failures)
+        if low_reliability:
+            parts.append("【信頼性の低いツール】")
+            parts.extend(low_reliability)
+        if avg_steps:
+            parts.append(f"【参考】平均的なタスクは {avg_steps:.1f} ステップで完了している")
 
     return "\n".join(parts) if parts else ""
 

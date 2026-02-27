@@ -1,8 +1,5 @@
-import sys
-import os
-
-# Set up path to import from current directory
-sys.path.append(os.getcwd())
+# Set up path to import from parent directory
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent_hello import tool_get_youtube_transcript
 

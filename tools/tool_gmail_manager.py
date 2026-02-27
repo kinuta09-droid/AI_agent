@@ -11,12 +11,12 @@ import datetime
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-from lib_shared import (
+from lib.lib_shared import (
     client, MODEL_NAME, VAULT_ROOT, retry, safe_json_loads,
 )
-from lib_obsidian_utils import get_obsidian_uri
-from lib_gmail_client import fetch_recent_emails
-from tool_briefing_manager import add_provider
+from lib.lib_obsidian_utils import get_obsidian_uri
+from lib.lib_gmail_client import fetch_recent_emails
+from tools.tool_briefing_manager import add_provider
 
 
 # ---------------------------------------------------------
