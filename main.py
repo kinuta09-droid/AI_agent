@@ -154,10 +154,11 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--menu":
         menu_loop()
     else:
-        # デフォルトは並列起動。Ctrl+Cでメニューへ。
+        # デフォルトは並列起動。Ctrl+Cでプログラム終了。
         try:
             run_and_monitor()
-            print("\n  [System] Back to menu mode.")
-            menu_loop()
+            print("\n  [System] All systems shut down cleanly.")
+            sys.exit(0)
         except KeyboardInterrupt:
-            pass
+            print("\n  [System] Forced exit.")
+            sys.exit(0)

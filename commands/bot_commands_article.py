@@ -74,13 +74,19 @@ async def send_next_question(thread: discord.Thread):
         await thread.send(msg)
     else:
         # すべての質問が終了
-        await thread.send("✨ すべての質問に回答いただきました！記事を執筆しています... (1-2分かかります)")
+        await thread.send("✨ すべての質問に回答いただきました！まずは初稿を執筆します... (1-2分かかります)")
         
-        # 記事生成
+        # 記事の初稿生成
         loop = asyncio.get_event_loop()
-        final_article = await loop.run_in_executor(None, generate_final_article, session["draft"], session["qa_pairs"])
+        draft_article = await loop.run_in_executor(None, generate_final_article, session["draft"], session["qa_pairs"])
         
-        if final_article:
+        if draft_article:
+            await thread.send("📝 初稿の作成が完了しました。続いてプロ編集者（AI）の視点による品質チェックと推敲（リフレクション）を実行します... 🔍")
+            
+            # リフレクションループの実行
+            from scripts.generate_experiential_article import run_article_reflection_loop
+            final_article = await loop.run_in_executor(None, run_article_reflection_loop, draft_article, session["draft"], session["qa_pairs"])
+            
             # 長い場合は分割
             if len(final_article) > 1900:
                 parts = [final_article[i:i+1900] for i in range(0, len(final_article), 1900)]
@@ -113,6 +119,13 @@ async def handle_article_reply(message: discord.Message):
     idx = session["current_index"]
     session["qa_pairs"][idx]["answer"] = message.content
     session["current_index"] += 1
-    
+
     # 次の質問へ
     await send_next_question(message.channel)
+
+async def cmd_article(interaction: discord.Interaction):
+    """
+    /article コマンドのエントリポイント
+    """
+    await interaction.response.send_modal(ArticleDraftModal())
+

@@ -1,0 +1,2 @@
+
+Error: Command "status" not found. Did you mean: sync:status, tags, tasks?

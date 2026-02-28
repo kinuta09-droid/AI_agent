@@ -109,6 +109,74 @@ def generate_final_article(draft_text: str, qa_pairs: list) -> str:
         print(f"\n[エラー] 記事の生成に失敗しました: {e}")
         return ""
 
+from tools.tool_client_review import evaluate_deliverable
+from lib.lib_persona import build_persona_prompt
+
+def refine_article(draft_article: str, draft_text: str, qa_pairs: list, evaluation_result: dict, persona_id: str = "writing") -> str:
+    qa_text = ""
+    for idx, qa in enumerate(qa_pairs, 1):
+        qa_text += f"\n【ポイント{idx}: {qa['point']}】\n"
+        qa_text += f"ユーザーの回答: {qa['answer']}\n"
+
+    persona_prompt = build_persona_prompt(persona_id)
+
+    prompt = f"""
+あなたはプロフェッショナルな編集者であり、同時に優れたゴーストライターです。
+以下の「初稿記事」に対して、厳しい品質チェック（5軸評価）のフィードバックが入りました。
+これを元に記事を推敲（リライト）してください。
+
+{persona_prompt}
+
+【初稿記事】
+{draft_article}
+
+【プロ編集者からのフィードバック】
+・平均スコア: {evaluation_result.get('scores', {{}}).get('average', 0)} / 10.0
+・フィードバック: {evaluation_result.get('feedback', '')}
+・最優先改善点: {evaluation_result.get('priority_improvement', '')}
+
+【推敲の絶対条件】
+1. **ユーザーの生々しい文体の完全維持**: ユーザーの生の言葉（以下の「Q&A回答」）の文脈、言葉遣い（です・ます等の語尾、一人称）、感情表現は**絶対に崩さない**でください。フィードバックを受けても「AI臭い美辞麗句（革新的な〜など）」は絶対に追加しないこと。
+2. フィードバックで指摘された構成の甘さ、説得力の弱さ、読者のペインポイント解決に関する部分のみを、ユーザーのトーンに合わせた自然な形で補強してください。
+3. Markdown形式で出力し、挨拶や「修正しました」などの前置き・後書きは一切不要です。完成した記事本文のみを出力してください。
+
+【ユーザー自身の生の言葉（Q&A回答） - 文体のベースとして必ず維持すること】
+{qa_text}
+"""
+    try:
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+        )
+        return response.text.strip()
+    except Exception as e:
+        print(f"\n[エラー] 記事の推敲に失敗しました: {e}")
+        return draft_article
+
+def run_article_reflection_loop(draft_article: str, draft_text: str, qa_pairs: list, max_loops: int = 2) -> str:
+    """初稿に対して自己評価と推敲のループを実行し、最終版を返す"""
+    current_article = draft_article
+    job_description = f"読者の共感を呼ぶ、ユーザーの等身大の体験に基づいた自分らしい体験談記事の作成。\n元の下書き: {draft_text[:500]}..."
+    
+    for i in range(max_loops):
+        print(f"[Reflection] Loop {i+1} starting...")
+        eval_result = evaluate_deliverable(current_article, job_description, persona_id="writing")
+        
+        status = eval_result.get("status", "fail")
+        avg_score = eval_result.get("scores", {}).get("average", 0)
+        print(f"[Reflection] Score: {avg_score} ({status})")
+        print(f"[Reflection] Feedback: {eval_result.get('feedback', '')}")
+        
+        if status == "pass" or avg_score >= 8.5:
+            print("[Reflection] Passed! Quality is sufficient.")
+            break
+            
+        if i < max_loops - 1:
+            print("[Reflection] Revising based on feedback...")
+            current_article = refine_article(current_article, draft_text, qa_pairs, eval_result, persona_id="writing")
+            
+    return current_article
+    
 def main():
     print("="*60)
     print(" 体験談記事化 ジェネレーター (Generate Experiential Article) ")

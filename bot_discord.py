@@ -894,6 +894,9 @@ async def cmd_persona_list(interaction: discord.Interaction):
     await bot_commands_client.cmd_persona_list(interaction)
 
 
+@tree.command(name="article", description="対話形式で自分らしい体験談記事を作成する")
+async def cmd_article(interaction: discord.Interaction):
+    await bot_commands_article.cmd_article(interaction)
 # ---------------------------------------------------------
 # Webhook Listener (HTTP Shortcuts → Obsidian)
 # ---------------------------------------------------------

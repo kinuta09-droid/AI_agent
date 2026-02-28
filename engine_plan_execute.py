@@ -67,6 +67,9 @@ def _get_tools_config():
     # gmail tool
     from tools.tool_gmail_manager import tool_gmail_check
 
+    # advanced obsidian tools
+    from tools.tool_obsidian import tool_fetch_context, tool_move_note, tool_refactor_note
+
     config_tools = [
         {"name": "tool_web_search", "usage": "tool_web_search(query)", "description": "Web検索 (Tavily)"},
         {"name": "tool_vault_search", "usage": "tool_vault_search(keywords)", "description": "Vault内を検索"},
@@ -83,6 +86,9 @@ def _get_tools_config():
         {"name": "tool_curate_topics", "usage": "tool_curate_topics()", "description": "ナレッジトピック提案"},
         {"name": "tool_generate_briefing", "usage": "tool_generate_briefing()", "description": "デイリーブリーフィング生成（Crypto + Vault更新の3項目要約）"},
         {"name": "tool_gmail_check", "usage": "tool_gmail_check(hours=12)", "description": "直近の重要メール要約（AIトリアージ + Obsidian保存）"},
+        {"name": "tool_fetch_context", "usage": "tool_fetch_context(filenames_comma_separated)", "description": "複数ファイルの文書をまとめて読み込む(カンマ区切り)"},
+        {"name": "tool_move_note", "usage": "tool_move_note(old_filename, new_dir_or_filename)", "description": "ノートを別フォルダに移動・リネーム"},
+        {"name": "tool_refactor_note", "usage": "tool_refactor_note(filename, instructions)", "description": "指示に基づいて既存のノート全体の内容を再構築・上書きする"},
     ]
     tools_map = {
         "tool_web_search": _ah.tool_web_search,
@@ -100,6 +106,9 @@ def _get_tools_config():
         "tool_curate_topics": _tool_curate_wrapper,
         "tool_generate_briefing": tool_generate_briefing,
         "tool_gmail_check": tool_gmail_check,
+        "tool_fetch_context": tool_fetch_context,
+        "tool_move_note": tool_move_note,
+        "tool_refactor_note": tool_refactor_note,
     }
 
     # Calendar/Task tools を動的に追加

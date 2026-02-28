@@ -45,6 +45,46 @@ py agent_trigger.py            # Trigger webhook
 - Bot duplicate processes -> PID guard (`bot_discord.pid`) prevents multiple instances
 - Windows `os.kill(pid, SIGTERM)` throws `OSError [WinError 87]` for dead PIDs -> catch `OSError`
 
+## Encoding Safety Rules (Windows Japanese Environment)
+> Lesson learned: 2026-02-27 — AI agent caused system-wide contamination by setting
+> PYTHONIOENCODING at the OS/session level instead of fixing encoding at the script level.
+
+### Scope Hierarchy — Never exceed the minimum required scope
+```
+LEVEL 4: Registry (setx / reg add)          ← NEVER TOUCH
+LEVEL 3: PowerShell profile / .bashrc       ← NEVER without explicit user instruction
+LEVEL 2: os.environ["PYTHONIOENCODING"]     ← NEVER (pollutes all child processes)
+LEVEL 1: subprocess(env={...}, encoding=)   ← OK: per-process only
+LEVEL 0: sys.stdout.reconfigure() / open()  ← PREFERRED: per-script/handle only
+```
+
+### NEVER (絶対禁止)
+- `setx PYTHONIOENCODING utf-8` (persistent registry write)
+- `os.environ["PYTHONIOENCODING"] = "utf-8"` (propagates to all subprocesses)
+- Adding encoding settings to PowerShell profile or `.bashrc` without explicit user request
+- `chcp 65001` as a persistent system change
+
+### ALLOWED (正しい対処)
+```python
+# Script-level stdout fix (entry point only)
+sys.stdout.reconfigure(encoding='utf-8')
+
+# All file I/O — always explicit
+with open(path, encoding='utf-8') as f: ...
+
+# Subprocess — per-call, with error resilience
+subprocess.run(cmd, capture_output=True, encoding='utf-8', errors='replace')
+
+# Subprocess with env injection (child process only)
+subprocess.Popen(cmd, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+```
+
+### Decision Flow for encoding errors
+1. Identify scope: which process/file is failing?
+2. Fix at LEVEL 0 or LEVEL 1 — never higher
+3. If higher scope seems needed → STOP and ask user first
+4. After fix: verify `git log` and other tools still display Japanese correctly
+
 ## Workflow
 1. Analyze the request
 2. Check existing files (`agent_hello.py`, relevant `tool_*.py`)
