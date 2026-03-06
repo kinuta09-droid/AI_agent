@@ -13,18 +13,12 @@ import datetime
 import time
 import subprocess
 import traceback
-import glob
-import uuid
 from functools import wraps
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from tavily import TavilyClient
-from youtube_transcript_api import YouTubeTranscriptApi
-import feedparser
-import logging
 import requests
-from bs4 import BeautifulSoup
 
 # Windowsコンソールでの文字化け防止
 sys.stdout.reconfigure(encoding='utf-8')

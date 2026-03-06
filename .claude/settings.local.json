@@ -14,7 +14,14 @@
       "Bash(py -c \"from tools.tool_daily_note import generate_daily_note; print\\(''tool_daily_note OK''\\)\")",
       "Bash(py -c \"import agent_scheduler; print\\(''agent_scheduler OK''\\)\")",
       "Bash(ls lib/lib_gmail_client*.py tools/tool_audio*.py)",
-      "Bash(py -c \":*)"
+      "Bash(py -c \":*)",
+      "Bash(ls -1 c:AI_agent/*.py)",
+      "Bash(ls -la /c/AI_agent/test*.py)",
+      "Bash(grep -l \"pytest\\\\|unittest\\\\|test_\" /c/AI_agent/*.py)",
+      "Bash(grep -n \"today_str\\\\|datetime.date.today\" /c/AI_agent/tools/*.py)",
+      "Bash(grep -rn \"__import__\\\\|importlib.import_module\" /c/AI_agent/*.py)",
+      "Bash(git rm lib/lib_gmail_client_legacy.py)",
+      "Bash(ls *.py)"
     ]
   }
 }
