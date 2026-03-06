@@ -14,8 +14,8 @@ if not api_key:
     print("Error: GOOGLE_API_KEY not found.")
     sys.exit(1)
 
-client = genai.Client(api_key=api_key)
-MODEL_NAME = 'gemini-2.5-flash'
+client = genai.Client(api_key=api_key, http_options=types.HttpOptions(api_version="v1beta"))
+MODEL_NAME = 'gemini-3.1-flash-lite-preview'
 
 print(f"Testing Grounding with {MODEL_NAME}...")
 

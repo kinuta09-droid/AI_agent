@@ -22,7 +22,7 @@ load_dotenv(r'C:\AI_agent\.env')
 
 import agent_hello
 
-VAULT_ROOT = r'C:\obsidian\Obsidian'
+VAULT_ROOT = r'D:\マイドライブ\Obsidian'
 DAILY_DIR = os.path.join(VAULT_ROOT, '01_Daily')
 TEMPLATE_PATH = os.path.join(VAULT_ROOT, '99_Assets', 'Templates', 'Tpl_Daily.md')
 

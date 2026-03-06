@@ -25,7 +25,7 @@ from google.genai import types
 
 load_dotenv(os.path.join(root_dir, '.env'))
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
+MODEL_NAME = os.getenv("MODEL_NAME", "gemini-3.1-flash-lite-preview")
 
 if not GOOGLE_API_KEY:
     print("Error: GOOGLE_API_KEY not found in .env")

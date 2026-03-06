@@ -1,32 +1,44 @@
-from google import genai
-from google.genai.types import GenerateContentConfig, GoogleSearch, HttpOptions, Tool
-from dotenv import load_dotenv
+import sys
 import os
 from google import genai
-from google.genai.types import GenerateContentConfig, GoogleSearch, Tool
+from google.genai.types import GenerateContentConfig, GoogleSearch, Tool, HttpOptions
+from dotenv import load_dotenv
 
-load_dotenv()  # カレントディレクトリの .env を読む
-API_KEY = os.getenv("GOOGLE_API_KEY")
+# プロジェクトルートをパスに追加
+sys.path.insert(0, r'C:\AI_agent')
 
-client = genai.Client(api_key=API_KEY)
-client = genai.Client(http_options=HttpOptions(api_version="v1"))
+try:
+    from lib.lib_shared import api_key, MODEL_NAME
+    print(f"✅ Loaded config from lib_shared. Testing with model: {MODEL_NAME}")
+except ImportError as e:
+    print(f"❌ Failed to import lib_shared: {e}")
+    sys.exit(1)
 
-response = client.models.generate_content(
-    model="gemini-2.5-flash",
-    contents="次のアメリカ合衆国の皆既日食はいつですか？",
-    config=GenerateContentConfig(
-        tools=[
-            # Google Search ツール
-            Tool(google_search=GoogleSearch())
-        ],
-    ),
-)
+client = genai.Client(api_key=api_key, http_options=HttpOptions(api_version="v1beta"))
 
-print("TEXT:", response.text)
+print(f"Generating content with grounding for {MODEL_NAME}...")
+try:
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents="次のアメリカ合衆国の皆既日食はいつですか？",
+        config=GenerateContentConfig(
+            tools=[
+                Tool(google_search=GoogleSearch())
+            ],
+        ),
+    )
 
-meta = response.candidates[0].grounding_metadata
-print("search_entry_point:", getattr(meta, "search_entry_point", None))
-print("chunks:", len(meta.grounding_chunks) if meta and meta.grounding_chunks else 0)
-for c in meta.grounding_chunks or []:
-    if c.web:
-        print("-", c.web.title, c.web.uri)
+    print("TEXT:", response.text)
+
+    if response.candidates[0].grounding_metadata:
+        meta = response.candidates[0].grounding_metadata
+        print("search_entry_point:", getattr(meta, "search_entry_point", None))
+        print("chunks:", len(meta.grounding_chunks) if meta.grounding_chunks else 0)
+        for c in meta.grounding_chunks or []:
+            if c.web:
+                print("-", c.web.title, c.web.uri)
+    else:
+        print("⚠️ No grounding metadata found.")
+
+except Exception as e:
+    print(f"❌ Error during search test: {e}")

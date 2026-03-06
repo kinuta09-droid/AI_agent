@@ -13,14 +13,14 @@ try:
     print(f"Result: {result}")
     
     # Verify file existence
-    expected_path = r"C:\obsidian\Obsidian\30_Main\TestNote.md"
+    expected_path = r"D:\マイドライブ\Obsidian\30_Main\TestNote.md"
     if os.path.exists(expected_path):
         print("✅ File created at correct path.")
     else:
         print(f"❌ File NOT found at {expected_path}")
         
     # Check for double folder
-    double_path = r"C:\obsidian\Obsidian\30_Main\30_Main\TestNote.md"
+    double_path = r"D:\マイドライブ\Obsidian\30_Main\30_Main\TestNote.md"
     if os.path.exists(double_path):
         print(f"❌ Double folder detected at {double_path}")
     else:

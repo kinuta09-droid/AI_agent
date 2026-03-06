@@ -18,9 +18,9 @@ sys.stdout.reconfigure(encoding='utf-8')
 # ---------------------------------------------------------
 
 LEARNING_DB = r'C:\AI_agent\learning_db.json'
-SCHEDULER_LOG = r'C:\obsidian\Obsidian\Dev_Logs\scheduler.log'
-ERROR_LOG = r'C:\obsidian\Obsidian\Dev_Logs\error.log'
-CHAT_HISTORY = r'C:\obsidian\Obsidian\Dev_Logs\chat_history.json'
+SCHEDULER_LOG = r'D:\マイドライブ\Obsidian\Dev_Logs\scheduler.log'
+ERROR_LOG = r'D:\マイドライブ\Obsidian\Dev_Logs\error.log'
+CHAT_HISTORY = r'D:\マイドライブ\Obsidian\Dev_Logs\chat_history.json'
 
 
 # ---------------------------------------------------------

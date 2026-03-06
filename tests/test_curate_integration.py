@@ -31,7 +31,7 @@ def test_curate_integration():
         match = result.split("[[")[1].split("]]")[0]
         # match is like "Knowledge_Base/2026-02-09_Test_Agent_Integration.md"
         
-        filepath = os.path.join(r'C:\obsidian\Obsidian\30_Main', match)
+        filepath = os.path.join(r'D:\マイドライブ\Obsidian\30_Main', match)
         
         if os.path.exists(filepath):
             with open(filepath, 'r', encoding='utf-8') as f:

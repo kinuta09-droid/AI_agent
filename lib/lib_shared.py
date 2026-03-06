@@ -41,7 +41,10 @@ if not tavily_api_key:
     print("Warning: TAVILY_API_KEY not found. Search may fail.")
 
 try:
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(api_version="v1beta")
+    )
 except Exception as e:
     print(f"Error initializing Gemini API: {e}")
     sys.exit(1)
@@ -56,13 +59,13 @@ except Exception as e:
 # CONFIGURATION
 # ---------------------------------------------------------
 
-MODEL_NAME = 'gemini-2.5-flash'
+MODEL_NAME = 'gemini-3.1-flash-lite-preview'
 MAX_RETRIES = 5
 MAX_STEPS = 10  # ReAct loop limit
 
-HISTORY_FILE = r'C:\obsidian\Obsidian\Dev_Logs\chat_history.json'
-WORK_DIR = r'C:\obsidian\Obsidian'
-VAULT_ROOT = r'C:\obsidian\Obsidian'
+HISTORY_FILE = r'D:\マイドライブ\Obsidian\Dev_Logs\chat_history.json'
+WORK_DIR = r'D:\マイドライブ\Obsidian'
+VAULT_ROOT = r'D:\マイドライブ\Obsidian'
 
 REPORT_DIR = os.path.join(WORK_DIR, '40_Report')
 OUTPUT_FILE = os.path.join(WORK_DIR, 'Dev_Logs', 'Agent_output.md')

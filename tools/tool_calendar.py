@@ -21,7 +21,7 @@ CREDENTIALS_PATH = os.path.join("C:\\AI_agent", "credentials.json")
 TOKEN_PATH = os.path.join("C:\\AI_agent", "token.json")
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
-VAULT_ROOT = r"C:\obsidian\Obsidian"
+VAULT_ROOT = r"D:\マイドライブ\Obsidian"
 DAILY_NOTE_DIR = os.path.join(VAULT_ROOT, "01_Daily")
 
 GOOGLE_CALENDAR_ENABLED = os.getenv("GOOGLE_CALENDAR_ENABLED", "false").lower() == "true"

@@ -5,7 +5,7 @@ import requests
 import sys
 
 # Configuration
-WATCH_FILE = r"C:\obsidian\Obsidian\Dev_Logs\Agent_Input.md"
+WATCH_FILE = r"D:\マイドライブ\Obsidian\Dev_Logs\Agent_Input.md"
 WEBHOOK_URL = "http://localhost:5678/webhook/mobile-agent"
 
 def get_file_mtime(filepath):

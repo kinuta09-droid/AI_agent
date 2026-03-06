@@ -3,8 +3,8 @@ const { exec
 } = require('child_process');
 
 // --- 設定エリア（あなたの環境のパスを反映済み） ---
-const inputPath = 'C:\\obsidian\\Obsidian\\Dev_Logs\\Agent_Input.md';
-// const outputPath = 'C:\\obsidian\\Obsidian\\Agent_Output.md'; // Removed
+const inputPath = 'D:\\マイドライブ\\Obsidian\\Dev_Logs\\Agent_Input.md';
+// const outputPath = 'D:\\マイドライブ\\Obsidian\\Agent_Output.md'; // Removed
 const pythonPath = 'C:\\AI_agent\\antigravity_env\\Scripts\\python.exe';
 const scriptPath = 'C:\\AI_agent\\agent_hello.py';
 // --------------------------------------------------
