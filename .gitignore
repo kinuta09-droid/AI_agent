@@ -22,3 +22,19 @@ learning_db.json
 # OS
 Thumbs.db
 Desktop.ini
+
+# PID files
+agent_scheduler.pid
+
+# Obsidian CLI debug outputs
+obsidian_*.txt
+obsidian_*.json
+
+# Temp / debug files
+benchmark_results.json
+recent_sync.txt
+test.txt
+grounding_test.txt
+
+# Root-level test scripts (use tests/ folder)
+test_obsidian_*.py

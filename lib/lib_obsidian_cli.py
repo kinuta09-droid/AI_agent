@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
-import sys
 import subprocess
-import json
-from typing import Optional, Dict, Any, List
+from typing import List
 
 # To avoid hardcoding, we use a constant. In standard environments Obsidian might be added to PATH.
 # If not, it might reside in %LOCALAPPDATA%/Obsidian/Obsidian.exe

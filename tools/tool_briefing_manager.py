@@ -118,6 +118,13 @@ def get_obsidian_updates() -> str:
 add_provider("Crypto", get_crypto_summary)
 add_provider("Obsidian", get_obsidian_updates)
 
+# gws CLI が利用可能なら予定＋タスクのサマリーを Briefing に含める
+try:
+    from tools.tool_calendar import tool_daily_summary
+    add_provider("Schedule & Tasks", tool_daily_summary)
+except ImportError:
+    pass  # gws / tool_calendar が利用不可の場合はスキップ
+
 
 # ---------------------------------------------------------
 # Main Tool
@@ -166,8 +173,8 @@ def tool_generate_briefing() -> str:
 
     briefing_text = _call_gemini(prompt)
 
-    # 3. Save to 30_Main (timestamp suffix to avoid overwrite)
-    output_dir = os.path.join(VAULT_ROOT, "30_Main")
+    # 3. Save to 30_Main/Briefing (timestamp suffix to avoid overwrite)
+    output_dir = os.path.join(VAULT_ROOT, "30_Main", "Briefing")
     os.makedirs(output_dir, exist_ok=True)
     filename = f"Briefing_{today_str}.md"
     filepath = os.path.join(output_dir, filename)
@@ -200,7 +207,7 @@ type: briefing
     print(f"[Briefing] ✅ Saved: {filepath}")
     return (
         f"Success: ブリーフィング生成完了。"
-        f" Report: [[30_Main/{filename}]]"
+        f" Report: [[30_Main/Briefing/{filename}]]"
         f" (Path: {filepath})"
     )
 

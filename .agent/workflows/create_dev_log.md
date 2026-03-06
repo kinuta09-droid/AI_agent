@@ -11,7 +11,7 @@ description: 開発の区切りで作るアップデートサマリー（Dev Log
    - 変更の意図、技術的な背景、ユーザーにもたらすメリットを整理します。
 
 2. **Obsidianノートの作成**
-   - 保存先パス: `C:\obsidian\Obsidian\Dev_Logs\update`
+   - 保存先パス: `D:\マイドライブ\Obsidian\Dev_Logs\update`
    - ファイル名: `YYYYMMDD_機能追加またはアップデート名.md` (例: `20260228_Obsidian_CLI機能統合.md`)
    - ツール: 手順に沿って `tool_create_note` を使用します。
 

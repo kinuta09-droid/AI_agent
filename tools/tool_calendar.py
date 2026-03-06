@@ -7,6 +7,8 @@ Google Calendar + Todoist + Obsidian Daily Note 連携ツール群。
 import os
 import sys
 import datetime
+import subprocess
+import json
 
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -130,11 +132,90 @@ def _get_todoist_client():
 
 
 # ---------------------------------------------------------
-# Tool: Google Calendar
+# Helper: gws CLI 呼び出し
+# Google API Python クライアントの代わりに gws CLI を使用する。
+# gws CLI は OAuth 認証を独自に管理するため、credentials.json 不要。
+# ---------------------------------------------------------
+
+def _run_gws_command(args: list[str], timeout: int = 30) -> dict | None:
+    """gws CLI コマンドを実行し、JSON結果を返す。失敗時は None。"""
+    try:
+        result = subprocess.run(
+            ["gws"] + args,
+            capture_output=True, text=True, encoding="utf-8",
+            timeout=timeout, shell=True
+        )
+        if result.returncode != 0:
+            return None
+        return json.loads(result.stdout)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+        return None
+
+
+# ---------------------------------------------------------
+# Tool: Google Calendar （gws CLI 版）
 # ---------------------------------------------------------
 
 def tool_get_calendar(date: str = "today", days: int = 1) -> str:
     """Google Calendar から予定を取得する。"""
+    # 日時の解析（従来と同じヘルパーを再利用）
+    try:
+        start_dt = _parse_datetime(date)
+    except ValueError as e:
+        return f"Error: {e}"
+
+    end_dt = start_dt + datetime.timedelta(days=days)
+    time_min = start_dt.isoformat() + "Z" if start_dt.tzinfo is None else start_dt.isoformat()
+    time_max = end_dt.isoformat() + "Z" if end_dt.tzinfo is None else end_dt.isoformat()
+
+    # gws CLI で予定を取得（JSON形式）
+    data = _run_gws_command([
+        "calendar", "events", "list",
+        "--params", json.dumps({
+            "calendarId": "primary",
+            "timeMin": time_min,
+            "timeMax": time_max,
+            "singleEvents": True,
+            "orderBy": "startTime"
+        }),
+        "--format", "json"
+    ])
+
+    # gws CLI が失敗した場合、従来の Google API 版にフォールバック
+    if data is None:
+        return _tool_get_calendar_legacy(date, days)
+
+    events = data.get("items", [])
+    if not events:
+        date_str = start_dt.strftime("%Y-%m-%d")
+        return f"## {date_str} の予定\n予定はありません。"
+
+    # 従来と完全に同じ出力フォーマットを維持
+    lines = [f"## {start_dt.strftime('%Y-%m-%d')} の予定"]
+    for event in events:
+        start = event.get('start', {}).get('dateTime', event.get('start', {}).get('date', ''))
+        end = event.get('end', {}).get('dateTime', event.get('end', {}).get('date', ''))
+
+        if 'T' in start:
+            start_time_str = datetime.datetime.fromisoformat(start).strftime('%H:%M')
+            end_time_str = datetime.datetime.fromisoformat(end).strftime('%H:%M')
+            time_range = f"{start_time_str}-{end_time_str}"
+        else:
+            time_range = "終日"
+
+        summary = event.get('summary', '(無題)')
+        lines.append(f"- {time_range}: {summary}")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------
+# Legacy: 旧 Google API 版 tool_get_calendar（フォールバック用）
+# gws CLI が利用できない場合にのみ呼ばれる。
+# ---------------------------------------------------------
+
+def _tool_get_calendar_legacy(date: str = "today", days: int = 1) -> str:
+    """Google Calendar から予定を取得する（旧 Google API 版）。"""
     service = _get_calendar_service()
     if service is None:
         if not GOOGLE_CALENDAR_ENABLED:
@@ -192,6 +273,53 @@ def tool_get_calendar(date: str = "today", days: int = 1) -> str:
 def tool_add_event(title: str, start_time: str,
                    end_time: str = "", description: str = "") -> str:
     """Google Calendar に予定を追加する。"""
+    # 日時の解析（従来と同じヘルパーを再利用）
+    try:
+        start_dt = _parse_datetime(start_time)
+    except ValueError as e:
+        return f"Error: 開始時刻の解析に失敗: {e}"
+
+    if end_time:
+        try:
+            end_dt = _parse_datetime(end_time)
+        except ValueError:
+            end_dt = start_dt + datetime.timedelta(hours=1)
+    else:
+        end_dt = start_dt + datetime.timedelta(hours=1)
+
+    event_body = {
+        'summary': title,
+        'description': description,
+        'start': {'dateTime': start_dt.isoformat(), 'timeZone': 'Asia/Tokyo'},
+        'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Asia/Tokyo'},
+    }
+
+    # gws CLI で予定を追加
+    data = _run_gws_command([
+        "calendar", "events", "insert",
+        "--params", json.dumps({
+            "calendarId": "primary",
+            "requestBody": event_body
+        }),
+        "--format", "json"
+    ])
+
+    # gws CLI が失敗した場合、従来の Google API 版にフォールバック
+    if data is None:
+        return _tool_add_event_legacy(title, start_time, end_time, description)
+
+    return (f"Success: 予定を追加しました: {title}\n"
+            f"  日時: {start_dt.strftime('%Y-%m-%d %H:%M')} - {end_dt.strftime('%H:%M')}")
+
+
+# ---------------------------------------------------------
+# Legacy: 旧 Google API 版 tool_add_event（フォールバック用）
+# gws CLI が利用できない場合にのみ呼ばれる。
+# ---------------------------------------------------------
+
+def _tool_add_event_legacy(title: str, start_time: str,
+                           end_time: str = "", description: str = "") -> str:
+    """Google Calendar に予定を追加する（旧 Google API 版）。"""
     service = _get_calendar_service()
     if service is None:
         return "Google Calendar が未設定です。credentials.json を配置し .env を設定してください。"
@@ -222,6 +350,57 @@ def tool_add_event(title: str, start_time: str,
                 f"  日時: {start_dt.strftime('%Y-%m-%d %H:%M')} - {end_dt.strftime('%H:%M')}")
     except Exception as e:
         return f"Error: 予定の追加に失敗: {e}"
+
+
+# ---------------------------------------------------------
+# Tool: Daily Summary（gws workflow +standup-report）
+# カレンダー予定と Google Tasks を一括取得してサマリーを生成する。
+# ---------------------------------------------------------
+
+def tool_daily_summary() -> str:
+    """今日のカレンダー予定と未完了タスクをまとめたデイリーサマリーを生成する。"""
+    data = _run_gws_command(["workflow", "+standup-report", "--format", "json"])
+
+    if data is None:
+        # gws が利用できない場合、カレンダーのみのフォールバック
+        return tool_get_calendar("today")
+
+    date_str = data.get("date", datetime.datetime.now().strftime("%Y-%m-%d"))
+    meetings = data.get("meetings", [])
+    tasks = data.get("tasks", [])
+
+    lines = [f"# 📅 {date_str} のデイリーサマリー", ""]
+
+    # カレンダー予定セクション
+    lines.append(f"## 予定 ({data.get('meetingCount', len(meetings))}件)")
+    if meetings:
+        for m in meetings:
+            start = m.get("start", "")
+            end = m.get("end", "")
+            summary = m.get("summary", "(無題)")
+            if "T" in start:
+                start_fmt = datetime.datetime.fromisoformat(start).strftime("%H:%M")
+                end_fmt = datetime.datetime.fromisoformat(end).strftime("%H:%M")
+                lines.append(f"- {start_fmt}-{end_fmt}: {summary}")
+            else:
+                lines.append(f"- 終日: {summary}")
+    else:
+        lines.append("- 予定はありません。")
+
+    lines.append("")
+
+    # タスクセクション
+    lines.append(f"## 未完了タスク ({data.get('taskCount', len(tasks))}件)")
+    if tasks:
+        for t in tasks:
+            title = t.get("title", "(無題)")
+            due = t.get("due", "")
+            due_str = f" (期限: {due})" if due else ""
+            lines.append(f"- [ ] {title}{due_str}")
+    else:
+        lines.append("- タスクはありません。")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------

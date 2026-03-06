@@ -126,6 +126,7 @@ subprocess.Popen(cmd, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
 3. **Evidence**: Show diff or execution results to prove correctness
 4. **Bug fix re-implementation**: After fixing a bug, ask: "Now discard this fix and implement the most elegant solution from scratch"
 5. **No mercy**: Do not approve changes with TODO/FIXME left behind
+6. **Skill Recommendations**: Analyze the changes/task and strongly recommend relevant skills from `antigravity-awesome-skills` (e.g., `@architecture`, `@test-driven-development`) or `gws_cli` (e.g., `gws-*`, `recipe-*`) if applicable.
 
 ## Output Style: Explanatory + Learning
 - When making changes, always explain **why** (not just what)

@@ -11,7 +11,7 @@ import time
 import traceback
 
 from lib.lib_shared import (
-    client, MODEL_NAME, MAX_STEPS,
+    client, MODEL_NAME, MODEL_NAME_HEAVY, MAX_STEPS,
     safe_json_loads, load_json, save_json,
     LEARNING_DB_PATH, PERFORMANCE_DASHBOARD_PATH, VAULT_ROOT,
 )
@@ -243,6 +243,17 @@ def execute_plan(plan: list, step_callback=None) -> dict:
         # ツールの引数を Gemini に解決させる
         args = _resolve_tool_args(tool_name, args_hint, task, accumulated_context)
 
+        # tool_create_note の場合、content を専用プロンプトでリッチに再生成する
+        # JSON制約内では長文生成が困難なため、2段階方式で品質を担保する
+        if tool_name == "tool_create_note" and accumulated_context:
+            rich_content = _generate_rich_content(
+                task=task,
+                filename=args.get("filename", ""),
+                context=accumulated_context,
+            )
+            if rich_content:
+                args["content"] = rich_content
+
         if tool_name not in tools_map:
             observation = f"Error: Unknown tool '{tool_name}'"
             success = False
@@ -311,7 +322,7 @@ def _resolve_tool_args(tool_name: str, args_hint: str, task: str,
     ctx_summary = ""
     if context:
         ctx_summary = "\n".join(
-            f"Step {c['step']}: {c['task']} → {str(c['observation'])[:500]}"
+            f"Step {c['step']}: {c['task']} → {str(c['observation'])[:1500]}"
             for c in context[-3:]
         )
 
@@ -336,7 +347,12 @@ def _resolve_tool_args(tool_name: str, args_hint: str, task: str,
   - query: 「最新」と言われたら {today_str[:4]}年 を含めてください（例: "AI 最新トレンド {today_str[:4]}"）
 - tool_create_note の場合:
   - filename: レポートのタイトル（日本語OK）
-  - content: レポートの本文（これまでの実行結果から内容を生成してください）
+  - content: 以下の品質基準を満たす充実したレポート本文を生成すること
+    ★ これまでの実行結果（observation）に含まれる具体的な情報を全て活用する
+    ★ 固有名詞、数値データ、人名、日付、URL等は省略せず含める
+    ★ 見出し（##）、箇条書き、太字を使って構造化する
+    ★ 最低でも500文字以上の本文を生成する（短すぎるレポートは不可）
+    ★ 「概要」「詳細」「まとめ」などのセクションに分けて整理する
   - summary: 1-2行の要約
 - 引数の値は「これまでの実行結果」の observation から抽出・生成してください
 - 引数が不要なら空の辞書 {{}} を返してください
@@ -359,6 +375,55 @@ JSONのみ出力（説明不要）:"""
     if tool_name == "tool_create_note":
         return {"filename": "Report.md", "content": "生成に失敗しました", "summary": ""}
     return {}
+
+
+def _generate_rich_content(task: str, filename: str, context: list) -> str:
+    """tool_create_note 用のリッチなレポート本文を専用プロンプトで生成する。
+
+    JSON制約から解放された自由形式で、充実したMarkdownレポートを生成する。
+    """
+    ctx_text = "\n\n".join(
+        f"--- Step {c['step']}: {c['task']} ---\n{str(c['observation'])[:3000]}"
+        for c in context[-5:]
+    )
+
+    prompt = f"""あなたは優秀なリサーチャーです。以下の調査結果を元に、Obsidianノート用の充実したレポート本文を作成してください。
+
+【タスク】: {task}
+【ファイル名】: {filename}
+
+【調査結果（これを元にレポートを作成）】:
+{ctx_text}
+
+【レポート作成ルール】
+1. Markdown形式で構造化すること（##見出し、箇条書き、**太字**を活用）
+2. 以下のセクション構成を推奨:
+   - ### 1. 概要と背景
+   - ### 2. 詳細分析（メインの調査内容）
+   - ### 3. 特徴・ポイント
+   - ### 4. 最新動向と今後の展望
+3. 調査結果に含まれる具体的な情報は全て含めること:
+   - 固有名詞（人名、企業名、サービス名）
+   - 数値データ（金額、人数、日付、パーセンテージ）
+   - 重要な引用や事実関係
+4. 最低1500文字以上の本文を生成すること
+5. 抽象的・一般論的な記述ではなく、調査結果の具体的データに基づいた記述にする
+6. フロントマター（---）は付けない。純粋な本文のみ出力する
+
+レポート本文を出力してください:"""
+
+    try:
+        response = client.models.generate_content(model=MODEL_NAME_HEAVY, contents=prompt)
+        content = response.text.strip()
+        # 最低限の品質チェック: 短すぎる場合はNoneを返してフォールバック
+        if len(content) < 300:
+            print(f"[P&E] ⚠️ Rich content too short ({len(content)} chars), falling back to args content")
+            return None
+        print(f"[P&E] 📝 Generated rich content: {len(content)} chars")
+        return content
+    except Exception as e:
+        print(f"[P&E] ⚠️ _generate_rich_content failed: {e}")
+        return None
 
 
 def _summarize_results(results: list) -> str:
@@ -389,7 +454,7 @@ def critique_results(user_query: str, plan: list, results: list) -> dict:
 
     results_summary = json.dumps(
         [{"step": r["step"], "task": r["task"], "success": r["success"],
-          "observation": str(r["observation"])[:800]}
+          "observation": str(r["observation"])[:1500]}
          for r in results],
         ensure_ascii=False, indent=2,
     )
@@ -556,24 +621,36 @@ def run_plan_and_execute(user_query: str, step_callback=None) -> str:
 def _generate_final_summary(user_query: str, results: list) -> str:
     """Gemini を使って実行結果から最終サマリーを生成する。"""
     results_text = "\n".join(
-        f"Step {r['step']}: {r['task']} → {'✅' if r['success'] else '❌'} {str(r['observation'])[:500]}"
+        f"Step {r['step']}: {r['task']} → {'✅' if r['success'] else '❌'} {str(r['observation'])[:1500]}"
         for r in results
     )
 
-    prompt = f"""以下のタスク実行結果を、ユーザーへの簡潔な報告にまとめてください。
+    prompt = f"""以下のタスク実行結果を、ユーザーへの報告にまとめてください。
 
 【ユーザーの要求】: {user_query}
 
 【実行結果】:
 {results_text}
 
-【ルール】
+【出力フォーマット】
+以下の2部構成で出力してください：
+
+## 📋 結論
+- 実行結果の要点を2〜3行で簡潔にまとめる
 - 作成したファイルがあれば [[ファイル名]] 形式でリンクを記載
-- 簡潔に（5行以内）
-- 実行サマリーのみ（詳細はファイルに保存済み）"""
+
+## 📝 詳細レポート
+- 実行結果から得られた具体的な情報を整理して記述する
+- 検索で得たデータ、数値、固有名詞、手順などを漏らさず含める
+- 箇条書きや見出しを使って読みやすく構造化する
+- 「調べて」系の要求の場合は、調べた内容の本文をここに充実させること
+
+【注意】
+- 実行結果の observation に含まれる具体的な情報は可能な限り詳細レポートに反映する
+- 一般論や抽象的な表現だけで終わらせず、実データに基づいた内容にする"""
 
     try:
-        response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
+        response = client.models.generate_content(model=MODEL_NAME_HEAVY, contents=prompt)
         return response.text.strip()
     except Exception:
         return _summarize_results(results)

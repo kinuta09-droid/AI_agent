@@ -5,14 +5,12 @@ Extracted from agent_hello.py
 """
 
 import os
-import sys
-import json
 import datetime
 import time
 import re
 from lib.lib_shared import (
     WORK_DIR, VAULT_ROOT, EXCLUDE_DIRS,
-    find_file_in_vault, client, MODEL_NAME, retry, fetch_fear_greed_index
+    find_file_in_vault, client, MODEL_NAME, MODEL_NAME_HEAVY, retry
 )
 from lib.lib_obsidian_cli import run_obsidian_cli
 
@@ -36,9 +34,9 @@ def tool_vault_search(keywords: str) -> str:
                 for i, line in enumerate(lines):
                     if any(k.lower() in line.lower() for k in kw_list):
                         score += 1
-                        # Expand context: 2 lines before, 6 lines after (トークン節約)
-                        start = max(0, i - 2)
-                        end = min(len(lines), i + 6)
+                        # Expand context: 5 lines before, 25 lines after
+                        start = max(0, i - 5)
+                        end = min(len(lines), i + 25)
                         snippet = "\n".join(lines[start:end])
                         break
                 if score > 0:
@@ -285,19 +283,12 @@ def tool_merge_weekly_reports() -> str:
             f.write(merged_content)
 
         for file in files_processed:
-            src_rel = f"30_Main/{file}"
-            dst_rel = f"50_Archive/{week_str}/{file}"
+            src = os.path.join(target_dir, file)
+            dst = os.path.join(archive_sub_dir, file)
             try:
-                # Use Obsidian CLI to move the file, preserving links automatically
-                run_obsidian_cli(["move", src_rel, dst_rel])
+                os.rename(src, dst)
             except Exception as e:
-                print(f"Error moving {file} via CLI, falling back to os.rename: {e}")
-                src = os.path.join(target_dir, file)
-                dst = os.path.join(archive_sub_dir, file)
-                try:
-                    os.rename(src, dst)
-                except Exception as ex:
-                    print(f"Fallback Error moving {file}: {ex}")
+                print(f"Error moving {file}: {e}")
 
         return f"Success: Created 50_Archive/Summary/{summary_filename}. Merged {len(files_processed)} files. Originals moved to 50_Archive/{week_str}."
 
@@ -337,12 +328,10 @@ def tool_move_note(old_filename: str, new_dir_or_filename: str) -> str:
     # 既存のパスからVault相対パスを計算
     src_rel = os.path.relpath(old_path, VAULT_ROOT).replace('\\', '/')
     
-    # 移動先が拡張子を含まない、スラッシュを含まない場合は既存フォルダ直下とみなす（簡易構築）
-    if not new_dir_or_filename.endswith('.md') and '/' not in new_dir_or_filename:
-        dst_rel = f"{new_dir_or_filename}/{os.path.basename(old_path)}"
-    else:
-        dst_rel = new_dir_or_filename.replace('\\', '/')
-        if not dst_rel.endswith('.md'): dst_rel += '.md'
+    # .md で終わる場合はリネーム（フルパス指定）、それ以外はフォルダ移動（元ファイル名を維持）
+    dst_rel = new_dir_or_filename.replace('\\', '/')
+    if not dst_rel.endswith('.md'):
+        dst_rel = dst_rel.rstrip('/') + '/' + os.path.basename(old_path)
     
     try:
         run_obsidian_cli(["move", src_rel, dst_rel])
@@ -374,7 +363,7 @@ def tool_refactor_note(filename: str, instructions: str) -> str:
 - バッククォートによるコードブロック表記（```markdown ... ```）は除外し、生の中身だけを出力してください。
 '''
         response = client.models.generate_content(
-            model=MODEL_NAME, contents=prompt
+            model=MODEL_NAME_HEAVY, contents=prompt
         )
         new_content = response.text.strip()
         if new_content.startswith("```markdown"):

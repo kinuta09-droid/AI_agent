@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -rn \"C:\\\\\\\\obsidian\" --include=\"*.py\" .)",
+      "Bash(python -c \" import ast import os def find_unused_imports\\(filepath\\): try: with open\\(filepath, ''r'', encoding=''utf-8''\\) as f: tree = ast.parse\\(f.read\\(\\), filepath\\) except: return [] imported = set\\(\\) used = set\\(\\) for node in ast.walk\\(tree\\): if isinstance\\(node, \\(ast.Import, ast.ImportFrom\\)\\): for alias in node.names: name = alias.asname or alias.name imported.add\\(name.split\\(''.''\\)[0]\\) elif isinstance\\(node, ast.Name\\): used.add\\(node.id\\) return list\\(imported - used\\) for root, dirs, files in os.walk\\(''.''\\): dirs[:] = [d for d in dirs if d not in [''antigravity_env'', ''__pycache__'', ''.git'', ''tests'']] for file in files: if file.endswith\\(''.py''\\): path = os.path.join\\(root, file\\) unused = find_unused_imports\\(path\\) if unused and len\\(unused\\) <= 5: print\\(f''{path}: {unused}''\\) \")",
+      "Bash(grep -rn \"r\"\"D:\\\\\\\\マイドライブ\\\\|r''D:\" /c/AI_agent --include=\"*.py\")",
+      "Bash(ls -la /c/AI_agent/*.txt /c/AI_agent/*.json)",
+      "Bash(ls -1 c:AI_agentobsidian_*.*)",
+      "Bash(ls -1 c:AI_agenttest_obsidian*.py c:AI_agentbenchmark_results.json c:AI_agentrecent_sync.txt c:AI_agenttest.txt c:AI_agentgrounding_test.txt)",
+      "Bash(ls -1 \"/c/AI_agent\"/*.txt \"/c/AI_agent\"/*.json)",
+      "Bash(git rm -f --ignore-unmatch obsidian_help.txt obsidian_recents.txt obsidian_recents_cmd.txt obsidian_recents_direct.txt obsidian_search.txt obsidian_search2.txt obsidian_search_err.txt obsidian_search_err2.txt obsidian_search_out.txt obsidian_search_out2.txt obsidian_status.txt obsidian_search.json benchmark_results.json recent_sync.txt test.txt grounding_test.txt test_obsidian_cli.py test_obsidian_cli2.py test_obsidian_tools.py)",
+      "Bash(py -c \"from tools.tool_obsidian import tool_vault_search; print\\(''tool_obsidian OK''\\)\")",
+      "Bash(py -c \"from lib.lib_obsidian_cli import run_obsidian_cli; print\\(''lib_obsidian_cli OK''\\)\")",
+      "Bash(py -c \"from tools.tool_daily_note import generate_daily_note; print\\(''tool_daily_note OK''\\)\")",
+      "Bash(py -c \"import agent_scheduler; print\\(''agent_scheduler OK''\\)\")"
+    ]
+  }
+}

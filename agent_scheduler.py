@@ -14,7 +14,6 @@ import logging
 import traceback
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
-import signal
 
 # ---------------------------------------------------------
 # PID Guard: 多重起動防止
@@ -26,7 +25,7 @@ def _check_existing_scheduler():
     if not os.path.exists(PID_FILE):
         return
     try:
-        with open(PID_FILE, 'r') as f:
+        with open(PID_FILE, 'r', encoding='utf-8') as f:
             old_pid = int(f.read().strip())
         if old_pid == os.getpid():
             return
@@ -46,7 +45,7 @@ def _check_existing_scheduler():
         except OSError: pass
 
 def _write_pid():
-    with open(PID_FILE, 'w') as f: f.write(str(os.getpid()))
+    with open(PID_FILE, 'w', encoding='utf-8') as f: f.write(str(os.getpid()))
 
 def _cleanup_pid():
     try: os.remove(PID_FILE)

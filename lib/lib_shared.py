@@ -60,6 +60,8 @@ except Exception as e:
 # ---------------------------------------------------------
 
 MODEL_NAME = 'gemini-3.1-flash-lite-preview'
+# コンテンツ生成・最終サマリー等、出力品質が重要なタスク向け
+MODEL_NAME_HEAVY = 'gemini-2.5-flash'
 MAX_RETRIES = 5
 MAX_STEPS = 10  # ReAct loop limit
 

@@ -46,11 +46,11 @@ def _check_existing_bot():
     if not os.path.exists(PID_FILE):
         return
     try:
-        with open(PID_FILE, 'r') as f:
+        with open(PID_FILE, 'r', encoding='utf-8') as f:
             old_pid = int(f.read().strip())
         if old_pid == os.getpid():
             return
-        
+
         # Windows でプロセスが存在するか確認
         import ctypes
         PROCESS_QUERY_INFORMATION = 0x0400
@@ -71,7 +71,7 @@ def _check_existing_bot():
 
 def _write_pid():
     """自身の PID を記録する。"""
-    with open(PID_FILE, 'w') as f:
+    with open(PID_FILE, 'w', encoding='utf-8') as f:
         f.write(str(os.getpid()))
 
 
