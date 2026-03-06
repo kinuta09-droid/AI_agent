@@ -15,6 +15,8 @@ sys.stdout.reconfigure(encoding='utf-8')
 from dotenv import load_dotenv
 load_dotenv(r'C:\AI_agent\.env')
 
+from lib.lib_shared import _run_gws_command
+
 # ---------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------
@@ -132,24 +134,8 @@ def _get_todoist_client():
 
 
 # ---------------------------------------------------------
-# Helper: gws CLI 呼び出し
-# Google API Python クライアントの代わりに gws CLI を使用する。
-# gws CLI は OAuth 認証を独自に管理するため、credentials.json 不要。
+# Tool: Google Calendar （gws CLI 版）
 # ---------------------------------------------------------
-
-def _run_gws_command(args: list[str], timeout: int = 30) -> dict | None:
-    """gws CLI コマンドを実行し、JSON結果を返す。失敗時は None。"""
-    try:
-        result = subprocess.run(
-            ["gws"] + args,
-            capture_output=True, text=True, encoding="utf-8",
-            timeout=timeout, shell=True
-        )
-        if result.returncode != 0:
-            return None
-        return json.loads(result.stdout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
-        return None
 
 
 # ---------------------------------------------------------

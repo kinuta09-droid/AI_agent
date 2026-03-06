@@ -72,6 +72,15 @@ try:
 except ImportError:
     _HAS_DAILY_NOTE = False
 
+# Audio Transcription Sync (optional)
+try:
+    from tools.tool_audio_automation import tool_sync_audio_transcriptions
+    _HAS_AUDIO = True
+except ImportError:
+    _HAS_AUDIO = False
+    def tool_sync_audio_transcriptions():
+        return "Audio: tool_audio_automation not available"
+
 # Load environment variables
 load_dotenv(r'C:\AI_agent\.env')
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -155,6 +164,107 @@ SCHEDULE = [
         "name": "Performance Dashboard",
         "func": generate_performance_dashboard
     },
+    # Audio Transcription Sync (Check every 30 mins)
+    {
+        "time": "00:00",
+        "name": "Audio Transcription Sync (Hourly)",
+        "func": tool_sync_audio_transcriptions
+    },
+    {
+        "time": "00:30",
+        "name": "Audio Transcription Sync (Half-hourly)",
+        "func": tool_sync_audio_transcriptions
+    },
+    {
+        "time": "01:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "01:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "02:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "02:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "03:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "03:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "04:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "04:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "05:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "05:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "06:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "06:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "07:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "07:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "08:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "08:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "09:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "09:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "10:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "10:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "11:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "11:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "12:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "12:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "13:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "13:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "14:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "14:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "15:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "15:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "16:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "16:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "17:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "17:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "18:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "18:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "19:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "19:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "20:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "20:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "21:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "21:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "22:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "22:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
+    {
+        "time": "23:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
     {
         "time": "23:30",
         "name": "Weekly Archive (30_Main → 50_Archive)",

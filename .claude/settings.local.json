@@ -12,7 +12,9 @@
       "Bash(py -c \"from tools.tool_obsidian import tool_vault_search; print\\(''tool_obsidian OK''\\)\")",
       "Bash(py -c \"from lib.lib_obsidian_cli import run_obsidian_cli; print\\(''lib_obsidian_cli OK''\\)\")",
       "Bash(py -c \"from tools.tool_daily_note import generate_daily_note; print\\(''tool_daily_note OK''\\)\")",
-      "Bash(py -c \"import agent_scheduler; print\\(''agent_scheduler OK''\\)\")"
+      "Bash(py -c \"import agent_scheduler; print\\(''agent_scheduler OK''\\)\")",
+      "Bash(ls lib/lib_gmail_client*.py tools/tool_audio*.py)",
+      "Bash(py -c \":*)"
     ]
   }
 }

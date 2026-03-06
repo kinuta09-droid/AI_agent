@@ -11,6 +11,7 @@ import json
 import re
 import datetime
 import time
+import subprocess
 import traceback
 import glob
 import uuid
@@ -162,6 +163,24 @@ def retry(max_retries=MAX_RETRIES, initial_delay=2):
             raise
         return wrapper
     return decorator_retry
+
+def _run_gws_command(args: list[str], timeout: int = 30) -> dict | None:
+    """gws CLI コマンドを実行し、JSON結果を返す。失敗時は None。"""
+    import shutil
+    gws_exe = shutil.which("gws")
+    if gws_exe is None:
+        return None
+    try:
+        result = subprocess.run(
+            [gws_exe] + args,
+            capture_output=True, text=True, encoding="utf-8",
+            timeout=timeout
+        )
+        if result.returncode != 0:
+            return None
+        return json.loads(result.stdout)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+        return None
 
 def fetch_fear_greed_index() -> tuple[int, str]:
     """Fear & Greed Index を取得。失敗時はデフォルト(50, 'Neutral')を返す。"""
