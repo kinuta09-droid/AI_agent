@@ -14,7 +14,14 @@ from lib.lib_shared import (
     client, MODEL_NAME, MODEL_NAME_HEAVY, MAX_STEPS,
     safe_json_loads, load_json, save_json,
     LEARNING_DB_PATH, PERFORMANCE_DASHBOARD_PATH, VAULT_ROOT,
+    retry,
 )
+
+
+@retry(max_retries=3, initial_delay=2)
+def _gemini_call(model: str, prompt: str):
+    """Gemini API 呼び出しを retry ラッパーで保護する共通ヘルパー。"""
+    return client.models.generate_content(model=model, contents=prompt)
 
 
 # ---------------------------------------------------------
@@ -262,7 +269,7 @@ def generate_plan(user_query: str) -> dict:
     "expected_outcome": "最終的に何が達成されるか"
 }}"""
 
-    response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
+    response = _gemini_call(MODEL_NAME, prompt)
     return safe_json_loads(response.text)
 
 
@@ -471,7 +478,7 @@ def _generate_rich_content(task: str, filename: str, context: list) -> str:
 レポート本文を出力してください:"""
 
     try:
-        response = client.models.generate_content(model=MODEL_NAME_HEAVY, contents=prompt)
+        response = _gemini_call(MODEL_NAME_HEAVY, prompt)
         content = response.text.strip()
         # 最低限の品質チェック: 短すぎる場合はNoneを返してフォールバック
         if len(content) < 300:
@@ -572,7 +579,7 @@ def critique_results(user_query: str, plan: list, results: list) -> dict:
 - status=failed: 根本的に失敗、リトライ不可"""
 
     try:
-        response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
+        response = _gemini_call(MODEL_NAME, prompt)
         return safe_json_loads(response.text)
     except Exception as e:
         return {"status": "ok", "feedback": f"Critic evaluation failed ({e}), accepting results."}
@@ -708,7 +715,7 @@ def _generate_final_summary(user_query: str, results: list) -> str:
 - 一般論や抽象的な表現だけで終わらせず、実データに基づいた内容にする"""
 
     try:
-        response = client.models.generate_content(model=MODEL_NAME_HEAVY, contents=prompt)
+        response = _gemini_call(MODEL_NAME_HEAVY, prompt)
         return response.text.strip()
     except Exception:
         return _summarize_results(results)
@@ -841,7 +848,7 @@ def extract_patterns() -> dict:
 
 簡潔に（各項目1-2文）:"""
 
-            resp = client.models.generate_content(model=MODEL_NAME, contents=prompt)
+            resp = _gemini_call(MODEL_NAME, prompt)
             insights = resp.text.strip()
         except Exception:
             insights = ""
@@ -1051,7 +1058,7 @@ def run_react_loop(user_query, initial_history=None, step_callback=None):
         """
 
         try:
-            response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
+            response = _gemini_call(MODEL_NAME, prompt)
             text = response.text
             
             # JSON Parse
