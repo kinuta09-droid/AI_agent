@@ -21,8 +21,7 @@ Usage:
 
 import os
 import sys
-
-sys.stdout.reconfigure(encoding='utf-8')
+import datetime
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -170,7 +169,6 @@ class BrowserSession:
         Returns:
             保存されたファイルの絶対パス
         """
-        import datetime
         os.makedirs(SCREENSHOT_DIR, exist_ok=True)
         if not filename:
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -23,8 +23,6 @@ import argparse
 import time
 import concurrent.futures
 
-sys.stdout.reconfigure(encoding='utf-8')
-
 # プロジェクトルートを sys.path に追加（tools/ 直接実行時対応）
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -132,24 +130,27 @@ def _search_single_query(query: str, min_likes: int, min_rt: int) -> list[dict]:
     return results
 
 
-def _load_seen_ids() -> set[str]:
-    """キャッシュから取得済みツイートIDセットを読み込む。"""
+def _load_seen_ids() -> tuple[set[str], list[str]]:
+    """キャッシュから取得済みツイートID (set, list) を読み込む。
+    set は O(1) 検索用、list は挿入順保持（古い→新しい順）。
+    """
     cache_path = os.path.normpath(SEEN_IDS_CACHE)
     if not os.path.exists(cache_path):
-        return set()
+        return set(), []
     try:
         with open(cache_path, encoding="utf-8") as f:
-            return set(json.load(f))
+            id_list: list[str] = json.load(f)
+        return set(id_list), id_list
     except (json.JSONDecodeError, OSError):
-        return set()
+        return set(), []
 
 
-def _save_seen_ids(seen_ids: set[str]) -> None:
-    """取得済みツイートIDをキャッシュに書き込む（直近5,000件に制限）。"""
+def _save_seen_ids(ordered_ids: list[str]) -> None:
+    """取得済みツイートIDをキャッシュに書き込む（挿入順を保ち直近5,000件に制限）。"""
     cache_path = os.path.normpath(SEEN_IDS_CACHE)
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-    # 無限増加防止: 新しいIDを優先しつつ5,000件に切り詰め
-    trimmed = list(seen_ids)[-5000:]
+    # 末尾が最新: リスト末尾5,000件を保持（古いIDを捨てる）
+    trimmed = ordered_ids[-5000:]
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(trimmed, f)
 
@@ -162,9 +163,9 @@ def fetch_trending_ai_posts(
     """複数クエリを並列実行し、新規投稿のみ返す（差分取得）。"""
     print(f"\n[XTrend] === PHASE 1: FETCH ({len(queries)} queries, min_likes={min_likes}) ===")
 
-    # キャッシュから既読IDを読み込み
-    seen_ids: set[str] = _load_seen_ids()
-    cached_count = len(seen_ids)
+    # キャッシュから既読IDを読み込み（set: 高速検索用, list: 挿入順保持用）
+    seen_ids_set, seen_ids_list = _load_seen_ids()
+    cached_count = len(seen_ids_set)
     print(f"[XTrend] Cached IDs: {cached_count} (skipping already-seen tweets)")
 
     all_posts: list[dict] = []
@@ -179,24 +180,18 @@ def fetch_trending_ai_posts(
             posts = fut.result()
             for p in posts:
                 tid = p["id"]
-                if tid and tid not in seen_ids and tid not in new_ids:
+                if tid and tid not in seen_ids_set and tid not in new_ids:
                     new_ids.add(tid)
                     all_posts.append(p)
 
-    # 取得済みIDキャッシュを更新
-    seen_ids.update(new_ids)
-    _save_seen_ids(seen_ids)
-
-    skipped = sum(
-        1 for fut_posts in [fut.result() for fut in futures]
-        for p in fut_posts
-        if p["id"] in seen_ids - new_ids
-    ) if futures else 0
+    # 取得済みIDキャッシュを更新（挿入順リストに新IDを末尾追加）
+    seen_ids_list.extend(sorted(new_ids))   # sorted で決定的な順序を保証
+    _save_seen_ids(seen_ids_list)
 
     # エンゲージメント降順でソート（likes + retweets×2 の複合スコア）
     all_posts.sort(key=lambda x: x["likes"] + x["retweets"] * 2, reverse=True)
 
-    print(f"[XTrend] New posts: {len(all_posts)} (cached IDs now: {len(seen_ids)})")
+    print(f"[XTrend] New posts: {len(all_posts)}, skipped (cached): {cached_count}, total cached: {len(seen_ids_list)}")
     return all_posts
 
 
@@ -232,14 +227,16 @@ def _call_gemini_analyze(posts_json: str) -> str:
 
 
 def _extract_json(raw: str) -> list[dict]:
-    """LLM出力からJSON配列を抽出する。"""
+    """LLM出力からJSON配列を抽出する。前置テキストやコードブロックに対応。"""
     raw = raw.strip()
-    # コードブロック除去
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip().rstrip("```").strip()
+    # ``` コードブロックが含まれる場合は中身だけ取り出す
+    m = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', raw)
+    if m:
+        raw = m.group(1).strip()
+    # コードブロックがなくても [ で始まる JSON 配列を探す
+    start = raw.find('[')
+    if start > 0:
+        raw = raw[start:]
     return json.loads(raw)
 
 
@@ -559,6 +556,7 @@ def run(
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description="X Trend AI Feature Collector")
     parser.add_argument("--query",     nargs="+", help="検索クエリ（複数可）")
     parser.add_argument("--min-likes", type=int, default=DEFAULT_MIN_LIKES,
