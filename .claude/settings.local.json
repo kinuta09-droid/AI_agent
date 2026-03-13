@@ -21,7 +21,25 @@
       "Bash(grep -n \"today_str\\\\|datetime.date.today\" /c/AI_agent/tools/*.py)",
       "Bash(grep -rn \"__import__\\\\|importlib.import_module\" /c/AI_agent/*.py)",
       "Bash(git rm lib/lib_gmail_client_legacy.py)",
-      "Bash(ls *.py)"
+      "Bash(ls *.py)",
+      "WebFetch(domain:github.com)",
+      "Read(//d/マイドライブ/Obsidian/30_Main/**)",
+      "Bash(py tools/tool_xtrend.py --min-likes 300)",
+      "Bash(py -c \"import sys; print\\(sys.path\\)\")",
+      "Bash(py -m tools.tool_xtrend --min-likes 300)",
+      "Bash(py -m tools.tool_xtrend --min-likes 300 --no-save)",
+      "Bash(py -m tools.tool_xtrend --prompt 3)",
+      "Bash(py -m tools.tool_xtrend --prompt 18)",
+      "Bash(antigravity_env/Scripts/pip install playwright -q)",
+      "Bash(antigravity_env/Scripts/playwright install chromium)",
+      "Bash(c:/AI_agent/antigravity_env/Scripts/pip install playwright -q)",
+      "Bash(c:/AI_agent/antigravity_env/Scripts/python -m playwright install chromium)",
+      "Bash(cmd /c \"c:\\\\AI_agent\\\\antigravity_env\\\\Scripts\\\\pip3.exe install playwright -q 2>&1\")",
+      "Bash(cmd /c \"c:\\\\AI_agent\\\\antigravity_env\\\\Scripts\\\\python.exe -m playwright install chromium 2>&1\")",
+      "Bash(c:/AI_agent/antigravity_env/Scripts/python.exe -c \"import playwright; print\\(''OK''\\)\")",
+      "Bash(c:/AI_agent/antigravity_env/Scripts/python.exe -m playwright install chromium)",
+      "Bash(c:/AI_agent/antigravity_env/Scripts/python.exe -c \":*)",
+      "Bash(git add tools/tool_xtrend.py tools/tool_browser_use.py tools/tool_future_search.py tools/tool_bitnet.py engine_plan_execute.py agent_scheduler.py tools/tool_briefing_manager.py bot_discord.py main.py .claude/settings.local.json)"
     ]
   }
 }

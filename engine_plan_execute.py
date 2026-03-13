@@ -21,6 +21,56 @@ from lib.lib_shared import (
 # Curator Wrapper (lazy import to avoid circular dependency)
 # ---------------------------------------------------------
 
+def _tool_future_search_wrapper(topic: str = "") -> str:
+    """英語圏マルチエージェント未来リサーチをReActツールとして公開する。"""
+    try:
+        from tools.tool_future_search import run_future_search
+        return run_future_search(topic)
+    except Exception as e:
+        return f"[future_search error] {e}"
+
+
+def _tool_xtrend_wrapper(query: str = "", min_likes: int = 500) -> str:
+    """X(Twitter)のAIバズ投稿を収集し、技術スタック・難易度・ARMS親和性を分析する。"""
+    try:
+        from tools.tool_xtrend import run
+        queries = [q.strip() for q in query.split(",")] if query else None
+        features = run(queries=queries, min_likes=min_likes, no_save=False)
+        if not features:
+            return "[xtrend] 投稿が取得できませんでした"
+        summary = "\n".join(
+            f"- {f.get('feature_name','?')}: {f.get('summary','')} "
+            f"(難易度{f.get('difficulty',0)}/5, ARMS親和{f.get('arms_affinity',0)}/5)"
+            for f in features[:10]
+        )
+        return f"[xtrend] {len(features)}件の機能を分析しました。上位10件:\n{summary}"
+    except Exception as e:
+        return f"[xtrend error] {e}"
+
+
+def _tool_browser_use_wrapper(url: str, task: str = "このページの主要な情報を要約して") -> str:
+    """URLを開きGeminiでテキスト抽出する。JSレンダリング・動的コンテンツ対応。"""
+    try:
+        from tools.tool_browser_use import browse_and_extract
+        return browse_and_extract(url, task)
+    except Exception as e:
+        return f"[browser_use error] {e}"
+
+
+def _tool_xtrend_prompt_wrapper(feature_index: int = 1) -> str:
+    """XTrendで分析した機能のClaude Code実装指示書を生成する。feature_indexは1始まり。"""
+    try:
+        from tools.tool_xtrend import _load_feature_by_index, generate_claude_prompt
+        feature = _load_feature_by_index(int(feature_index))
+        if not feature:
+            return f"[xtrend_prompt] feature {feature_index} が見つかりません。先にtool_xtrend()を実行してください。"
+        prompt_text = generate_claude_prompt(feature, save=True)
+        name = feature.get("feature_name", "?")
+        return f"[xtrend_prompt] 「{name}」の実装指示書を生成しました。\n\n{prompt_text}"
+    except Exception as e:
+        return f"[xtrend_prompt error] {e}"
+
+
 def _tool_curate_wrapper() -> str:
     """The Curator のトピック提案をReActツールとして公開する。"""
     try:
@@ -89,6 +139,10 @@ def _get_tools_config():
         {"name": "tool_fetch_context", "usage": "tool_fetch_context(filenames_comma_separated)", "description": "複数ファイルの文書をまとめて読み込む(カンマ区切り)"},
         {"name": "tool_move_note", "usage": "tool_move_note(old_filename, new_dir_or_filename)", "description": "ノートを別フォルダに移動・リネーム"},
         {"name": "tool_refactor_note", "usage": "tool_refactor_note(filename, instructions)", "description": "指示に基づいて既存のノート全体の内容を再構築・上書きする"},
+        {"name": "tool_future_search", "usage": "tool_future_search(topic='AI agents 2026')", "description": "英語圏10体マルチエージェント未来リサーチ: 英語ソース収集→10視点で議論→Gemini日本語レポート+幸福アドバイス+辛口診断をObsidianに保存"},
+        {"name": "tool_browser_use", "usage": "tool_browser_use(url='https://...', task='このページのXXXを教えて')", "description": "ブラウザでURLを開きJS描画後のページテキストをGeminiで解析（動的サイト・SPA対応）"},
+        {"name": "tool_xtrend", "usage": "tool_xtrend(query='AI agent,MCP', min_likes=500)", "description": "X(Twitter)のAIバズ投稿を収集し機能名/技術スタック/難易度/ARMS親和性を構造化分析してObsidianに保存"},
+        {"name": "tool_xtrend_prompt", "usage": "tool_xtrend_prompt(feature_index=1)", "description": "XTrend分析済み機能(1始まりの番号)のClaude Code実装指示書をGeminiで生成してlogsに保存"},
     ]
     tools_map = {
         "tool_web_search": _ah.tool_web_search,
@@ -109,6 +163,10 @@ def _get_tools_config():
         "tool_fetch_context": tool_fetch_context,
         "tool_move_note": tool_move_note,
         "tool_refactor_note": tool_refactor_note,
+        "tool_future_search": _tool_future_search_wrapper,
+        "tool_browser_use": _tool_browser_use_wrapper,
+        "tool_xtrend": _tool_xtrend_wrapper,
+        "tool_xtrend_prompt": _tool_xtrend_prompt_wrapper,
     }
 
     # Calendar/Task tools を動的に追加

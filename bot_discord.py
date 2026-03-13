@@ -142,6 +142,12 @@ from tools.tool_calendar import (
     tool_sync_to_daily_note,
 )
 
+try:
+    from tools.tool_bitnet import quick_filter_discord, gemini_fallback_response
+    BITNET_AVAILABLE = True
+except ImportError:
+    BITNET_AVAILABLE = False
+
 # 新機能: 記事生成 UI
 from commands import bot_commands_article
 from commands import bot_commands_curator
@@ -209,6 +215,10 @@ def _gemini_chat_with_history(history: list) -> str:
         )
         return (response.text or "").strip() or "(応答なし)"
     except Exception as e:
+        print(f"[Discord] Gemini API error: {e}")
+        if BITNET_AVAILABLE:
+            last_msg = history[-1]["content"] if history else ""
+            return gemini_fallback_response(last_msg)
         return f"Gemini API Error: {e}"
 
 
@@ -959,6 +969,15 @@ async def on_message(message: discord.Message):
 
         if result:
             await message.reply(result[:2000])
+            return
+
+    # BitNet pre-filter: 挨拶/スパムはGemini API呼び出しなしで即時応答
+    if BITNET_AVAILABLE:
+        _filter = quick_filter_discord(message.content)
+        if _filter["action"] == "reply":
+            await message.reply(_filter["reply"])
+            return
+        elif _filter["action"] == "skip":
             return
 
     # 通常の会話: 履歴に追加して Gemini に送信

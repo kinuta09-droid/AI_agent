@@ -6,6 +6,7 @@ Gemini で要約したブリーフィングを生成する。
 """
 
 import os
+import json
 import datetime
 from typing import Callable
 
@@ -13,7 +14,7 @@ import ccxt
 
 from lib.lib_shared import (
     client, MODEL_NAME, retry,
-    VAULT_ROOT, fetch_fear_greed_index,
+    VAULT_ROOT, WORK_DIR, fetch_fear_greed_index,
 )
 
 
@@ -127,6 +128,61 @@ except ImportError:
 
 
 # ---------------------------------------------------------
+# X Trend Section (fixed — not filtered by Gemini)
+# ---------------------------------------------------------
+
+_XTREND_JSON = os.path.join(WORK_DIR, "40_Report", "XTrend", "latest_features.json")
+
+
+def _build_xtrend_section(top_n: int = 3) -> str:
+    """latest_features.json から上位N件を読み込み、Briefing 用 Markdown を返す。
+    ファイルが存在しない・古い（2日以上前）場合は空文字を返す。
+    """
+    if not os.path.exists(_XTREND_JSON):
+        return ""
+
+    try:
+        with open(_XTREND_JSON, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return ""
+
+    # 鮮度チェック: 2日以上古いデータは表示しない
+    date_str = data.get("date", "")
+    try:
+        data_date = datetime.date.fromisoformat(date_str)
+        if (datetime.date.today() - data_date).days > 2:
+            return ""
+    except ValueError:
+        return ""
+
+    features = data.get("features", [])[:top_n]
+    if not features:
+        return ""
+
+    lines = [
+        "",
+        "---",
+        "",
+        f"## 🔥 X Trend Top {top_n} — ARMS導入候補 ({date_str})",
+        "",
+    ]
+    for i, f in enumerate(features, 1):
+        arms = f.get("arms_affinity", 0)
+        diff = f.get("difficulty", 0)
+        name = f.get("feature_name", "?")
+        summary = f.get("summary", "")
+        rationale = f.get("arms_rationale", "")
+        url = f.get("post_url", "")
+        lines.append(
+            f"{i}. **{name}** — {summary}  \n"
+            f"   ARMS親和{'★' * arms}{'☆' * (5-arms)} / 難易度{'★' * diff}{'☆' * (5-diff)} / {rationale}  \n"
+            f"   {url}"
+        )
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------
 # Main Tool
 # ---------------------------------------------------------
 
@@ -184,6 +240,8 @@ def tool_generate_briefing() -> str:
         filename = f"Briefing_{today_str}_{now_str}.md"
         filepath = os.path.join(output_dir, filename)
 
+    xtrend_section = _build_xtrend_section(top_n=3)
+
     report = f"""---
 up: "[[10_MOCs/Dashboard]]"
 date: {today_str}
@@ -193,6 +251,7 @@ type: briefing
 # Daily Briefing — {today_str}
 
 {briefing_text}
+{xtrend_section}
 
 ---
 

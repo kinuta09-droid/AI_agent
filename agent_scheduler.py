@@ -72,6 +72,18 @@ try:
 except ImportError:
     _HAS_DAILY_NOTE = False
 
+# X Trend (optional)
+try:
+    from tools.tool_xtrend import run as _xtrend_run
+    def _run_xtrend():
+        features = _xtrend_run()
+        return f"XTrend: {len(features)} features analyzed and saved."
+    _HAS_XTREND = True
+except ImportError:
+    _HAS_XTREND = False
+    def _run_xtrend():
+        return "XTrend: tool_xtrend not available"
+
 # Audio Transcription Sync (optional)
 try:
     from tools.tool_audio_automation import tool_sync_audio_transcriptions
@@ -144,6 +156,11 @@ SCHEDULE = [
             }] if _HAS_CALENDAR else []
         )
     ),
+    {
+        "time": "06:00",
+        "name": "X Trend Update",
+        "func": _run_xtrend,
+    },
     {
         "time": "08:00",
         "name": "Daily News",
