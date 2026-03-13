@@ -17,8 +17,6 @@ import datetime
 import requests
 import concurrent.futures
 
-sys.stdout.reconfigure(encoding='utf-8')
-
 from lib.lib_shared import (
     client,
     tavily_client,
@@ -730,14 +728,3 @@ def run_future_search(topic: str = "") -> str:
     )
 
 
-# ---------------------------------------------------------
-# main.py TOOLS 登録用スニペット (参考)
-# ---------------------------------------------------------
-# {
-#     "name": "future_search",
-#     "description": "英語圏マルチエージェント未来リサーチ: 10体が議論→Geminiが日本語レポート生成",
-#     "function": "tools.tool_future_search.run_future_search",
-#     "needs_arg": True,
-#     "arg_name": "topic",
-#     "arg_prompt": "分析トピック (英語推奨): ",
-# },
