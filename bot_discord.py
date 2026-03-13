@@ -131,7 +131,7 @@ from tools.tool_briefing_manager import (
 )
 
 from tools.tool_gmail_manager import (
-    tool_gmail_check,
+    get_gmail_summary as tool_gmail_check,
 )
 
 from tools.tool_calendar import (
@@ -864,6 +864,33 @@ async def cmd_crypto(interaction: discord.Interaction, symbol: str = "BTC/USDT")
 @tree.command(name="scan", description="主要20銘柄の一括スキャン")
 async def cmd_scan(interaction: discord.Interaction):
     await bot_commands_tools.cmd_scan(interaction)
+
+
+@tree.command(name="xtrend", description="X(Twitter)のAIトレンドを収集・分析してObsidianに保存")
+@app_commands.describe(min_likes="最低いいね数 (デフォルト: 500)")
+async def cmd_xtrend(interaction: discord.Interaction, min_likes: int = 500):
+    await bot_commands_tools.cmd_xtrend(interaction, min_likes)
+
+
+@tree.command(name="xtrend-prompt", description="XTrend分析済み機能のClaude Code実装指示書を生成（先に/xtrendを実行）")
+@app_commands.describe(index="機能番号 1始まり (デフォルト: 1)")
+async def cmd_xtrend_prompt(interaction: discord.Interaction, index: int = 1):
+    await bot_commands_tools.cmd_xtrend_prompt(interaction, index)
+
+
+@tree.command(name="browse", description="URLを開いてAIで情報抽出（JS動的ページ・SPAに対応）")
+@app_commands.describe(
+    url="取得するURL",
+    task="AIへの抽出指示 (例: このページの料金プランを教えて)"
+)
+async def cmd_browse(interaction: discord.Interaction, url: str, task: str = "このページの主要な情報を要約して"):
+    await bot_commands_tools.cmd_browse(interaction, url, task)
+
+
+@tree.command(name="future", description="英語圏10エージェント並列リサーチ → 日本語レポート+辛口診断をObsidianに保存")
+@app_commands.describe(topic="調査トピック (英語推奨, 例: AI agents 2026)")
+async def cmd_future(interaction: discord.Interaction, topic: str):
+    await bot_commands_tools.cmd_future(interaction, topic)
 
 
 @tree.command(name="agent", description="AIエージェントに自律的なタスクを依頼（検索・ファイル操作など）")
