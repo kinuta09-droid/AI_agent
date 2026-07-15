@@ -39,7 +39,41 @@
       "Bash(c:/AI_agent/antigravity_env/Scripts/python.exe -c \"import playwright; print\\(''OK''\\)\")",
       "Bash(c:/AI_agent/antigravity_env/Scripts/python.exe -m playwright install chromium)",
       "Bash(c:/AI_agent/antigravity_env/Scripts/python.exe -c \":*)",
-      "Bash(git add tools/tool_xtrend.py tools/tool_browser_use.py tools/tool_future_search.py tools/tool_bitnet.py engine_plan_execute.py agent_scheduler.py tools/tool_briefing_manager.py bot_discord.py main.py .claude/settings.local.json)"
+      "Bash(git add tools/tool_xtrend.py tools/tool_browser_use.py tools/tool_future_search.py tools/tool_bitnet.py engine_plan_execute.py agent_scheduler.py tools/tool_briefing_manager.py bot_discord.py main.py .claude/settings.local.json)",
+      "Bash(git add tools/tool_xtrend.py tools/tool_browser_use.py)",
+      "Bash(git commit:*)",
+      "Bash(git add commands/bot_commands_tools.py bot_discord.py)",
+      "Bash(antigravity_envScriptspython.exe -c \"import discord; print\\(discord.__version__\\); import inspect; src = inspect.getsource\\(discord.File.__init__\\); print\\(src[:1500]\\)\")",
+      "Bash(antigravity_env/Scripts/python.exe -c \"import discord; print\\(discord.__version__\\); import inspect; src = inspect.getsource\\(discord.File.__init__\\); print\\(src[:1500]\\)\")",
+      "Bash(antigravity_env/Scripts/python.exe -c \":*)",
+      "Bash(antigravity_env/Scripts/python.exe verify_project.py)",
+      "Bash(PYTHONIOENCODING=utf-8 antigravity_env/Scripts/python.exe verify_project.py)",
+      "Bash(py -c \"from tools.tool_briefing_manager import tool_generate_briefing; result = tool_generate_briefing\\(\\); print\\(result\\)\")",
+      "Bash(py -c \"from tools.tool_daily_note import generate_daily_note; result = generate_daily_note\\(\\); print\\(result\\)\")",
+      "Read(//d/マイドライブ/Obsidian/01_Daily/**)",
+      "Read(//d/マイドライブ/Obsidian/40_Report/XTrend/**)",
+      "Bash(curl -s http://localhost:11434/api/tags)",
+      "Bash(python -c \"import sys,json; models=[m[''name''] for m in json.load\\(sys.stdin\\).get\\(''models'',[]\\)]; print\\(''Running models:'', models\\)\")",
+      "Bash(py tools/tool_future_search.py \"Vtuberの未来について\")",
+      "Read(//c/Users/amami/.gemini/antigravity/skills/algorithmic-art/**)",
+      "Read(//c/Users/amami/.gemini/antigravity/skills/canva-automation/**)",
+      "Read(//c/Users/amami/.gemini/antigravity/skills/canvas-design/**)",
+      "Read(//c/Users/amami/.gemini/antigravity/skills/competitor-alternatives/**)",
+      "Read(//c/Users/amami/.gemini/antigravity/skills/computer-vision-expert/**)",
+      "Read(//c/Users/amami/.gemini/antigravity/skills/copy-editing/**)",
+      "Read(//c/Users/amami/.gemini/antigravity/skills/fal-generate/**)",
+      "Read(//c/Users/amami/.gemini/antigravity/skills/fal-image-edit/**)",
+      "Read(//c/Users/amami/.gemini/antigravity/skills/fal-upscale/**)",
+      "Read(//c/Users/amami/.gemini/antigravity/skills/fal-workflow/**)",
+      "Read(//c/Users/amami/.gemini/antigravity/skills/figma-automation/**)",
+      "Read(//c/Users/amami/.gemini/antigravity/skills/free-tool-strategy/**)",
+      "Read(//c/Users/amami/.gemini/antigravity/skills/obsidian-manager/**)",
+      "Read(//c/Users/amami/.gemini/antigravity/skills/youtube-automation/**)",
+      "Read(//c/Users/amami/.claude/**)"
+    ],
+    "additionalDirectories": [
+      "D:\\マイドライブ\\Obsidian\\01_Daily",
+      "C:\\Users\\amami\\.claude\\commands"
     ]
   }
 }

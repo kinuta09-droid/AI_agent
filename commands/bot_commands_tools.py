@@ -11,6 +11,11 @@ from tools.tool_crypto import tool_analyze_crypto, tool_scan_crypto_market
 from tools.tool_briefing_manager import tool_generate_briefing
 from tools.tool_gmail_manager import get_gmail_summary as tool_gmail_check
 
+
+def _make_discord_file(content: str, filename: str) -> "discord.File":
+    """bot_discord._make_discord_file と同一実装。循環インポート回避のためローカル定義。"""
+    return discord.File(io.BytesIO(content.encode('utf-8')), filename=filename)
+
 # 新機能ツール (lazy import で依存関係エラーを bot 起動時に波及させない)
 def _import_xtrend():
     from tools.tool_xtrend import run, generate_claude_prompt, _load_feature_by_index
@@ -101,15 +106,15 @@ async def cmd_crypto(interaction: discord.Interaction, symbol: str = "BTC/USDT")
         color=0xf0b90b  # Binance yellow
     )
     clean = symbol.replace('/', '_')
-    file = discord.File(
-        io.StringIO(result),
-        filename=f"Crypto_{clean}_{datetime.datetime.now().strftime('%Y-%m-%d')}.md"
-    ) if len(result) > 1500 else None
+    file = _make_discord_file(result, f"Crypto_{clean}_{datetime.datetime.now().strftime('%Y-%m-%d')}.md") if len(result) > 1500 else None
     
     if _send_with_fallback:
         await _send_with_fallback(interaction, result, title="Crypto Analysis", emoji="🪙", embed=embed, file=file)
     else:
-        await interaction.followup.send(embed=embed, file=file)
+        send_kwargs = {"embed": embed}
+        if file is not None:
+            send_kwargs["file"] = file
+        await interaction.followup.send(**send_kwargs)
 
 async def cmd_scan(interaction: discord.Interaction):
     """主要20銘柄の一括スキャン"""
@@ -128,15 +133,15 @@ async def cmd_scan(interaction: discord.Interaction):
         description=display_content[:1500] if len(display_content) > 1500 else display_content,
         color=0x00bfff
     )
-    file = discord.File(
-        io.StringIO(result),
-        filename=f"Market_Scan_{datetime.datetime.now().strftime('%Y-%m-%d')}.md"
-    ) if len(result) > 1500 else None
+    file = _make_discord_file(result, f"Market_Scan_{datetime.datetime.now().strftime('%Y-%m-%d')}.md") if len(result) > 1500 else None
 
     if _send_with_fallback:
         await _send_with_fallback(interaction, result, title="Market Scan", emoji="🔭", embed=embed, file=file)
     else:
-        await interaction.followup.send(embed=embed, file=file)
+        send_kwargs = {"embed": embed}
+        if file is not None:
+            send_kwargs["file"] = file
+        await interaction.followup.send(**send_kwargs)
 
 
 # ---------------------------------------------------------
@@ -191,10 +196,7 @@ async def cmd_xtrend_prompt(interaction: discord.Interaction, index: int = 1):
         result = f"❌ XTrend Prompt Error: {e}"
 
     if _send_with_fallback:
-        file = discord.File(
-            io.StringIO(result),
-            filename=f"xtrend_prompt_{index}_{datetime.date.today().isoformat()}.md"
-        ) if len(result) > 1800 else None
+        file = _make_discord_file(result, f"xtrend_prompt_{index}_{datetime.date.today().isoformat()}.md") if len(result) > 1800 else None
         await _send_with_fallback(interaction, result, title="実装指示書", emoji="📝", file=file)
     else:
         await interaction.followup.send(result[:2000])

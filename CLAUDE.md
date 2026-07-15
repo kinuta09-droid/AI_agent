@@ -92,6 +92,14 @@ subprocess.Popen(cmd, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
 4. Execute changes and run verification
 5. If Claude makes a mistake -> fix it, then update this CLAUDE.md with the lesson
 
+## AI Instruction Principles (Vibe Coding 2.0)
+> From "18 Rules for Not Failing at Vibe Coding" — process rules applicable to this project.
+
+- **1 session, 1 feature**: Never mix multiple fixes or features in the same conversation. Each new feature or bug fix gets a fresh chat to keep context clean.
+- **50-line checkpoints**: For complex implementations, stop and wait for human review every ~50 lines. Do not generate large blocks of code in one shot.
+- **Commit after every working state**: As soon as a feature works (or a meaningful change is confirmed), commit immediately — before moving to the next task.
+- **Stop and reset when confused**: If debugging loops with no progress, stop editing code. Return to plain language, restate the goal from scratch, and re-enter Plan Mode.
+
 ## Plan Mode Protocol
 - Complex tasks (3+ files, new features, architectural changes): always start in Plan Mode
 - **Verification plan is MANDATORY**: Every plan must include HOW to prove it works

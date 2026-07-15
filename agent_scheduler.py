@@ -72,6 +72,37 @@ try:
 except ImportError:
     _HAS_DAILY_NOTE = False
 
+# Future Search / Auto Deep-Dive (optional)
+try:
+    from tools.tool_future_search import run_future_search as _future_search
+    from lib.lib_shared import WORK_DIR as _WORK_DIR
+    _HAS_FUTURE_SEARCH = True
+except ImportError:
+    _HAS_FUTURE_SEARCH = False
+
+def _run_auto_deep_dive() -> str:
+    """XTrend TOP1（ARMS親和度最高）を FutureSearch で自動調査。辛口除外。"""
+    if not _HAS_FUTURE_SEARCH:
+        return "Auto Deep-Dive: tool_future_search not available"
+    import json
+    xtrend_json = os.path.join(_WORK_DIR, "40_Report", "XTrend", "latest_features.json")
+    if not os.path.exists(xtrend_json):
+        return "Auto Deep-Dive: latest_features.json が存在しません。スキップ。"
+    try:
+        with open(xtrend_json, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        return f"Auto Deep-Dive: JSON読み込みエラー: {e}"
+    features = data.get("features", [])
+    if not features:
+        return "Auto Deep-Dive: フィーチャーが0件。スキップ。"
+    top = max(features, key=lambda x: (x.get("arms_affinity", 0), x.get("likes", 0)))
+    topic = top.get("feature_name", "").strip()
+    if not topic:
+        return "Auto Deep-Dive: TOP1のfeature_nameが空。スキップ。"
+    logger.info(f"Auto Deep-Dive: topic='{topic}'")
+    return _future_search(topic, skip_uncensored=True)
+
 # X Trend (optional)
 try:
     from tools.tool_xtrend import run as _xtrend_run
@@ -160,6 +191,11 @@ SCHEDULE = [
         "time": "06:00",
         "name": "X Trend Update",
         "func": _run_xtrend,
+    },
+    {
+        "time": "06:30",
+        "name": "Auto Deep-Dive (XTrend TOP1)",
+        "func": _run_auto_deep_dive,
     },
     {
         "time": "08:00",

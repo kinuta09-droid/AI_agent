@@ -522,7 +522,7 @@ async def _dispatch_agent(interaction: discord.Interaction, goal: str):
     except discord.NotFound:
         try:
             if len(result) > 1900:
-                file = discord.File(io.StringIO(result), filename="Agent_Result.md")
+                file = _make_discord_file(result, "Agent_Result.md")
                 await interaction.channel.send(
                     content=f"{interaction.user.mention} ✅ **Mission Complete**", file=file
                 )
@@ -633,6 +633,13 @@ def _format_discord_content(content: str) -> str:
     return display_content
 
 
+def _make_discord_file(content: str, filename: str) -> discord.File:
+    """テキストコンテンツから discord.File を生成する。
+    BytesIO(UTF-8) を使うことで StringIO による TypeError を防ぐ。
+    """
+    return discord.File(io.BytesIO(content.encode('utf-8')), filename=filename)
+
+
 async def _send_long_message(interaction: discord.Interaction, content: str,
                               title: str = "Result", color: int = 0x00ff00):
     """2000文字を超える場合は Embed + ファイル添付で送信する。Obsidianボタンも付与。"""
@@ -651,7 +658,7 @@ async def _send_long_message(interaction: discord.Interaction, content: str,
         # サマリー（最初の1500文字）を Embed で、全文を .md ファイルで添付
         summary = display_content[:1500] + "\n\n*... (full report attached)*"
         embed = discord.Embed(title=title, description=summary, color=color)
-        file = discord.File(io.StringIO(content), filename=f"{title}.md")
+        file = _make_discord_file(content, f"{title}.md")
         await interaction.followup.send(embed=embed, file=file, **kwargs)
 
 
@@ -662,17 +669,21 @@ async def _send_with_fallback(interaction: discord.Interaction, result: str,
     try:
         if embed or file:
             view = _create_obsidian_view(result)
-            kwargs = {}
+            send_kwargs = {}
+            if embed is not None:
+                send_kwargs["embed"] = embed
+            if file is not None:
+                send_kwargs["file"] = file
             if view:
-                kwargs["view"] = view
-            await interaction.followup.send(embed=embed, file=file, **kwargs)
+                send_kwargs["view"] = view
+            await interaction.followup.send(**send_kwargs)
         else:
             await _send_long_message(interaction, result, title=title)
     except discord.NotFound:
         try:
             mention = f"{interaction.user.mention} {emoji} **{title}** (Interaction Timed Out)"
             if len(result) > 1900:
-                fb_file = discord.File(io.StringIO(result), filename=f"{title.replace(' ', '_')}.md")
+                fb_file = _make_discord_file(result, f"{title.replace(' ', '_')}.md")
                 await interaction.channel.send(content=mention, file=fb_file)
             else:
                 await interaction.channel.send(f"{mention}\n\n{result}")

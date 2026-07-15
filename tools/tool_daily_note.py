@@ -40,7 +40,7 @@ except ImportError:
     print("[DailyNote] Warning: tool_calendar not available")
 
 try:
-    from lib.agent_hello import tool_fetch_daily_news
+    from tools.tool_web import tool_fetch_daily_news
     _HAS_NEWS_TOOL = True
 except ImportError:
     _HAS_NEWS_TOOL = False
@@ -83,23 +83,44 @@ def _create_daily_note_from_template(date: datetime.date) -> str:
 # ---------------------------------------------------------
 
 def _fetch_calendar_content(date: datetime.date) -> str:
-    """指定日のカレンダー予定を取得してMarkdown形式で返す。"""
+    """指定日のカレンダー予定を取得してMarkdown形式で返す。
+    gws CLI を優先し、利用不可の場合は Google Calendar API にフォールバック。
+    """
     if not _HAS_CALENDAR_TOOL:
         return "カレンダー連携が未設定です。"
-    
+
+    # gws CLI 経由で取得（GOOGLE_CALENDAR_ENABLED に依存しない）
+    try:
+        data = _run_gws_command(["workflow", "+standup-report", "--format", "json"])
+        if data and "meetings" in data:
+            meetings = data["meetings"]
+            if not meetings:
+                return "今日の予定はありません。"
+            lines = []
+            for m in meetings:
+                start = m.get("start", "")
+                end = m.get("end", "")
+                summary = m.get("summary", "(無題)")
+                if "T" in start:
+                    start_fmt = datetime.datetime.fromisoformat(start).strftime("%H:%M")
+                    end_fmt = datetime.datetime.fromisoformat(end).strftime("%H:%M")
+                    lines.append(f"- {start_fmt}-{end_fmt}: {summary}")
+                else:
+                    lines.append(f"- 終日: {summary}")
+            return "\n".join(lines)
+    except Exception:
+        pass
+
+    # フォールバック: Google Calendar API
     if not GOOGLE_CALENDAR_ENABLED:
-        return "Google Calendar が未設定です。"
-    
+        return "Google Calendar が未設定です（gws CLI も利用不可）。"
     try:
         result = tool_get_calendar(date.strftime('%Y-%m-%d'))
         if result.startswith("Error:") or result.startswith("Google Calendar"):
             return result
-        
-        # Remove header line (## YYYY-MM-DD の予定)
         lines = result.split('\n')
         if lines and lines[0].startswith('##'):
             lines = lines[1:]
-        
         return '\n'.join(lines).strip() if lines else "予定はありません。"
     except Exception as e:
         return f"カレンダー取得エラー: {e}"

@@ -126,6 +126,12 @@ try:
 except ImportError:
     pass  # gws / tool_calendar が利用不可の場合はスキップ
 
+# Gmail (自己登録パターン: モジュール読込時に add_provider を実行する)
+try:
+    import tools.tool_gmail_manager  # noqa: F401 — side effect: registers "Gmail" provider
+except ImportError:
+    pass
+
 
 # ---------------------------------------------------------
 # X Trend Section (fixed — not filtered by Gemini)

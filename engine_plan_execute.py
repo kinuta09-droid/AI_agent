@@ -324,7 +324,8 @@ def execute_plan(plan: list, step_callback=None) -> dict:
             success = False
         else:
             try:
-                observation = tools_map[tool_name](**args)
+                from tools.tool_skill_observer import observe
+                observation = observe(tool_name, tools_map[tool_name], "engine_plan_execute", **args)
                 success = True
             except Exception as e:
                 observation = f"Error: {e}"

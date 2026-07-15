@@ -13,6 +13,8 @@ import subprocess
 import importlib.util
 from pathlib import Path
 
+sys.stdout.reconfigure(encoding='utf-8')
+
 # プロジェクトルートの設定
 ROOT_DIR = Path(__file__).parent.absolute()
 PYTHON_EXE = sys.executable
@@ -106,6 +108,9 @@ def run_verification():
         'lib.lib_obsidian_utils',
         'tools.tool_calendar',
         'tools.tool_web',
+        'tools.tool_briefing_manager',
+        'tools.tool_gmail_manager',
+        'commands.bot_commands_tools',
         'commands.bot_commands_curator',
         'bot_discord',
         'agent_hello',
@@ -157,6 +162,41 @@ def run_verification():
             errors.append("main.py does not have a TOOLS list")
     except Exception as e:
         errors.append(f"Failed to load main.py for registry verification: {e}")
+
+    # 5. Discord パターン禁止チェック
+    print("\n[5] Checking Discord Anti-Patterns...")
+    discord_files = [
+        ROOT_DIR / 'bot_discord.py',
+        ROOT_DIR / 'commands' / 'bot_commands_tools.py',
+    ]
+    for df in discord_files:
+        if not df.exists():
+            continue
+        src = df.read_text(encoding='utf-8')
+        rel = df.relative_to(ROOT_DIR)
+        # io.StringIO を discord.File に渡すパターン（_make_discord_file の定義行は除外）
+        for i, line in enumerate(src.splitlines(), 1):
+            if 'discord.File' in line and 'io.StringIO' in line and 'def _make_discord_file' not in line:
+                msg = f"Discord anti-pattern: {rel}:{i} — use _make_discord_file() instead of discord.File(io.StringIO())"
+                errors.append(msg)
+                print(f"  ❌ {rel}:{i}")
+        print(f"  ✅ {rel} (no StringIO pattern)")
+
+    # 6. Briefing プロバイダー登録チェック
+    print("\n[6] Checking Briefing Providers...")
+    expected_providers = ['Crypto', 'Obsidian', 'Gmail']
+    cmd = [PYTHON_EXE, "-c",
+        "from tools.tool_briefing_manager import _providers; "
+        f"missing=[p for p in {expected_providers} if p not in _providers]; "
+        "print('MISSING:'+','.join(missing) if missing else 'OK:'+','.join(_providers.keys()))"
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT_DIR))
+    if result.returncode != 0 or result.stdout.startswith('MISSING:'):
+        msg = f"Briefing providers missing: {result.stdout.strip() or result.stderr.strip()}"
+        errors.append(msg)
+        print(f"  ❌ {msg}")
+    else:
+        print(f"  ✅ Registered: {result.stdout.strip().replace('OK:','')}")
 
     # 判定
     print("\n" + "="*50)
