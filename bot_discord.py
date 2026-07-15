@@ -58,15 +58,21 @@ def _check_existing_bot():
         if handle:
             ctypes.windll.kernel32.CloseHandle(handle)
             print(f"[Discord] ⚠️ Another bot instance is already running (PID {old_pid}). Exiting.")
+            # 生存中インスタンスの PID ファイルには触れずに終了する
             sys.exit(0) # 正常終了として扱う（ループ防止）
-    except (ValueError, OSError):
-        pass
-    finally:
-        # 古いPIDファイルを削除（または後続の _write_pid で上書き）
+        # プロセスが存在しない = stale な PID ファイルなので削除
         try:
             os.remove(PID_FILE)
         except OSError:
             pass
+    except ValueError:
+        # 破損した PID ファイルは削除（後続の _write_pid で再作成）
+        try:
+            os.remove(PID_FILE)
+        except OSError:
+            pass
+    except OSError:
+        pass
 
 
 def _write_pid():
@@ -170,6 +176,26 @@ LOG_CHANNEL_ID = os.getenv("DISCORD_LOG_CHANNEL_ID", "")
 GUILD_ID = os.getenv("DISCORD_GUILD_ID", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
+
+def _parse_allowed_user_ids(raw: str) -> set:
+    """カンマ区切りのユーザーID文字列を set[int] にパースする（数字以外は無視）。"""
+    ids = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            ids.add(int(part))
+    return ids
+
+
+ALLOWED_USER_IDS = _parse_allowed_user_ids(os.getenv("ALLOWED_USER_IDS", ""))
+if not ALLOWED_USER_IDS:
+    # フェイルオープン: env 設定ミスで bot が完全停止するのを避けるため、警告のみ出して全許可
+    print("[Discord] ⚠️ ALLOWED_USER_IDS が未設定です。全ユーザーがコマンドを実行できます。")
+
+
+def _is_allowed_user(user_id: int) -> bool:
+    return not ALLOWED_USER_IDS or user_id in ALLOWED_USER_IDS
+
 _openai_client = (
     openai_lib.OpenAI(api_key=OPENAI_API_KEY)
     if OPENAI_AVAILABLE and OPENAI_API_KEY
@@ -189,7 +215,24 @@ intents = discord.Intents.default()
 intents.message_content = True
 
 bot = discord.Client(intents=intents)
-tree = app_commands.CommandTree(bot)
+
+
+class GatedCommandTree(app_commands.CommandTree):
+    """ALLOWED_USER_IDS に含まれないユーザーの全スラッシュコマンドを一括拒否する。"""
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if _is_allowed_user(interaction.user.id):
+            return True
+        try:
+            await interaction.response.send_message(
+                "⛔ このボットのコマンドを実行する権限がありません。", ephemeral=True
+            )
+        except discord.HTTPException:
+            pass
+        return False
+
+
+tree = GatedCommandTree(bot)
 
 # ---------------------------------------------------------
 # Chat Session State
@@ -963,6 +1006,10 @@ async def on_message(message: discord.Message):
             )
             await message.add_reaction("✅")
             print(f"  📱 Webhook log saved: {message.content[:50]}")
+        return
+
+    # 許可ユーザー以外のメッセージは無視（webhook 経路は上のチャンネルIDゲートで制御済み）
+    if not _is_allowed_user(message.author.id):
         return
 
     # --- 記事生成スレッドのメッセージ処理 ---

@@ -30,10 +30,29 @@ if _PROJECT_ROOT not in sys.path:
 from dotenv import load_dotenv
 load_dotenv(r'C:\AI_agent\.env')
 
+from urllib.parse import urlparse
+
 from lib.lib_shared import client, MODEL_NAME_HEAVY, WORK_DIR
 
 # スクリーンショット保存先
 SCREENSHOT_DIR = os.path.join(WORK_DIR, "40_Report", "BrowserCaptures")
+
+# 許可する URL スキーム（file:// や javascript: 等によるローカルファイル読み取りを防ぐ）
+ALLOWED_URL_SCHEMES = {"http", "https"}
+
+
+def _validate_url_scheme(url: str) -> None:
+    """http/https 以外のスキームを拒否する。
+
+    Raises:
+        ValueError: スキームが許可リスト外の場合
+    """
+    scheme = urlparse(url.strip()).scheme.lower()
+    if scheme not in ALLOWED_URL_SCHEMES:
+        raise ValueError(
+            f"許可されていない URL スキームです: '{scheme or '(なし)'}'。"
+            "http / https のみ使用できます。"
+        )
 
 
 # ---------------------------------------------------------
@@ -109,7 +128,11 @@ class BrowserSession:
         Args:
             url: 移動先 URL
             wait_until: 待機条件 ('load' | 'domcontentloaded' | 'networkidle')
+
+        Raises:
+            ValueError: http/https 以外のスキームが指定された場合
         """
+        _validate_url_scheme(url)
         self._page.goto(url, wait_until=wait_until)
 
     # --- interaction ---
@@ -193,6 +216,12 @@ def browse_and_extract(url: str, task: str, headless: bool = True) -> str:
     Returns:
         Gemini の回答テキスト
     """
+    # ブラウザ起動前に事前チェック（拒否時は Playwright を立ち上げない）
+    try:
+        _validate_url_scheme(url)
+    except ValueError as e:
+        return f"[Browser] {e}"
+
     print(f"[Browser] Opening: {url}")
     try:
         with BrowserSession(headless=headless) as b:

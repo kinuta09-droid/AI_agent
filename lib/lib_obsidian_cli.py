@@ -52,44 +52,35 @@ def run_obsidian_cli(command_args: List[str], vault_name: str = "Obsidian", time
         command_args_final.extend(command_args)
         
     import tempfile
-    
-    # We construct the argument list carefully. We need to wrap each argument in quotes to handle spaces.
-    # We format for Start-Process ArgumentList format: '"arg1" "arg2"'
-    args_str = " ".join(f'"{arg}"' if " " in arg else arg for arg in command_args_final)
-    
+
+    # Obsidian.exe is a GUI app whose stdout is only visible via OS-level handle
+    # redirection (equivalent to `cmd /c ... > file`). We redirect stdout to a
+    # temp file directly — no shell layer, so arguments are never interpreted.
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp_out:
             tmp_out_path = tmp_out.name
-            
-        # We must escape double quotes inside the ArgumentList string for PowerShell
-        # For example: Start-Process -FilePath cmd.exe -ArgumentList '/c', '""C:\path\to\Obsidian.exe" search query="AI" limit="5" > "out.txt""'
-        # The first set of quotes wraps the whole command string passed to cmd.exe, and the inner quotes are for paths.
-        ps_cmd = f"Start-Process -FilePath cmd.exe -ArgumentList '/c', '\"\"{exe_path}\" {args_str} > \"{tmp_out_path}\"\"' -Wait -NoNewWindow"
-        
-        print(f"[CLI] Running via PS: {ps_cmd}")
-        # Run powershell
-        subprocess.run(
-            ["powershell", "-Command", ps_cmd],
-            capture_output=True, # captures PS output, not Obsidian's
-            text=True,
-            timeout=timeout
-        )
-        
-        # Read the captured output from Obsidian
-        stdout_content = ""
+
+        print(f"[CLI] Running: {exe_path} {command_args_final}")
+        with open(tmp_out_path, 'w', encoding='utf-8', errors='replace') as out_handle:
+            proc = subprocess.run(
+                [exe_path] + command_args_final,
+                stdout=out_handle,
+                stderr=subprocess.STDOUT,
+                timeout=timeout
+            )
+
         with open(tmp_out_path, 'r', encoding='utf-8', errors='replace') as f:
             stdout_content = f.read()
-            
+
         # Clean up temp file
         try:
             os.remove(tmp_out_path)
         except Exception as e:
             print(f"[CLI] Warning: Failed to remove temp file {tmp_out_path}: {e}")
-            
-        # Create a mock CompletedProcess to match the expected signature
+
         result = subprocess.CompletedProcess(
             args=full_cmd,
-            returncode=0, # Hard to get proper exit code this way, assume 0
+            returncode=proc.returncode,
             stdout=stdout_content,
             stderr=""
         )

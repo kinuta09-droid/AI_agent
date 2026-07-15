@@ -42,7 +42,8 @@ def tool_vault_search(keywords: str) -> str:
                 if score > 0:
                     hits.append(f"- File: [[{file}]]\n  Snippet:\n{snippet}\n...")
                     if len(hits) >= MAX_HITS: break
-            except: pass
+            except Exception as e:
+                print(f"⚠️ Vault scan skipped {file}: {e}")
         if len(hits) >= MAX_HITS: break
     return "\n\n".join(hits) if hits else "Vault内に見つかりませんでした。"
 
@@ -319,17 +320,31 @@ def tool_fetch_context(filenames_comma_separated: str) -> str:
             
     return "\n\n".join(context_parts)
 
+def _sanitize_vault_rel_path(rel_path: str) -> str:
+    """Vault相対パスをセグメント単位でサニタイズする（`..` 除去・危険文字置換、`/` 区切りは維持）。"""
+    segments = []
+    for seg in rel_path.replace('\\', '/').split('/'):
+        seg = seg.strip()
+        if not seg or seg in ('.', '..'):
+            continue
+        segments.append(re.sub(r'[:*?"<>|]', '_', seg))
+    return '/'.join(segments)
+
+
 def tool_move_note(old_filename: str, new_dir_or_filename: str) -> str:
     """ノートを別のフォルダに移動、またはリネームする(リンク切れ防止)"""
     print(f"[Tool] 🚚 Moving Note: {old_filename} -> {new_dir_or_filename}")
     old_path = find_file_in_vault(old_filename)
     if not old_path: return f"Error: Source file {old_filename} not found."
-    
+
     # 既存のパスからVault相対パスを計算
     src_rel = os.path.relpath(old_path, VAULT_ROOT).replace('\\', '/')
-    
+
+    # LLM由来の引数が CLI に渡るため、Vault外への脱出や危険文字を除去する
+    dst_rel = _sanitize_vault_rel_path(new_dir_or_filename)
+    if not dst_rel:
+        return f"Error: Invalid destination path: {new_dir_or_filename}"
     # .md で終わる場合はリネーム（フルパス指定）、それ以外はフォルダ移動（元ファイル名を維持）
-    dst_rel = new_dir_or_filename.replace('\\', '/')
     if not dst_rel.endswith('.md'):
         dst_rel = dst_rel.rstrip('/') + '/' + os.path.basename(old_path)
     
