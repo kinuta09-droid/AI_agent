@@ -17,6 +17,15 @@ from lib.lib_shared import (
     retry,
 )
 
+# スキル観測は任意機能: 不在・破損でもツール実行を止めない
+try:
+    from tools.tool_skill_observer import observe
+except Exception as _observer_err:
+    print(f"[Engine] ⚠️ tool_skill_observer unavailable ({_observer_err}) — running without observation.")
+
+    def observe(tool_name, func, caller, **kwargs):
+        return func(**kwargs)
+
 
 @retry(max_retries=3, initial_delay=2)
 def _gemini_call(model: str, prompt: str):
@@ -324,7 +333,6 @@ def execute_plan(plan: list, step_callback=None) -> dict:
             success = False
         else:
             try:
-                from tools.tool_skill_observer import observe
                 observation = observe(tool_name, tools_map[tool_name], "engine_plan_execute", **args)
                 success = True
             except Exception as e:

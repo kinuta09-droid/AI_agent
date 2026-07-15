@@ -11,6 +11,7 @@ import sys
 import os
 import requests
 import logging
+import threading
 import traceback
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
@@ -37,12 +38,17 @@ def _check_existing_scheduler():
         if handle:
             ctypes.windll.kernel32.CloseHandle(handle)
             print(f"[Scheduler] ⚠️ Another scheduler instance is already running (PID {old_pid}). Exiting.")
+            # 生存中インスタンスの PID ファイルには触れずに終了する
             sys.exit(0)
-    except (ValueError, OSError):
-        pass
-    finally:
+        # プロセスが存在しない = stale な PID ファイルなので削除
         try: os.remove(PID_FILE)
         except OSError: pass
+    except ValueError:
+        # 破損した PID ファイルは削除（後続の _write_pid で再作成）
+        try: os.remove(PID_FILE)
+        except OSError: pass
+    except OSError:
+        pass
 
 def _write_pid():
     with open(PID_FILE, 'w', encoding='utf-8') as f: f.write(str(os.getpid()))
@@ -134,7 +140,8 @@ sys.stdout.reconfigure(encoding='utf-8')
 # ---------------------------------------------------------
 # Logging Configuration
 # ---------------------------------------------------------
-LOG_FILE = "scheduler.log"
+# CWD 非依存の絶対パス（tool_analytics.py も同じパスを読む）
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scheduler.log")
 logger = logging.getLogger("Scheduler")
 logger.setLevel(logging.INFO)
 
@@ -330,14 +337,48 @@ SCHEDULE = [
 # Main Logic
 # ---------------------------------------------------------
 
+def _execute_task(task):
+    """1タスクを実行する（ワーカースレッド内で完結: 例外処理・通知含む）。"""
+    task_name = task['name']
+
+    # 前回実行が終わっていない場合は多重実行しない
+    if not task["_lock"].acquire(blocking=False):
+        logger.warning(f"⏭️ {task_name} is still running — skipping this trigger.")
+        return
+    try:
+        logger.info(f"🚀 Executing {task_name}...")
+        send_discord_notification(f"⏳ **Processing Started**: {task_name}")
+
+        try:
+            result = task["func"]()
+
+            # Log and Notify
+            result = str(result) if result is not None else ""
+            if len(result) > 1500:
+                short_result = result[:1500] + "... (truncated)"
+            else:
+                short_result = result if result else "Done (No output)"
+
+            logger.info(f"✅ Completed {task_name}")
+            send_discord_notification(f"✅ **Task Completed**: {task_name}\n>>> {short_result}")
+
+        except Exception as e:
+            logger.error(f"❌ Error in {task_name}: {e}\n{traceback.format_exc()}")
+            error_msg = str(e)[:1000]
+            send_discord_notification(f"❌ **Task Failed**: {task_name}\nError: ```{error_msg}```")
+    finally:
+        task["_lock"].release()
+
+
 def run_scheduler():
     _check_existing_scheduler()
     _write_pid()
     try:
         logger.info("⏳ Started. Waiting for scheduled time...")
-        
-        # 設定されたスケジュールを一覧表示
+
+        # 設定されたスケジュールを一覧表示（+ 多重実行防止ロックを初期化）
         for task in SCHEDULE:
+            task["_lock"] = threading.Lock()
             logger.info(f" - {task['time']}: {task['name']}")
 
         # 最後に実行した分を記録（重複実行防止用）
@@ -347,35 +388,19 @@ def run_scheduler():
             try:
                 now = datetime.datetime.now()
                 current_time = now.strftime("%H:%M")
-                
+
                 # 分が変わった瞬間のみチェック
                 if current_time != last_run_minute:
                     for task in SCHEDULE:
                         if current_time == task["time"] and (
                             "weekday" not in task or now.weekday() == task["weekday"]
                         ):
-                            task_name = task['name']
-                            logger.info(f"🚀 {current_time} Executing {task_name}...")
-                            send_discord_notification(f"⏳ **Processing Started**: {task_name}")
+                            # 長時間タスクがループをブロックして他ジョブが
+                            # スキップされないよう、ワーカースレッドで実行する
+                            threading.Thread(
+                                target=_execute_task, args=(task,), daemon=True
+                            ).start()
 
-                            try:
-                                # Execute Task
-                                result = task["func"]()
-                                
-                                # Log and Notify
-                                if result and len(result) > 1500:
-                                    short_result = result[:1500] + "... (truncated)"
-                                else:
-                                    short_result = result if result else "Done (No output)"
-
-                                logger.info(f"✅ Completed {task_name}")
-                                send_discord_notification(f"✅ **Task Completed**: {task_name}\n>>> {short_result}")
-                                
-                            except Exception as e:
-                                logger.error(f"❌ Error in {task_name}: {e}\n{traceback.format_exc()}")
-                                error_msg = str(e)[:1000]
-                                send_discord_notification(f"❌ **Task Failed**: {task_name}\nError: ```{error_msg}```")
-                            
                     last_run_minute = current_time
 
                 # CPU負荷軽減
