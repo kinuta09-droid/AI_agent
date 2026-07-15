@@ -60,17 +60,24 @@ async def cmd_briefing(interaction: discord.Interaction):
     """デイリーブリーフィング生成"""
     await interaction.response.defer()
     try:
-        result = await asyncio.to_thread(tool_generate_briefing)
+        result = await asyncio.to_thread(tool_generate_briefing, True)
     except Exception as e:
         result = f"Error: {e}"
 
     if _log_to_daily_note:
         await asyncio.to_thread(_log_to_daily_note, "command", "/briefing", result)
-    
+
     if _send_with_fallback:
         await _send_with_fallback(interaction, result, title="Daily Briefing", emoji="📋")
     else:
         await interaction.followup.send(result[:2000])
+
+    # 深掘りリサーチボタン (永続 View: 本体メッセージとは別送信)
+    from commands.bot_views import BriefingDeepDiveView, _load_top_features
+    features = _load_top_features(top_n=3)
+    if features:
+        names = [f.get("feature_name", "?") for f in features]
+        await interaction.channel.send("🔍 深掘りリサーチ:", view=BriefingDeepDiveView(names))
 
 async def cmd_gmail_check(interaction: discord.Interaction, hours: int = 12):
     """直近の重要メール要約"""

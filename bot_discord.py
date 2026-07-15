@@ -161,6 +161,7 @@ from commands import bot_commands_calendar
 from commands import bot_commands_tools
 from commands import bot_commands_agent
 from commands import bot_commands_client
+from commands import bot_views
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
@@ -589,7 +590,7 @@ async def _dispatch_agent(interaction: discord.Interaction, goal: str):
 # Obsidian Helper Views
 # ---------------------------------------------------------
 
-class OpenInObsidianView(discord.ui.View):
+class OpenInObsidianView(bot_views.AllowedUserView):
     def __init__(self, links: dict[str, str]):
         """
         links: {filename: uri} の辞書
@@ -1118,6 +1119,10 @@ async def on_ready():
     bot_commands_agent.init_helpers(
         _log_to_daily_note, _send_long_message, _send_with_fallback
     )
+    # 永続 View: 認可判定関数を注入し、bot 再起動をまたいで動作するよう登録
+    bot_views.init_views(_is_allowed_user)
+    bot.add_view(bot_views.BriefingDeepDiveView())
+    bot.add_view(bot_views.TaskFailureView())
     try:
         if GUILD_ID:
             guild = discord.Object(id=int(GUILD_ID))

@@ -64,6 +64,17 @@ from tools.tool_crypto import tool_scan_crypto_market, tool_analyze_crypto, tool
 from engine_plan_execute import generate_performance_dashboard
 from tools.tool_obsidian import tool_merge_weekly_reports
 
+# ボタンの custom_id は bot プロセス側の永続 View (commands/bot_views.py) と
+# 一致させる必要があるため定数を直接 import する (discord.Client は起動しない)
+from commands.bot_views import DIVE_CUSTOM_IDS, SCHEDULER_LOG_CUSTOM_ID
+
+# Morning Briefing (optional)
+try:
+    from tools.tool_briefing_manager import tool_generate_briefing
+    _HAS_BRIEFING = True
+except ImportError:
+    _HAS_BRIEFING = False
+
 # Calendar sync (optional — missing dependency won't break scheduler)
 try:
     from tools.tool_calendar import tool_sync_to_daily_note
@@ -155,8 +166,23 @@ console_handler = logging.StreamHandler()
 console_handler.setFormatter(logging.Formatter('[Scheduler] %(message)s'))
 logger.addHandler(console_handler)
 
-def send_discord_notification(message):
-    """Discord Bot Tokenを使用して指定チャンネルにメッセージを送信する"""
+def _button_row(buttons: list[tuple[str, str]]) -> list:
+    """[(label, custom_id), ...] から Discord REST の components JSON を組み立てる。
+
+    実際のクリック処理は bot プロセス側の永続 View (commands/bot_views.py) が
+    custom_id で判別して行う。スケジューラ自身はコールバックを受信しない。
+    """
+    return [{
+        "type": 1,  # Action Row
+        "components": [
+            {"type": 2, "style": 1, "label": label, "custom_id": custom_id}
+            for label, custom_id in buttons
+        ],
+    }]
+
+
+def send_discord_notification(message, components=None):
+    """Discord Bot Tokenを使用して指定チャンネルにメッセージを送信する（任意でボタン付き）"""
     if not DISCORD_BOT_TOKEN or not DISCORD_LOG_CHANNEL_ID:
         logger.warning("Discord credentials not set. Skipping notification.")
         return
@@ -167,13 +193,38 @@ def send_discord_notification(message):
         "Content-Type": "application/json"
     }
     payload = {"content": message}
-    
+    if components:
+        payload["components"] = components
+
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         if response.status_code not in [200, 201]:
             logger.error(f"Failed to send Discord notification: {response.status_code} {response.text}")
     except Exception as e:
         logger.error(f"Error sending Discord notification: {e}")
+
+
+def _run_morning_briefing() -> str:
+    """朝ブリーフィングを生成し、深掘りボタン付きで Discord に配信する。"""
+    if not _HAS_BRIEFING:
+        msg = "Morning Briefing: tool_briefing_manager not available"
+        # silent タスクのため、この早期リターンでも自前で通知しないと無言で終わってしまう
+        send_discord_notification(f"❌ **Morning Briefing Skipped**: {msg}")
+        return msg
+
+    content = tool_generate_briefing(include_content=True)
+    display = content[:1900] + ("... (truncated)" if len(content) > 1900 else "")
+
+    # latest_features.json が新鮮であれば深掘りボタンを添付する
+    from commands.bot_views import _load_top_features
+    features = _load_top_features(top_n=3)
+    components = None
+    if features:
+        buttons = [(f"🔍 深掘り {i+1}", cid) for i, cid in enumerate(DIVE_CUSTOM_IDS[:len(features)])]
+        components = _button_row(buttons)
+
+    send_discord_notification(f"☀️ **Morning Briefing**\n>>> {display}", components=components)
+    return "Morning Briefing: sent"
 
 # ---------------------------------------------------------
 # Schedule Configuration
@@ -198,6 +249,12 @@ SCHEDULE = [
         "time": "06:00",
         "name": "X Trend Update",
         "func": _run_xtrend,
+    },
+    {
+        "time": "07:30",
+        "name": "Morning Briefing",
+        "func": _run_morning_briefing,
+        "silent": True,  # 自前でボタン付き Discord 通知を送るため定型通知は抑止
     },
     {
         "time": "06:30",
@@ -338,8 +395,13 @@ SCHEDULE = [
 # ---------------------------------------------------------
 
 def _execute_task(task):
-    """1タスクを実行する（ワーカースレッド内で完結: 例外処理・通知含む）。"""
+    """1タスクを実行する（ワーカースレッド内で完結: 例外処理・通知含む）。
+
+    task["silent"] = True の場合、タスク関数が自前で Discord 通知を行う想定
+    (例: ボタン付きメッセージ) のため、開始/完了の定型通知は送らない。
+    """
     task_name = task['name']
+    silent = task.get("silent", False)
 
     # 前回実行が終わっていない場合は多重実行しない
     if not task["_lock"].acquire(blocking=False):
@@ -347,7 +409,8 @@ def _execute_task(task):
         return
     try:
         logger.info(f"🚀 Executing {task_name}...")
-        send_discord_notification(f"⏳ **Processing Started**: {task_name}")
+        if not silent:
+            send_discord_notification(f"⏳ **Processing Started**: {task_name}")
 
         try:
             result = task["func"]()
@@ -360,12 +423,16 @@ def _execute_task(task):
                 short_result = result if result else "Done (No output)"
 
             logger.info(f"✅ Completed {task_name}")
-            send_discord_notification(f"✅ **Task Completed**: {task_name}\n>>> {short_result}")
+            if not silent:
+                send_discord_notification(f"✅ **Task Completed**: {task_name}\n>>> {short_result}")
 
         except Exception as e:
             logger.error(f"❌ Error in {task_name}: {e}\n{traceback.format_exc()}")
             error_msg = str(e)[:1000]
-            send_discord_notification(f"❌ **Task Failed**: {task_name}\nError: ```{error_msg}```")
+            send_discord_notification(
+                f"❌ **Task Failed**: {task_name}\nError: ```{error_msg}```",
+                components=_button_row([("📋 ログ表示", SCHEDULER_LOG_CUSTOM_ID)]),
+            )
     finally:
         task["_lock"].release()
 

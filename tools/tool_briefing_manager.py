@@ -192,11 +192,16 @@ def _build_xtrend_section(top_n: int = 3) -> str:
 # Main Tool
 # ---------------------------------------------------------
 
-def tool_generate_briefing() -> str:
+def tool_generate_briefing(include_content: bool = False) -> str:
     """全プロバイダーから情報を収集し、3項目のブリーフィングを生成する。
 
+    Args:
+        include_content: True の場合、Success メッセージの代わりに
+            ブリーフィング本文 (+ X Trend セクション + Path) を返す
+            (Discord への直接配信用)。
+
     Returns:
-        Success メッセージ + ファイルパス、またはエラーメッセージ
+        Success メッセージ + ファイルパス、本文全体、またはエラーメッセージ
     """
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     now_str = datetime.datetime.now().strftime("%H%M")
@@ -270,6 +275,13 @@ type: briefing
         f.write(report)
 
     print(f"[Briefing] ✅ Saved: {filepath}")
+
+    if include_content:
+        return (
+            f"{briefing_text}\n{xtrend_section}\n\n"
+            f"(Path: {filepath})"
+        )
+
     return (
         f"Success: ブリーフィング生成完了。"
         f" Report: [[30_Main/Briefing/{filename}]]"

@@ -7,8 +7,9 @@ from lib.lib_persona import add_client_persona, get_all_personas
 from tools.tool_client_review import evaluate_deliverable, revise_deliverable, _save_improvement_log
 from engine_self_improve import analyze_weak_tools
 from lib.lib_shared import WORK_DIR, VAULT_ROOT
+from commands.bot_views import AllowedUserView
 
-class ClientReviewLoopView(discord.ui.View):
+class ClientReviewLoopView(AllowedUserView):
     def __init__(self, deliverable: str, job_description: str, persona_id: str, current_eval: dict):
         super().__init__(timeout=None)
         self.current_text = deliverable
