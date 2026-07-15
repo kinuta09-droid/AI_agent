@@ -178,12 +178,16 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 
 def _parse_allowed_user_ids(raw: str) -> set:
-    """カンマ区切りのユーザーID文字列を set[int] にパースする（数字以外は無視）。"""
+    """カンマ区切りのユーザーID文字列を set[int] にパースする（数字以外は警告して無視）。"""
     ids = set()
     for part in raw.split(","):
         part = part.strip()
+        if not part:
+            continue
         if part.isdigit():
             ids.add(int(part))
+        else:
+            print(f"[Discord] ⚠️ ALLOWED_USER_IDS の不正なトークンを無視しました: {part!r}")
     return ids
 
 
@@ -230,6 +234,12 @@ class GatedCommandTree(app_commands.CommandTree):
         except discord.HTTPException:
             pass
         return False
+
+    async def on_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        # interaction_check の拒否 (CheckFailure) は正常系なのでログに出さない
+        if isinstance(error, app_commands.CheckFailure):
+            return
+        await super().on_error(interaction, error)
 
 
 tree = GatedCommandTree(bot)
