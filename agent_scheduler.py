@@ -212,6 +212,25 @@ def send_discord_notification(message, components=None):
         logger.error(f"Error sending Discord notification: {e}")
 
 
+def _truncate_preserving_xtrend(content: str, max_len: int = 1900) -> str:
+    """Discord(raw REST)送信は2000字上限。XTrendセクションは固定・短いため優先的に
+    保持し、Gemini生成の冒頭サマリー側を切り詰める (末尾切り詰めだとXTrendが
+    丸ごと消える/一部欠けるバグがあった)。"""
+    if len(content) <= max_len:
+        return content
+    marker = "## 🔥 X Trend"
+    idx = content.find(marker)
+    if idx == -1:
+        return content[:max_len] + "... (truncated)"
+    head, tail = content[:idx], content[idx:]
+    suffix = "...(続きは省略)\n\n"
+    budget = max_len - len(tail) - len(suffix)
+    if budget < 100:
+        # XTrend自体を含めても収まらない極端なケース: 従来通り単純切り詰め
+        return content[:max_len] + "... (truncated)"
+    return head[:budget] + suffix + tail
+
+
 def _run_morning_briefing() -> str:
     """朝ブリーフィングを生成し、深掘りボタン付きで Discord に配信する。"""
     if not _HAS_BRIEFING:
@@ -221,7 +240,7 @@ def _run_morning_briefing() -> str:
         return msg
 
     content = tool_generate_briefing(include_content=True)
-    display = content[:1900] + ("... (truncated)" if len(content) > 1900 else "")
+    display = _truncate_preserving_xtrend(content)
 
     # latest_features.json が新鮮であれば深掘りボタンを添付する
     from commands.bot_views import _load_top_features
