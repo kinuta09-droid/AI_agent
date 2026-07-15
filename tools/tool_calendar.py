@@ -347,8 +347,9 @@ def tool_daily_summary() -> str:
     """今日のカレンダー予定と未完了タスクをまとめたデイリーサマリーを生成する。"""
     data = _run_gws_command(["workflow", "+standup-report", "--format", "json"])
 
-    if data is None:
-        # gws が利用できない場合、カレンダーのみのフォールバック
+    if data is None or "error" in data:
+        # gws が利用できない/認証切れの場合、カレンダーAPIのみのフォールバック
+        # (エラーdictを .get() で処理すると「予定なし」と偽装されるため必ずここで弾く)
         return tool_get_calendar("today")
 
     date_str = data.get("date", datetime.datetime.now().strftime("%Y-%m-%d"))

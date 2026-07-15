@@ -159,7 +159,16 @@ def retry(max_retries=MAX_RETRIES, initial_delay=2):
     return decorator_retry
 
 def _run_gws_command(args: list[str], timeout: int = 30) -> dict | None:
-    """gws CLI コマンドを実行し、JSON結果を返す。失敗時は None。"""
+    """gws CLI コマンドを実行し、JSON結果を返す。
+
+    Returns:
+        成功時: パース済みJSON。
+        API/認証エラー時: {"error": {...}} を含むdict (gws は認証切れ等でも
+            エラーJSONをstdoutに出す。これを捨てると呼び出し元で「データ0件」と
+            区別できず、認証切れが「新着なし/予定なし」に化ける)。
+        実行不能時 (未インストール/タイムアウト/非JSON): None。
+    呼び出し側は None と "error" キーの両方をチェックすること。
+    """
     import shutil
     gws_exe = shutil.which("gws")
     if gws_exe is None:
@@ -170,9 +179,11 @@ def _run_gws_command(args: list[str], timeout: int = 30) -> dict | None:
             capture_output=True, text=True, encoding="utf-8",
             timeout=timeout
         )
+        parsed = json.loads(result.stdout)
         if result.returncode != 0:
-            return None
-        return json.loads(result.stdout)
+            # エラーJSONなら情報を保持して返す。それ以外の非ゼロ終了は従来通り None
+            return parsed if isinstance(parsed, dict) and "error" in parsed else None
+        return parsed
     except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
         return None
 

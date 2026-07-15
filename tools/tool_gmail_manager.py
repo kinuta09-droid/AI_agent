@@ -24,12 +24,26 @@ logger = logging.getLogger("GmailManager")
 # Gmail Data Fetching (via gws CLI)
 # ---------------------------------------------------------
 
-def fetch_emails_via_gws(query: str = "is:unread", max_results: int = 20) -> list[dict]:
-    """gws gmail +triage を使用してメール一覧を取得する。"""
+def fetch_emails_via_gws(query: str = "is:unread", max_results: int = 20) -> list[dict] | str:
+    """gws gmail +triage を使用してメール一覧を取得する。
+
+    Returns:
+        成功時: メールのリスト (0件なら空リスト)。
+        失敗時: "[ERROR] ..." 文字列 (認証切れ・CLI実行失敗など)。
+        ※ gws は認証エラーでも終了コード0で {"error": {...}} を返すため、
+          単に "messages" キーの有無で判定すると認証切れが「新着なし」に
+          化けてしまう (2026-07-16 に実際に発生した誤報告)。
+    """
     args = ["gmail", "+triage", "--query", query, "--max", str(max_results), "--format", "json"]
     data = _run_gws_command(args)
-    if not data or "messages" not in data:
-        return []
+    if data is None:
+        return "[ERROR] gws CLI の実行に失敗しました (未インストール/タイムアウト/非JSON応答)。"
+    if "error" in data:
+        err = data["error"]
+        msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+        return f"[ERROR] Gmail API エラー: {msg} — `gws auth login` で再認証してください。"
+    if "messages" not in data:
+        return f"[ERROR] gws から予期しない応答形式 (keys: {sorted(data.keys())})"
     return data["messages"]
 
 # ---------------------------------------------------------
@@ -39,7 +53,10 @@ def fetch_emails_via_gws(query: str = "is:unread", max_results: int = 20) -> lis
 def get_gmail_summary() -> str:
     """Briefing Provider: 未読メールのトリアージ要約を返す。"""
     emails = fetch_emails_via_gws(max_results=15)
-    
+
+    if isinstance(emails, str):
+        # エラーを「新着なし」と偽装せず、ブリーフィングにそのまま載せる
+        return f"Gmail: 連携エラーのため確認できません。{emails}"
     if not emails:
         return "Gmail: 新着（未読）メールはありません。"
 
@@ -79,6 +96,8 @@ def get_gmail_summary() -> str:
 def tool_gmail_sync_important() -> str:
     """重要と思われるメールを検出し、Obsidian に保存する（gwsベース）。"""
     emails = fetch_emails_via_gws(max_results=10)
+    if isinstance(emails, str):
+        return f"Gmail 連携エラー: {emails}"
     if not emails:
         return "新着メールはありません。"
 
