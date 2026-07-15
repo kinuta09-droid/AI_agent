@@ -130,15 +130,23 @@ def _get_tools_config():
     # briefing tool
     from tools.tool_briefing_manager import tool_generate_briefing
 
-    # gmail tool
-    from tools.tool_gmail_manager import tool_gmail_check
+    # gmail tool (tool_gmail_manager は get_gmail_summary の名前で公開している)
+    from tools.tool_gmail_manager import get_gmail_summary as tool_gmail_check
 
     # advanced obsidian tools
     from tools.tool_obsidian import tool_fetch_context, tool_move_note, tool_refactor_note
 
+    # vault semantic search (optional — import失敗で /agent 全体を壊さない)
+    try:
+        from tools.tool_vault_index import tool_vault_semantic_search
+        _has_semantic_search = True
+    except ImportError as e:
+        print(f"[Engine] ⚠️ tool_vault_index unavailable ({e}) — semantic search disabled.")
+        _has_semantic_search = False
+
     config_tools = [
         {"name": "tool_web_search", "usage": "tool_web_search(query)", "description": "Web検索 (Tavily)"},
-        {"name": "tool_vault_search", "usage": "tool_vault_search(keywords)", "description": "Vault内を検索"},
+        {"name": "tool_vault_search", "usage": "tool_vault_search(keywords)", "description": "Vault内をキーワード完全一致で検索。ファイル名や特定の語句が分かっている場合に使う。トピック・概念的な検索には tool_vault_semantic_search を優先"},
         {"name": "tool_create_note", "usage": "tool_create_note(filename, content, summary)", "description": "ファイル作成"},
         {"name": "tool_read_note", "usage": "tool_read_note(filename)", "description": "ファイル読込"},
         {"name": "tool_update_note", "usage": "tool_update_note(filename, append_text)", "description": "追記"},
@@ -184,6 +192,15 @@ def _get_tools_config():
         "tool_xtrend": _tool_xtrend_wrapper,
         "tool_xtrend_prompt": _tool_xtrend_prompt_wrapper,
     }
+
+    # Vault semantic search を動的に追加 (calendar と同じ optional パターン)
+    if _has_semantic_search:
+        config_tools.insert(2, {
+            "name": "tool_vault_semantic_search",
+            "usage": "tool_vault_semantic_search(query, top_k=5)",
+            "description": "Vault内を意味・概念ベースで検索 (embedding類似度)。トピックや曖昧な言い回しの質問、過去メモの内容を探す場合はこちらを優先",
+        })
+        tools_map["tool_vault_semantic_search"] = tool_vault_semantic_search
 
     # Calendar/Task tools を動的に追加
     if _has_calendar:
@@ -264,8 +281,8 @@ def generate_plan(user_query: str) -> dict:
 
 【ツール選択の指針】
 - **外部情報が必要な場合** (最新ニュース、一般知識、技術情報など): tool_web_search を使う
-- **ユーザーの過去のメモや文脈が必要な場合**: tool_vault_search を使う
-- **両方が必要な場合**: まず tool_web_search で外部情報を取得し、その後 tool_vault_search で関連する過去ノートを探す
+- **ユーザーの過去のメモや文脈が必要な場合**: tool_vault_semantic_search を優先する (トピック・概念で意味検索できる)。ファイル名や特定の語句が確実に分かっている場合のみ tool_vault_search (完全一致) を使う
+- **両方が必要な場合**: まず tool_web_search で外部情報を取得し、その後 tool_vault_semantic_search で関連する過去ノートを探す
 - **URLが与えられた場合**: tool_fetch_url でページ内容を取得する
 
 {learning_block}

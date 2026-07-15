@@ -64,6 +64,14 @@ from tools.tool_crypto import tool_scan_crypto_market, tool_analyze_crypto, tool
 from engine_plan_execute import generate_performance_dashboard
 from tools.tool_obsidian import tool_merge_weekly_reports
 
+# Vault Semantic Index (optional — import失敗でスケジューラ全体を壊さない)
+try:
+    from tools.tool_vault_index import update_vault_index
+except ImportError as _e:
+    _vault_index_err = str(_e)
+    def update_vault_index():
+        return f"Vault Semantic Index: tool_vault_index not available ({_vault_index_err})"
+
 # ボタンの custom_id は bot プロセス側の永続 View (commands/bot_views.py) と
 # 一致させる必要があるため定数を直接 import する (discord.Client は起動しない)
 from commands.bot_views import DIVE_CUSTOM_IDS, SCHEDULER_LOG_CUSTOM_ID
@@ -280,6 +288,12 @@ SCHEDULE = [
         "time": "23:00",
         "name": "Performance Dashboard",
         "func": generate_performance_dashboard
+    },
+    # Vault Semantic Index (ローカルOllama埋め込み、API課金なし。:15分台は他ジョブと衝突しない)
+    {
+        "time": "03:15",
+        "name": "Vault Semantic Index",
+        "func": update_vault_index,
     },
     # Audio Transcription Sync (Check every 30 mins)
     {

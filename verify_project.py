@@ -118,6 +118,7 @@ def run_verification():
         'tools.tool_future_search',
         'tools.tool_skill_observer',
         'tools.tool_xtrend',
+        'tools.tool_vault_index',
         'engine_plan_execute'
     ]
     

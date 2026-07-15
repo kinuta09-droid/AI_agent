@@ -24,6 +24,7 @@ from tools.tool_web import (
 from tools.tool_obsidian import (
     tool_vault_search, tool_create_note, tool_read_note, tool_update_note, tool_merge_weekly_reports
 )
+from tools.tool_vault_index import tool_vault_semantic_search
 from tools.tool_briefing_manager import tool_generate_briefing, add_provider
 from tools.tool_gmail_manager import get_gmail_summary as tool_gmail_check
 
