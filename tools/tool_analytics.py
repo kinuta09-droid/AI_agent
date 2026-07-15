@@ -11,6 +11,8 @@ import re
 from datetime import datetime
 from collections import Counter
 
+from lib.lib_shared import load_json
+
 sys.stdout.reconfigure(encoding='utf-8')
 
 # ---------------------------------------------------------
@@ -18,7 +20,7 @@ sys.stdout.reconfigure(encoding='utf-8')
 # ---------------------------------------------------------
 
 LEARNING_DB = r'C:\AI_agent\learning_db.json'
-SCHEDULER_LOG = r'D:\マイドライブ\Obsidian\Dev_Logs\scheduler.log'
+SCHEDULER_LOG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scheduler.log')
 ERROR_LOG = r'D:\マイドライブ\Obsidian\Dev_Logs\error.log'
 CHAT_HISTORY = r'D:\マイドライブ\Obsidian\Dev_Logs\chat_history.json'
 
@@ -32,8 +34,7 @@ def analyze_agent_performance() -> str:
     if not os.path.exists(LEARNING_DB):
         return "❌ learning_db.json が見つかりません。"
 
-    with open(LEARNING_DB, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    data = load_json(LEARNING_DB, default={})
 
     executions = data.get('executions', [])
     if not executions:

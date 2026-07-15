@@ -14,7 +14,7 @@ from lib.lib_comfy_client import ComfyUIClient
 
 # Gemini フィルタ用（lazy — import失敗してもタグ付け自体は動く）
 try:
-    from lib.lib_shared import gemini_client, MODEL_NAME, safe_json_loads
+    from lib.lib_shared import client as gemini_client, MODEL_NAME, safe_json_loads
     _HAS_GEMINI = True
 except ImportError:
     _HAS_GEMINI = False

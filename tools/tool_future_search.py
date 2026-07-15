@@ -651,9 +651,21 @@ def _generate_uncensored_take(topic: str, report: str, user_context: str) -> str
         )
         resp = client.models.generate_content(model=MODEL_NAME_HEAVY, contents=fallback_prompt)
         fb_text = resp.text.strip()
-        # フォールバック結果を各セクションに割り当て（簡易: 全文を末尾に追加）
+        # フォールバック結果を各セクションに割り当て（各タイトル自身のセクションを抽出。
+        # 抽出できない場合は全文重複を避けるため最初の1件のみ全文を割り当てる）
+        used_full_fallback = False
         for title in fallback_needed:
-            results.append((title, fb_text))
+            m = re.search(
+                r'\*\*' + re.escape(title) + r'\*\*[:：]?\s*(.*?)(?=\n\*\*|\Z)',
+                fb_text, re.DOTALL
+            )
+            if m:
+                results.append((title, m.group(1).strip()))
+            elif not used_full_fallback:
+                results.append((title, fb_text))
+                used_full_fallback = True
+            else:
+                results.append((title, "(生成に失敗しました)"))
 
     # セクション順序を統一して組み立て
     order = {t: i for i, (t, _) in enumerate([

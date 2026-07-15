@@ -21,7 +21,7 @@ def fetch_all_workflows():
     
     # ワークフロー一覧を取得
     try:
-        response = requests.get(f"{N8N_BASE_URL}/workflows", headers=headers)
+        response = requests.get(f"{N8N_BASE_URL}/workflows", headers=headers, timeout=30)
     except requests.exceptions.ConnectionError:
         print(f"Error: Could not connect to n8n at {N8N_BASE_URL}. Is it running?")
         return
@@ -41,7 +41,7 @@ def fetch_all_workflows():
         wf_name = wf['name']
         
         # 各ワークフローの詳細（ノード構成含む）を取得
-        detail_res = requests.get(f"{N8N_BASE_URL}/workflows/{wf_id}", headers=headers)
+        detail_res = requests.get(f"{N8N_BASE_URL}/workflows/{wf_id}", headers=headers, timeout=30)
         if detail_res.status_code == 200:
             # ファイル名に使えない文字を置換
             safe_name = "".join([c if c.isalnum() or c in (' ', '_', '-') else '_' for c in wf_name])

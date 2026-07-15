@@ -114,7 +114,11 @@ def run_verification():
         'commands.bot_commands_curator',
         'bot_discord',
         'agent_hello',
-        'main'
+        'main',
+        'tools.tool_future_search',
+        'tools.tool_skill_observer',
+        'tools.tool_xtrend',
+        'engine_plan_execute'
     ]
     
     for mod in critical_modules:

@@ -81,10 +81,11 @@ def _transcribe_openai(file_path: str) -> str:
     api_key = os.environ.get("OPENAI_API_KEY")
     url = "https://api.openai.com/v1/audio/transcriptions"
     headers = {"Authorization": f"Bearer {api_key}"}
-    files = {"file": open(file_path, "rb")}
     data = {"model": "whisper-1", "language": "ja"}
-    
-    res = requests.post(url, headers=headers, files=files, data=data)
+
+    with open(file_path, "rb") as f:
+        files = {"file": f}
+        res = requests.post(url, headers=headers, files=files, data=data, timeout=300)
     res.raise_for_status()
     return res.json()["text"]
 

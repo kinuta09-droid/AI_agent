@@ -8,7 +8,7 @@ Client Review System
 import os
 import json
 import re
-from lib.lib_shared import client, MODEL_NAME, safe_json_loads, WORK_DIR
+from lib.lib_shared import client, MODEL_NAME, safe_json_loads, WORK_DIR, load_json
 from lib.lib_persona import build_persona_prompt
 from tools.tool_obsidian import tool_read_note
 
@@ -183,12 +183,8 @@ def _save_improvement_log(job: str, persona: str, before_text: str, after_text: 
     """改訂のビフォーアフターを保存し、今後のシステム改善学習パッチに活かす"""
     try:
         os.makedirs(os.path.dirname(IMPROVEMENT_LOG_PATH), exist_ok=True)
-        if os.path.exists(IMPROVEMENT_LOG_PATH):
-            with open(IMPROVEMENT_LOG_PATH, 'r', encoding='utf-8') as f:
-                history = json.load(f)
-        else:
-            history = []
-            
+        history = load_json(IMPROVEMENT_LOG_PATH, default=[])
+
         entry = {
             "timestamp": __import__("datetime").datetime.now().isoformat(),
             "job": job,

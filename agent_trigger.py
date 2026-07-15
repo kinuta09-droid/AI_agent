@@ -29,7 +29,7 @@ def trigger_n8n_webhook(text):
     
     payload = {"text": text}
     try:
-        response = requests.post(WEBHOOK_URL, json=payload)
+        response = requests.post(WEBHOOK_URL, json=payload, timeout=30)
         if response.status_code == 200:
             print(f"[Success] 🚀 Triggered n8n Webhook! (Text length: {len(text)})")
             return True

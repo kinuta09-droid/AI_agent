@@ -103,7 +103,8 @@ def route_to_tool(user_input: str) -> dict:
         import json, re
         text = re.sub(r'```json\s*|\s*```', '', response.text.strip())
         return json.loads(text)
-    except:
+    except Exception as e:
+        print(f"[route_to_tool] Falling back to agent tool: {e}")
         return {"tool": "agent", "arg": user_input}
 
 def execute_tool(tool_name: str, arg: str = None):
