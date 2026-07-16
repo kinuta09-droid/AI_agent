@@ -7,6 +7,7 @@ Plan-and-Execute, Self-Improvement Protocol を提供する。
 
 import json
 import datetime
+import inspect
 import time
 
 from google.genai import types
@@ -251,6 +252,110 @@ def _try_planned_args(item: dict) -> dict:
     return args
 
 
+# Gemini が「1ステップ分の引数」ではなく計画全体やラッパー構造を吐いたときに
+# 現れるキー。例: args_json = '{"plan": [{"tool_read_note": {...}}, ...]}'
+# → tool_read_note(plan=[...]) となり TypeError で落ちていた。
+_ARG_WRAPPER_KEYS = frozenset({
+    "plan", "args", "arguments", "kwargs",
+    "parameters", "params", "tool_input", "input",
+})
+
+
+def _tool_param_spec(func):
+    """ツール関数の (受理キー, 必須キー, **kwargs有無) を返す。
+
+    シグネチャが取れない/キーワードで渡せない形（位置専用引数）の場合は
+    None を返し、呼び出し側は検証をスキップして素通しする。
+    """
+    try:
+        sig = inspect.signature(func)
+    except (TypeError, ValueError):
+        return None
+
+    accepted, required, has_var_kw = set(), set(), False
+    for name, p in sig.parameters.items():
+        if p.kind is p.VAR_KEYWORD:
+            has_var_kw = True
+        elif p.kind is p.VAR_POSITIONAL:
+            continue
+        elif p.kind is p.POSITIONAL_ONLY:
+            # ** 展開で渡せないため、この関数は検証対象外とする
+            return None
+        else:
+            accepted.add(name)
+            if p.default is p.empty:
+                required.add(name)
+    return accepted, required, has_var_kw
+
+
+def _sanitize_tool_args(tool_name: str, func, args, _depth: int = 0):
+    """func(**args) が TypeError にならない引数dictを返す。使えなければ None。
+
+    None を返した場合、呼び出し側は Gemini による再解決へフォールバックする。
+    やること:
+      1. dict 以外 / 非文字列キー → 拒否（** 展開できない）
+      2. {"args": {...}} 等のラッパー1枚を剥がす
+      3. シグネチャに無いキーを捨てる（**kwargs を持つツールは素通し）
+      4. 必須引数が欠けていたら拒否
+    """
+    if not isinstance(args, dict):
+        return None
+    if any(not isinstance(k, str) for k in args):
+        return None
+
+    spec = _tool_param_spec(func)
+    if spec is None:
+        return args  # 検証不能 → 従来通り素通し
+    accepted, required, has_var_kw = spec
+
+    # ラッパー剥がし: 単一キーがラッパー名かつ中身がdictのときだけ1段潜る。
+    # {"plan": [...]} のように中身がlistの場合はどのステップの引数か判別
+    # できないため剥がさず拒否し、args_hint 付きの再解決に任せる。
+    if (
+        _depth < 2
+        and len(args) == 1
+        and not (set(args) & accepted)
+        and not has_var_kw
+    ):
+        key, value = next(iter(args.items()))
+        if key in _ARG_WRAPPER_KEYS:
+            if isinstance(value, dict):
+                return _sanitize_tool_args(tool_name, func, value, _depth + 1)
+            return None
+
+    if has_var_kw:
+        filtered = dict(args)
+    else:
+        filtered = {k: v for k, v in args.items() if k in accepted}
+        dropped = set(args) - set(filtered)
+        if dropped:
+            print(f"[P&E] ⚠️ {tool_name}: 未知の引数を除去 {sorted(dropped)}")
+
+    missing = required - set(filtered)
+    if missing:
+        print(f"[P&E] ⚠️ {tool_name}: 必須引数が不足 {sorted(missing)}")
+        return None
+    return filtered
+
+
+def _resolve_step_args(tool_name: str, func, item: dict, task: str,
+                       context: list):
+    """1ステップ分の引数を決める。計画時の args_json → 検証 → NGなら Gemini解決。
+
+    どちらの経路でも検証を通せなければ None（＝ステップを明示的に失敗させる）。
+    """
+    planned = _try_planned_args(item)
+    if planned is not None:
+        args = _sanitize_tool_args(tool_name, func, planned)
+        if args is not None:
+            return args
+        print(f"[P&E] ⚠️ {tool_name}: 計画時の args_json が不正 → Gemini再解決")
+
+    resolved = _resolve_tool_args(tool_name, item.get("args_hint", ""),
+                                  task, context)
+    return _sanitize_tool_args(tool_name, func, resolved)
+
+
 def execute_plan(plan: list, step_callback=None) -> dict:
     """計画を順番に実行する。
 
@@ -283,32 +388,42 @@ def execute_plan(plan: list, step_callback=None) -> dict:
                 "status": "running",
             })
 
-        # 計画時点で確定済みの引数があれば使い、なければ Gemini に解決させる
-        args = _try_planned_args(item)
-        if args is None:
-            args = _resolve_tool_args(tool_name, args_hint, task, accumulated_context)
-
-        # tool_create_note の場合、content を専用プロンプトでリッチに再生成する
-        # JSON制約内では長文生成が困難なため、2段階方式で品質を担保する
-        if tool_name == "tool_create_note" and accumulated_context:
-            rich_content = _generate_rich_content(
-                task=task,
-                filename=args.get("filename", ""),
-                context=accumulated_context,
-            )
-            if rich_content:
-                args["content"] = rich_content
-
-        if tool_name not in tools_map:
+        # 引数検証にシグネチャが要るため、ツール解決を先に行う
+        func = tools_map.get(tool_name)
+        args = {}
+        if func is None:
             observation = f"Error: Unknown tool '{tool_name}'"
             success = False
         else:
-            try:
-                observation = observe(tool_name, tools_map[tool_name], "engine_plan_execute", **args)
-                success = True
-            except Exception as e:
-                observation = f"Error: {e}"
+            # 計画時点で確定済みの引数があれば使い、なければ Gemini に解決させる。
+            # どちらもシグネチャ検証を通す（TypeError を事前に潰す）
+            args = _resolve_step_args(tool_name, func, item, task,
+                                      accumulated_context)
+            if args is None:
+                args = {}
+                observation = (
+                    f"Error: '{tool_name}' の引数を解決できませんでした "
+                    f"(hint: {args_hint or 'なし'})"
+                )
                 success = False
+            else:
+                # tool_create_note の場合、content を専用プロンプトでリッチに再生成する
+                # JSON制約内では長文生成が困難なため、2段階方式で品質を担保する
+                if tool_name == "tool_create_note" and accumulated_context:
+                    rich_content = _generate_rich_content(
+                        task=task,
+                        filename=args.get("filename", ""),
+                        context=accumulated_context,
+                    )
+                    if rich_content:
+                        args["content"] = rich_content
+
+                try:
+                    observation = observe(tool_name, func, "engine_plan_execute", **args)
+                    success = True
+                except Exception as e:
+                    observation = f"Error: {e}"
+                    success = False
 
         print(f"  {'✅' if success else '❌'} {str(observation)[:200]}...")
 
