@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-Future Search Tool — Multi-agent futures research system.
+Future Search Tool — Multi-lens futures research system.
 
-Flow:
-  1. Tavily で英語ソースを収集
-  2. 10体のOllamaエージェントが異なる視点で意見生成（引用なしは棄却）
-  3. Gemini 2.0 Flash が全意見を統合し日本語レポートを生成
-  4. Obsidianに保存 + Discordに要約通知（Webhook設定時）
+Flow (2026-07 リニューアル: 高速化・個人化・使いやすさ改善):
+  1. 日本語トピックを英語検索クエリに変換 (Gemini lite)
+  2. Tavily で英語ソースを収集 (depth により 5/10/15 件)
+  3. Gemini Heavy が 10 の分析視点で1パス多角推論し日本語レポート生成
+     (旧: qwen3:1.7b 10体を並列実行 → 数分。新: Gemini 1回 → 十数秒)
+  4. 幸福最大化アドバイス (ユーザー文脈で個人化)
+  5. Obsidianに保存 + Discordに要約通知（Webhook設定時）
+  6. (uncensored=True 時のみ) DavidAU 辛口診断
+
+視点の多様性 (AGENT_PERSONAS) は保持しつつ、ローカル多体実行を Gemini の
+1パス・マルチレンズ推論に畳んで高速化。視点間の対立も明示的に推論させる。
 """
 
 import os
@@ -15,11 +21,11 @@ import re
 import json
 import datetime
 import requests
-import concurrent.futures
 
 from lib.lib_shared import (
     client,
     tavily_client,
+    MODEL_NAME,
     MODEL_NAME_HEAVY,
     VAULT_ROOT,
     WORK_DIR,
@@ -29,17 +35,21 @@ from lib.lib_shared import (
 # ---------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------
-# 10エージェント用: 速度重視・並列実行
-OLLAMA_MODEL = "qwen3:1.7b"          # 1行変更で切り替え可能
 OLLAMA_BASE_URL = "http://localhost:11434"
-AGENT_TIMEOUT = 90                  # seconds per agent call
 
-# 幸福最大化AI用: DavidAU Claude 4.6蒸留版 (Qwen3.5-9B IQ4_XS)
+# 辛口診断AI (uncensoredオプション用): DavidAU Claude 4.6蒸留版 (Qwen3.5-9B IQ4_XS)
 # ollama create happy-claude -f models/davidau-claude/Modelfile で登録済み
 HAPPINESS_MODEL = "happy-claude"
 HAPPINESS_TIMEOUT = 300             # 9Bモデル on CPU: 最大5分
 
-SEARCH_RESULTS = 10                 # Tavily で取得するソース数 (エージェント多様性のため増量)
+# depth ごとの設定: ソース数と分析の詳細度指示
+DEPTH_CONFIG = {
+    "quick":    {"sources": 5,  "detail": "簡潔に。エグゼクティブサマリーと主要シナリオを中心に、要点を絞って記述する。"},
+    "standard": {"sources": 10, "detail": "標準的な詳細度でバランス良く記述する。"},
+    "deep":     {"sources": 15, "detail": "各シナリオの根拠・反証・二次的影響まで深く掘り下げて記述する。"},
+}
+DEFAULT_DEPTH = "standard"
+
 FUTURES_DIR = os.path.join(WORK_DIR, "40_Report", "FutureSearch")
 
 # Discord Webhook (DISCORD_WEBHOOK_URL を .env に設定すれば通知が届く)
@@ -150,13 +160,12 @@ def _deduplicate_paragraphs(text: str) -> str:
     return "\n\n".join(result)
 
 
-def _call_ollama(prompt: str, timeout: int = AGENT_TIMEOUT, model: str = None) -> str:
+def _call_ollama(prompt: str, timeout: int = HAPPINESS_TIMEOUT, model: str = HAPPINESS_MODEL) -> str:
     """ローカルOllama APIを呼び出す。失敗時はエラー文字列を返す。
 
-    model: 省略時は OLLAMA_MODEL (10エージェント用)。
-           HAPPINESS_MODEL などを渡すことで別モデルに切り替え可能。
+    現在は辛口診断 (DavidAU/happy-claude) 専用。旧10体エージェント層は撤去済み。
     """
-    effective_model = model or OLLAMA_MODEL
+    effective_model = model
     effective_prompt = prompt
 
     # 全Ollamaモデルに /no_think を付与。
@@ -200,7 +209,7 @@ def _call_ollama(prompt: str, timeout: int = AGENT_TIMEOUT, model: str = None) -
 # Step 1: English source collection via Tavily
 # ---------------------------------------------------------
 
-def _search_topic(topic: str, max_results: int = SEARCH_RESULTS) -> list:
+def _search_topic(topic: str, max_results: int = 10) -> list:
     """Tavilyで英語ソースを検索。{title, url, content}のリストを返す。"""
     try:
         results = tavily_client.search(
@@ -223,177 +232,94 @@ def _search_topic(topic: str, max_results: int = SEARCH_RESULTS) -> list:
 
 
 # ---------------------------------------------------------
-# Step 2: Single agent analysis
+# Step 1.5: 日本語トピック → 英語検索クエリ変換
 # ---------------------------------------------------------
 
-def _run_single_agent(persona: dict, sources: list, topic: str) -> dict:
-    """1エージェントがソースを読んで意見を生成する。引用なしは棄却。"""
-    if not sources:
-        return {
-            "agent_id": persona["id"],
-            "agent_name": persona["name"],
-            "opinion": "[SKIP] No sources available.",
-            "citations": [],
-            "valid": False,
-        }
+def _is_mostly_ascii(text: str) -> bool:
+    """テキストがほぼASCII (英語) かどうか判定する。"""
+    if not text:
+        return True
+    ascii_count = sum(1 for c in text if ord(c) < 128)
+    return ascii_count / len(text) > 0.9
+
+
+def _default_translate_llm(prompt: str) -> str:
+    """英訳用の軽量Gemini呼び出し (lite モデル)。"""
+    response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
+    return (response.text or "").strip()
+
+
+def _translate_to_english_query(topic: str, llm_fn=None) -> str:
+    """日本語トピックを英語のWeb検索クエリに変換する。
+
+    既に英語ならそのまま返す。失敗時も元のトピックにフォールバックし、
+    検索自体は必ず続行できるようにする。llm_fn は注入可能 (テスト用)。
+    """
+    if _is_mostly_ascii(topic):
+        return topic
+    llm_fn = llm_fn or _default_translate_llm
+    prompt = (
+        "Translate the following research topic into a concise English web search "
+        "query (5-10 words). Output ONLY the query text — no quotes, no explanation.\n\n"
+        f"Topic: {topic}\n\nEnglish search query:"
+    )
+    try:
+        result = llm_fn(prompt).strip().strip('"').strip()
+        return result or topic
+    except Exception as e:
+        print(f"[FutureSearch] ⚠️ English translation failed ({e}); using raw topic.")
+        return topic
+
+
+# ---------------------------------------------------------
+# Step 3: マルチレンズ推論 (Gemini 1パスで10視点を統合)
+# ---------------------------------------------------------
+
+def _build_multi_lens_prompt(topic: str, sources: list, user_context: str,
+                             depth: str = DEFAULT_DEPTH) -> str:
+    """10視点マルチレンズ推論のプロンプトを構築する (純粋関数, I/Oなし)。"""
+    today = datetime.date.today().isoformat()
+    detail = DEPTH_CONFIG.get(depth, DEPTH_CONFIG[DEFAULT_DEPTH])["detail"]
 
     sources_text = "\n\n".join(
-        f"SOURCE [{i + 1}] — {s['title']}\nURL: {s['url']}\n{s['content'][:600]}"
+        f"[SOURCE {i + 1}] {s['title']}\nURL: {s['url']}\n{s['content'][:800]}"
         for i, s in enumerate(sources)
     )
+    lenses = "\n".join(
+        f"{i + 1}. {p['name']}: {p['lens']}"
+        for i, p in enumerate(AGENT_PERSONAS)
+    )
 
-    prompt = f"""You are a futures analyst. Your analytical perspective: {persona['lens']}
-
-TOPIC: {topic}
-
-SOURCES:
-{sources_text}
-
-Instructions:
-1. Read the sources carefully.
-2. Write a focused 150-200 word analysis from your unique perspective.
-3. You MUST reference at least one source using [SOURCE N] notation.
-   Opinions without any [SOURCE N] citation will be REJECTED.
-4. Be direct, specific, and opinionated. Avoid vague generalities.
-
-Respond in EXACTLY this format:
-
-OPINION:
-[Your analysis here, with [SOURCE N] citations inline]
-
-CITATIONS:
-[List each [SOURCE N] you cited, one per line]"""
-
-    raw = _call_ollama(prompt)
-
-    # Parse opinion and citations blocks
-    opinion = ""
-    citations = []
-    if "OPINION:" in raw:
-        parts = raw.split("CITATIONS:", 1)
-        opinion = parts[0].replace("OPINION:", "").strip()
-        if len(parts) > 1:
-            citations = [c.strip() for c in parts[1].strip().split("\n") if c.strip()]
+    if user_context:
+        ctx_block = f"\n## このユーザーについて（分析を必ずこの人の関心・状況に関連づけること）\n{user_context}\n"
+        personalization_rule = "- このユーザーの関心・状況・目標に特に関連する示唆を明示的に強調する\n"
     else:
-        # Fallback: use raw output as opinion
-        opinion = raw[:600]
+        ctx_block = ""
+        personalization_rule = ""
 
-    # Validate: モデルによって表記がばらつく。全パターンを網羅:
-    #   [SOURCE 1], (Source 1), SOURCE [1], source1, Source1 etc.
-    has_citation = bool(re.search(r'(?i)\bsource\s*[\[\(]?\s*\d+', opinion))
-    if not has_citation or not opinion or opinion.startswith("[ERROR]"):
-        return {
-            "agent_id": persona["id"],
-            "agent_name": persona["name"],
-            "opinion": opinion[:400] if opinion else "[SKIP] Empty response.",
-            "citations": citations,
-            "valid": False,
-        }
+    return f"""あなたは卓越した未来研究アナリストです。今日は {today}。
+以下の英語ソースを根拠に、トピックを **{len(AGENT_PERSONAS)}つの分析視点** から
+多角的に推論し、日本語で統合レポートを作成してください。
 
-    return {
-        "agent_id": persona["id"],
-        "agent_name": persona["name"],
-        "opinion": opinion,
-        "citations": citations,
-        "valid": True,
-    }
-
-
-# ---------------------------------------------------------
-# Step 3: Parallel multi-agent execution
-# ---------------------------------------------------------
-
-def _sources_for_agent(sources: list, agent_index: int, window: int = 6) -> list:
-    """エージェントごとにソースをローテーションして返す。
-    10ソース × 10エージェントで各エージェントが異なる6ソースを受け取り、
-    同じ情報に依存しない多様な分析を促す。
-    """
-    n = len(sources)
-    if n <= window:
-        return sources  # ソースが少ない場合は全件渡す
-    step = max(1, n // len(AGENT_PERSONAS))
-    start = (agent_index * step) % n
-    return [sources[(start + j) % n] for j in range(window)]
-
-
-def _run_all_agents(topic: str, sources: list) -> list:
-    """10体のエージェントをThreadPoolExecutorで並列実行する。
-    各エージェントには異なるソースサブセットを渡すことで分析の多様性を高める。
-    """
-    print(f"[FutureSearch] 🤖 Launching {len(AGENT_PERSONAS)} agents in parallel...")
-    print(f"[FutureSearch]    Sources: {len(sources)} total, 6/agent (rotated)")
-    results = []
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(AGENT_PERSONAS)) as executor:
-        future_to_persona = {
-            executor.submit(
-                _run_single_agent,
-                persona,
-                _sources_for_agent(sources, i),
-                topic,
-            ): persona
-            for i, persona in enumerate(AGENT_PERSONAS)
-        }
-        for future in concurrent.futures.as_completed(future_to_persona):
-            persona = future_to_persona[future]
-            try:
-                result = future.result(timeout=AGENT_TIMEOUT + 15)
-                icon = "✅" if result["valid"] else "⚠️"
-                print(f"  {icon} [{persona['name']}] done (valid={result['valid']})")
-                results.append(result)
-            except Exception as e:
-                print(f"  ❌ [{persona['name']}] failed: {e}")
-                results.append({
-                    "agent_id": persona["id"],
-                    "agent_name": persona["name"],
-                    "opinion": f"[ERROR] {e}",
-                    "citations": [],
-                    "valid": False,
-                })
-
-    # Restore original persona order for readability
-    order = {p["id"]: i for i, p in enumerate(AGENT_PERSONAS)}
-    results.sort(key=lambda r: order.get(r["agent_id"], 99))
-    return results
-
-
-# ---------------------------------------------------------
-# Step 4: Gemini synthesis → Japanese report
-# ---------------------------------------------------------
-
-@retry(max_retries=3, initial_delay=5)
-def _synthesize_with_gemini(topic: str, agent_results: list, sources: list) -> str:
-    """全エージェント意見をGemini Heavy に渡して日本語レポートを生成。"""
-    today = datetime.date.today().isoformat()
-    valid_count = sum(1 for r in agent_results if r["valid"])
-
-    all_opinions = "\n\n".join(
-        f"### {r['agent_name']} ({r['agent_id']})"
-        + (" [INVALID - no citation]" if not r["valid"] else "")
-        + f"\n{r['opinion']}"
-        for r in agent_results
-    )
-
-    source_list = "\n".join(
-        f"- [{s['title']}]({s['url']})" for s in sources
-    )
-
-    prompt = f"""あなたは未来研究の専門家です。今日は {today} です。
-
-## 分析トピック
+## トピック
 {topic}
 
-## 10体のAIエージェントによる多角的分析（英語ソースベース）
-{all_opinions}
+## 分析視点（各視点で必ず検討し、視点間で結論が対立する場合はその対立を隠さず明示すること）
+{lenses}
 
-## 使用英語ソース
-{source_list}
+## 英語ソース
+{sources_text}
+{ctx_block}
+## 詳細度
+{detail}
 
 ## 指示
-上記の10体のエージェント意見を統合し、以下の構造で**日本語**レポートを作成してください。
-有効エージェント（引用あり）の意見を優先しつつ、無効意見も参考として扱うこと。
+- 各主張には必ず [SOURCE N] 形式で根拠を示す
+- 視点間の対立・緊張関係を隠さず明示する（安易な統合をしない）
+- 蓋然性スコアはソースの根拠に基づいて設定し、各シナリオに1文の根拠を付ける
+{personalization_rule}
+以下の構造で日本語出力:
 
----
 # 🔭 未来シナリオ分析: {topic}
 **生成日**: {today}
 
@@ -401,9 +327,8 @@ def _synthesize_with_gemini(topic: str, agent_results: list, sources: list) -> s
 （3〜5文で全体像を要約）
 
 ## 未来シナリオ
-
 ### 🟢 高蓋然性シナリオ（60〜80%）
-（2〜3シナリオ。根拠となるエージェント意見を引用して説明）
+（2〜3シナリオ。根拠を [SOURCE N] で示す）
 
 ### 🟡 中蓋然性シナリオ（30〜60%）
 （2シナリオ。相矛盾する視点を明示）
@@ -411,31 +336,32 @@ def _synthesize_with_gemini(topic: str, agent_results: list, sources: list) -> s
 ### 🔴 低蓋然性・テールリスク（10〜30%）
 （1〜2シナリオ。過小評価されているリスクを強調）
 
+## 視点間の対立・論点
+（どの視点とどの視点が、何について対立しているかを2〜4項目）
+
 ## 主要な不確実性要因
 （箇条書き5〜7項目）
 
 ## 弱者・見落とされがちな影響
-（弱者視点エージェントの洞察を特に拡張して記述）
+（弱者・周辺視点の洞察を特に拡張して記述）
 
 ## 推奨アクション・注目ポイント
 （個人・組織が今すぐ取れる具体的アクション3〜5個）
 
 ## 分析メタデータ
-- 有効エージェント数: {valid_count}/{len(AGENT_PERSONAS)}
-- 無効（引用なし）: {len(AGENT_PERSONAS) - valid_count}件
+- 分析視点数: {len(AGENT_PERSONAS)}
 - ソース数: {len(sources)}件
-- モデル: {OLLAMA_MODEL} × Gemini
+- 詳細度: {depth}
+- モデル: Gemini {MODEL_NAME_HEAVY}"""
 
----
 
-重要: 蓋然性スコアはエージェント意見の根拠に基づき設定し、
-各シナリオに1文の根拠説明を必ず付けること。"""
-
-    response = client.models.generate_content(
-        model=MODEL_NAME_HEAVY,
-        contents=prompt,
-    )
-    return response.text.strip()
+@retry(max_retries=3, initial_delay=5)
+def _multi_lens_analysis(topic: str, sources: list, user_context: str,
+                         depth: str = DEFAULT_DEPTH) -> str:
+    """10視点マルチレンズ推論を Gemini Heavy で1パス実行し日本語レポートを返す。"""
+    prompt = _build_multi_lens_prompt(topic, sources, user_context, depth)
+    response = client.models.generate_content(model=MODEL_NAME_HEAVY, contents=prompt)
+    return (response.text or "").strip()
 
 
 # ---------------------------------------------------------
@@ -750,85 +676,80 @@ def _notify_discord(topic: str, report: str, filename: str) -> None:
 # Main Entry Point
 # ---------------------------------------------------------
 
-def run_future_search(topic: str = "", skip_uncensored: bool = False) -> str:
-    """
-    英語圏リサーチ → 10体マルチエージェント議論 → 日本語レポート生成。
-
-    Ollama ({OLLAMA_MODEL}) で各エージェントが英語ソースを分析し、
-    Gemini Heavy が統合レポートを日本語で生成する。
+def run_future_search(topic: str = "", depth: str = DEFAULT_DEPTH,
+                      uncensored: bool = False, progress_cb=None) -> str:
+    """未来シナリオ分析: 英訳 → Tavily検索 → Gemini 10視点マルチレンズ推論 → 個人化。
 
     Args:
-        skip_uncensored: True にすると DavidAU 辛口診断をスキップ（高速化）。
+        topic: 分析トピック (日本語可。内部で英語検索クエリに変換)。
+        depth: "quick" / "standard" / "deep"。ソース数と詳細度を決める。
+        uncensored: True で DavidAU 辛口診断を追加生成 (遅いので明示選択制)。
+        progress_cb: 各段階で呼ばれる同期コールバック fn(msg:str)。None なら無視。
     """
-    if not topic:
-        topic = input("分析トピック (英語推奨): ").strip()
-    if not topic:
+    def _progress(msg: str):
+        print(f"[FutureSearch] {msg}")
+        if progress_cb:
+            try:
+                progress_cb(msg)
+            except Exception:
+                pass  # 進捗表示の失敗は本処理を止めない
+
+    if not topic or not topic.strip():
         return "Error: トピックが空です。"
+    topic = topic.strip()
+    if depth not in DEPTH_CONFIG:
+        depth = DEFAULT_DEPTH
+    n_sources = DEPTH_CONFIG[depth]["sources"]
 
-    print(f"\n[FutureSearch] 🚀 Start: '{topic}'")
-    print(f"[FutureSearch] 🤖 Ollama model: {OLLAMA_MODEL}")
+    print(f"\n[FutureSearch] 🚀 Start: '{topic}' (depth={depth}, uncensored={uncensored})")
 
-    # Step 1: Collect English sources
-    print("[FutureSearch] 🔍 Searching English sources via Tavily...")
-    sources = _search_topic(topic, max_results=SEARCH_RESULTS)
+    # Step 1: 英語検索クエリに変換
+    _progress("🌐 検索クエリを英語に変換中...")
+    en_query = _translate_to_english_query(topic)
+    if en_query != topic:
+        print(f"[FutureSearch] 🌐 EN query: '{en_query}'")
+
+    # Step 2: Tavily で英語ソース収集
+    _progress(f"🔍 英語ソースを検索中 ({n_sources}件)...")
+    sources = _search_topic(en_query, max_results=n_sources)
     if not sources:
         return f"Error: Tavily検索でソースが取得できませんでした。トピック: '{topic}'"
     print(f"[FutureSearch] 📰 Found {len(sources)} sources.")
 
-    # Step 2 & 3: Run all agents in parallel
-    agent_results = _run_all_agents(topic, sources)
-    valid_count = sum(1 for r in agent_results if r["valid"])
-    print(f"[FutureSearch] ✅ Valid opinions: {valid_count}/{len(AGENT_PERSONAS)}")
-
-    if valid_count == 0:
-        # All agents failed — likely Ollama is down; still attempt Gemini with raw output
-        print("[FutureSearch] ⚠️ No valid agent opinions. Proceeding with raw output.")
-
-    # Step 4: Gemini synthesis
-    print("[FutureSearch] ✍️ Synthesizing Japanese report via Gemini...")
-    report = _synthesize_with_gemini(topic, agent_results, sources)
-
-    # Step 4.5: Load user context
-    print("[FutureSearch] 👤 Loading user context...")
+    # Step 3: ユーザー文脈を読み込み (コア分析にも注入して個人化)
+    _progress("👤 ユーザー文脈を読み込み中...")
     user_context = _load_user_context()
-    if user_context:
-        print("[FutureSearch] 👤 User context loaded.")
-    else:
-        print("[FutureSearch] 👤 No user profile found, using generic context.")
 
-    # Step 5a: Gemini → 構造化幸福アドバイス
-    print("[FutureSearch] 💛 Generating happiness-maximizing advice (Gemini)...")
+    # Step 4: Gemini 10視点マルチレンズ推論
+    _progress(f"🧠 {len(AGENT_PERSONAS)}視点で多角的に分析中...")
+    report = _multi_lens_analysis(topic, sources, user_context, depth)
+
+    # Step 5: 幸福最大化アドバイス (個人化)
+    _progress("💛 幸福最大化アドバイスを生成中...")
     happiness_advice = _generate_happiness_advice(topic, report, user_context)
     main_report = report + "\n\n---\n\n" + happiness_advice
 
-    # Step 6a: メインレポートをObsidianに即時保存（DavidAUを待たない）
+    # Step 6: メインレポートを即時保存 (辛口を待たない)
+    _progress("💾 Obsidianに保存中...")
     filename = _save_to_obsidian(topic, main_report)
-    if skip_uncensored:
-        print(f"[FutureSearch] ✅ Main report saved. 辛口診断はスキップ。")
-    else:
-        print(f"[FutureSearch] ✅ Main report saved. Starting DavidAU uncensored section...")
-
-    # Step 7: Discord notification（メインレポートで通知）
     _notify_discord(topic, main_report, filename)
 
-    # Step 5b: DavidAU → 辛口セクション（別ファイル）— スキップ可能
+    # Step 7: (任意) DavidAU 辛口診断 — 遅いので uncensored=True の時のみ
     uncensored_filename = None
-    if not skip_uncensored:
-        print("[FutureSearch] 🔥 Generating uncensored take (DavidAU)...")
-        uncensored = _generate_uncensored_take(topic, report, user_context)
-        uncensored_filename = _save_to_obsidian(topic + " [辛口診断]", uncensored)
+    if uncensored:
+        _progress("🔥 辛口診断を生成中 (数分かかります)...")
+        unc = _generate_uncensored_take(topic, report, user_context)
+        uncensored_filename = _save_to_obsidian(topic + " [辛口診断]", unc)
         print(f"[FutureSearch] 🔥 Uncensored report saved: [[{uncensored_filename}]]")
 
-    # Return preview (first 25 lines of main report)
-    preview_lines = main_report.split("\n")[:25]
-    preview = "\n".join(preview_lines)
+    preview = "\n".join(main_report.split("\n")[:25])
     result = (
-        f"✅ FutureSearch完了\n"
+        f"✅ FutureSearch完了 (depth={depth}, {len(sources)}ソース)\n"
         f"メインレポート: [[{filename}]]\n"
     )
     if uncensored_filename:
         result += f"辛口診断: [[{uncensored_filename}]]\n"
-    result += f"有効エージェント: {valid_count}/{len(AGENT_PERSONAS)}\n\n{preview}\n..."
+    result += f"\n{preview}\n..."
     return result
 
 

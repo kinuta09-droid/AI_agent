@@ -134,7 +134,7 @@ def _run_auto_deep_dive() -> str:
     if not topic:
         return "Auto Deep-Dive: TOP1のfeature_nameが空。スキップ。"
     logger.info(f"Auto Deep-Dive: topic='{topic}'")
-    return _future_search(topic, skip_uncensored=True)
+    return _future_search(topic, depth="standard", uncensored=False)
 
 # X Trend (optional)
 try:

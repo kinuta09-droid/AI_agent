@@ -244,16 +244,31 @@ async def cmd_browse(interaction: discord.Interaction, url: str, task: str = "�
         await interaction.followup.send(result[:2000])
 
 
-async def cmd_future(interaction: discord.Interaction, topic: str):
-    """英語圏10エージェント並列リサーチ → 日本語レポート+辛口診断"""
+async def cmd_future(interaction: discord.Interaction, topic: str,
+                     depth: str = "standard", uncensored: bool = False):
+    """未来シナリオ分析: Gemini 10視点マルチレンズ推論 (英訳・個人化・進捗表示付き)"""
     await interaction.response.defer()
+
+    # ライブ進捗メッセージ (to_thread実行中にスレッドから安全に更新)
+    progress_msg = await interaction.followup.send(f"🔮 FutureSearch 開始: **{topic}** (depth={depth})")
+    loop = asyncio.get_running_loop()
+
+    def progress_cb(text: str):
+        # 別スレッドからイベントループへ安全にコルーチンを投げる
+        asyncio.run_coroutine_threadsafe(
+            progress_msg.edit(content=f"🔮 **{topic}**\n{text}"), loop
+        )
+
     try:
         run_future_search = _import_future_search()
-        result = await asyncio.to_thread(run_future_search, topic)
+        result = await asyncio.to_thread(
+            run_future_search, topic, depth, uncensored, progress_cb
+        )
     except Exception as e:
         result = f"❌ FutureSearch Error: {e}"
 
     if _send_with_fallback:
-        await _send_with_fallback(interaction, result, title="Future Search", emoji="🔮")
+        file = _make_discord_file(result, f"future_{datetime.date.today().isoformat()}.md") if len(result) > 1800 else None
+        await _send_with_fallback(interaction, result, title="Future Search", emoji="🔮", file=file)
     else:
         await interaction.followup.send(result[:2000])

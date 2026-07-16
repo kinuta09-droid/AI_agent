@@ -132,7 +132,9 @@ class BriefingDeepDiveView(AllowedUserView):
             _dive_running.add(topic)
             try:
                 from tools.tool_future_search import run_future_search
-                result = await asyncio.to_thread(run_future_search, topic, True)
+                result = await asyncio.to_thread(
+                    run_future_search, topic, "standard", False
+                )
             except Exception as e:
                 result = f"❌ 深掘りリサーチでエラーが発生しました: {e}"
             finally:

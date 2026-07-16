@@ -1000,10 +1000,20 @@ async def cmd_browse(interaction: discord.Interaction, url: str, task: str = "�
     await bot_commands_tools.cmd_browse(interaction, url, task)
 
 
-@tree.command(name="future", description="英語圏10エージェント並列リサーチ → 日本語レポート+辛口診断をObsidianに保存")
-@app_commands.describe(topic="調査トピック (英語推奨, 例: AI agents 2026)")
-async def cmd_future(interaction: discord.Interaction, topic: str):
-    await bot_commands_tools.cmd_future(interaction, topic)
+@tree.command(name="future", description="未来シナリオ分析: Gemini 10視点マルチレンズ推論をObsidianに保存")
+@app_commands.describe(
+    topic="調査トピック (日本語OK, 例: AIエージェントの未来)",
+    depth="詳細度: quick(5ソース/速い) / standard / deep(15ソース/詳細)",
+    uncensored="辛口診断を追加する (時間がかかります)",
+)
+@app_commands.choices(depth=[
+    app_commands.Choice(name="quick (速い・5ソース)", value="quick"),
+    app_commands.Choice(name="standard (標準・10ソース)", value="standard"),
+    app_commands.Choice(name="deep (詳細・15ソース)", value="deep"),
+])
+async def cmd_future(interaction: discord.Interaction, topic: str,
+                     depth: str = "standard", uncensored: bool = False):
+    await bot_commands_tools.cmd_future(interaction, topic, depth, uncensored)
 
 
 @tree.command(name="agent", description="AIエージェントに自律的なタスクを依頼（検索・ファイル操作など）")

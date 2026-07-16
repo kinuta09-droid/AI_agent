@@ -38,7 +38,7 @@ TOOLS = [
     {"name": "lora_dataset", "description": "LoRA学習用データセットを作成する", "function": "tools.tool_lora_factory.run_lora_factory", "needs_arg": False},
     {"name": "analytics", "description": "エージェントのパフォーマンスやエラーログを分析する", "function": "tools.tool_analytics.run_analytics", "needs_arg": True, "arg_name": "question", "arg_prompt": "分析したいこと: "},
     {"name": "bitnet", "description": "ローカルAI (BitNet b1.58): オフライン要約・メッセージ下書き・ルーティングテスト", "function": "tools.tool_bitnet.run_bitnet_interactive", "needs_arg": False},
-    {"name": "future_search", "description": "英語圏マルチエージェント未来リサーチ: 10体が議論→Geminiが日本語レポート生成", "function": "tools.tool_future_search.run_future_search", "needs_arg": True, "arg_name": "topic", "arg_prompt": "分析トピック (英語推奨): "},
+    {"name": "future_search", "description": "未来シナリオ分析: 英訳→Tavily検索→Gemini 10視点マルチレンズ推論→日本語レポート+個人化アドバイス", "function": "tools.tool_future_search.run_future_search", "needs_arg": True, "arg_name": "topic", "arg_prompt": "分析トピック (日本語OK): "},
 ]
 
 # ---------------------------------------------------------

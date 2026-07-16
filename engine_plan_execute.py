@@ -170,7 +170,7 @@ def _get_tools_config():
         {"name": "tool_fetch_context", "usage": "tool_fetch_context(filenames_comma_separated)", "description": "複数ファイルの文書をまとめて読み込む(カンマ区切り)"},
         {"name": "tool_move_note", "usage": "tool_move_note(old_filename, new_dir_or_filename)", "description": "ノートを別フォルダに移動・リネーム"},
         {"name": "tool_refactor_note", "usage": "tool_refactor_note(filename, instructions)", "description": "指示に基づいて既存のノート全体の内容を再構築・上書きする"},
-        {"name": "tool_future_search", "usage": "tool_future_search(topic='AI agents 2026')", "description": "英語圏10体マルチエージェント未来リサーチ: 英語ソース収集→10視点で議論→Gemini日本語レポート+幸福アドバイス+辛口診断をObsidianに保存"},
+        {"name": "tool_future_search", "usage": "tool_future_search(topic='AIエージェントの未来')", "description": "未来シナリオ分析: 日本語トピックを英訳→Tavily英語ソース収集→Gemini 10視点マルチレンズ推論→個人化された日本語レポートをObsidianに保存"},
         {"name": "tool_browser_use", "usage": "tool_browser_use(url='https://...', task='このページのXXXを教えて')", "description": "ブラウザでURLを開きJS描画後のページテキストをGeminiで解析（動的サイト・SPA対応）"},
         {"name": "tool_xtrend", "usage": "tool_xtrend(query='AI agent,MCP', min_likes=500)", "description": "X(Twitter)のAIバズ投稿を収集し機能名/技術スタック/難易度/ARMS親和性を構造化分析してObsidianに保存"},
         {"name": "tool_xtrend_prompt", "usage": "tool_xtrend_prompt(feature_index=1)", "description": "XTrend分析済み機能(1始まりの番号)のClaude Code実装指示書をGeminiで生成してlogsに保存"},
