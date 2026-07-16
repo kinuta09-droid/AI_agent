@@ -44,7 +44,10 @@ def tool_vault_hybrid_search(query: str, top_k: int = 5,
             from tools.tool_vault_index import _semantic_hits as semantic_fn
         # チャンク単位のヒットをファイル単位に集約するため多めに取る
         sem_result = semantic_fn(str(query), top_k * 2)
-    except ImportError as e:
+    except Exception as e:
+        # semantic側はベストエフォート: ImportError(numpy欠落)だけでなく
+        # sqlite3.DatabaseError(index破損)や np.vstack のValueError(次元不一致blob)でも
+        # keyword結果を道連れにしない
         sem_result = f"[ERROR] semantic search unavailable: {e}"
     if isinstance(sem_result, str):
         reason = sem_result.split("\n")[0]

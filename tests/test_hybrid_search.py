@@ -54,6 +54,16 @@ def test_fallback_on_import_error():
     print("✅ hybrid: ImportError → keyword-only fallback")
 
 
+def test_fallback_on_unexpected_exception():
+    """semantic側の想定外例外 (index DB破損 / 次元不一致blob相当) でも keyword を道連れにしない"""
+    def corrupt(q, k):
+        raise ValueError("all the input array dimensions must match")
+    kw = [_hit("a.md", 2)]
+    result = tool_vault_hybrid_search("q", keyword_fn=lambda q: kw, semantic_fn=corrupt)
+    assert "⚠️" in result and "[[a.md]]" in result
+    print("✅ hybrid: unexpected exception → keyword-only fallback")
+
+
 def test_both_empty():
     """両ソース0件 → 見つかりませんでした"""
     result = tool_vault_hybrid_search("q", keyword_fn=lambda q: [],
