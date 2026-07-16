@@ -148,6 +148,22 @@ def test_session_store_truncation():
     print("✅ session store: goal 200字 / result 1000字 切り詰め")
 
 
+def test_failure_prefixes_cover_engine_failure_strings():
+    """run_plan_and_execute の全失敗パターンが保存フィルタに引っかかること。"""
+    failure_results = [
+        "Error: division by zero",              # cmd_agent の except 節
+        "計画生成に失敗しました: timeout",        # generate_plan 例外
+        "計画を生成できませんでした。",            # 空plan早期return
+        "タスク失敗: Critic rejected",           # critique status=failed
+    ]
+    for r in failure_results:
+        assert r.startswith(agent_cmd._FAILURE_PREFIXES), \
+            f"失敗結果がフィルタを通過してしまう: {r}"
+    assert not "## 📋 結論\n成功".startswith(agent_cmd._FAILURE_PREFIXES), \
+        "正常結果はフィルタされないこと"
+    print("✅ failure filter: 全失敗パターンがセッション保存から除外される")
+
+
 def test_session_store_no_files():
     agent_cmd._sessions.clear()
     agent_cmd._update_session(555, "goal", "リンクなしの結果")
@@ -167,6 +183,7 @@ if __name__ == "__main__":
         test_session_store_ttl_expiry,
         test_session_store_wikilink_dedup_and_limit,
         test_session_store_truncation,
+        test_failure_prefixes_cover_engine_failure_strings,
         test_session_store_no_files,
     ]
     failed = 0

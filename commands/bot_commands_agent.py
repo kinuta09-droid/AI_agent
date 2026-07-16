@@ -38,6 +38,14 @@ _WIKILINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
 
 _sessions = {}  # channel_id -> {"goal": str, "summary": str, "files": list, "ts": float}
 
+# run_plan_and_execute が返す失敗文字列の接頭辞 (これらはセッションに保存しない)
+_FAILURE_PREFIXES = (
+    "Error:",
+    "計画生成に失敗しました",
+    "計画を生成できませんでした",
+    "タスク失敗:",
+)
+
 
 def _get_session_context(channel_id) -> str:
     """TTL内のセッションがあれば文脈テキストを返す。期限切れは削除して空文字。"""
@@ -132,7 +140,7 @@ async def cmd_agent(interaction: discord.Interaction, goal: str):
         result = f"Error: {e}"
 
     # 失敗結果は次回の文脈に混ぜない
-    if not result.startswith("Error:"):
+    if not result.startswith(_FAILURE_PREFIXES):
         _update_session(interaction.channel_id, goal, result)
 
     if _log_to_daily_note:
