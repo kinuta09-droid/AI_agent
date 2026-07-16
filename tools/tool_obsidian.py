@@ -15,12 +15,19 @@ from lib.lib_shared import (
 from lib.lib_obsidian_cli import run_obsidian_cli
 
 def _keyword_hits(keywords: str, max_hits: int = 10) -> list:
-    """キーワード検索のコア。構造化ヒットを walk 順で返す (ハイブリッド検索から再利用)。
+    """キーワード検索のコア。Vault全件をスコアリングし上位 max_hits 件を返す。
 
     返値: [{"rel_path": "40_Report/foo.md", "filename": "foo.md",
             "score": <マッチ行数>, "snippet": <初回マッチ行の前5/後25行>}, ...]
-    score はマッチした行の総数 (RRF のランク付けに使う。従来の 0/1 判定と
-    ヒット集合・snippet は同一)。
+    score はマッチした行の総数。降順ソート済み (同点は walk 順を保つ安定ソート)。
+    max_hits が 0/None なら全件返す。
+
+    walk 順の先着 max_hits 件で打ち切ってはならない: Vault は 600ファイル/3MB 規模で
+    全件走査が安価な一方、打ち切るとフォルダ後方の高スコアファイルが
+    ハイブリッド検索の RRF 候補にすら入らない。
+
+    既知の限界: score に長さ正規化がないため長い文書が有利 (BM25化は別途検討)。
+    ハイブリッド検索では semantic 側との RRF 融合がこの偏りを部分的に打ち消す。
     """
     kw_list = [k.strip() for k in keywords.split() if k.strip()]
     if not kw_list:
@@ -52,11 +59,10 @@ def _keyword_hits(keywords: str, max_hits: int = 10) -> list:
                         "score": score,
                         "snippet": snippet,
                     })
-                    if len(hits) >= max_hits: break
             except Exception as e:
                 print(f"⚠️ Vault scan skipped {file}: {e}")
-        if len(hits) >= max_hits: break
-    return hits
+    hits.sort(key=lambda h: -h["score"])
+    return hits[:max_hits] if max_hits and max_hits > 0 else hits
 
 def tool_vault_search(keywords: str) -> str:
     """Vault内をキーワード検索する"""
