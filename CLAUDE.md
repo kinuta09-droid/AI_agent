@@ -42,8 +42,11 @@ py agent_trigger.py            # Trigger webhook
 - Planner over-relies on `tool_vault_search` -> explicit tool selection guidelines needed
 - Agent ignores negation constraints -> explicit constraint extraction in Planner/Critic
 - `todoist-api-python` v3+: use `filter_tasks(query=)` not `get_tasks(filter=)`
-- Bot duplicate processes -> PID guard (`bot_discord.pid`) prevents multiple instances
+- Bot/Scheduler duplicate processes -> **always acquire via `lib.pid_guard.acquire()`**. Never hand-roll a "check PID file then write it" guard: the two steps are not atomic, so processes starting within seconds of each other (heavy imports run *before* the guard) all decide "no live instance" and all write the lock. This let a 2nd Discord bot connect to the gateway, so one `/agent` ran twice in parallel and `logs/skill_observations.jsonl` got same-second duplicate entries (2026-07-17)
+- Duplicate entries in `logs/skill_observations.jsonl` are **not** a nested-wrapper bug: `observe()` has exactly one call site (`engine_plan_execute.py`) and the registry stores raw callables. Same-second entries with *different* args = two concurrent processes, so count the processes first (`Get-CimInstance Win32_Process`, check who holds the Discord socket)
 - Windows `os.kill(pid, SIGTERM)` throws `OSError [WinError 87]` for dead PIDs -> catch `OSError`
+- `OpenProcess` failing does **not** mean the process is dead: `ERROR_ACCESS_DENIED(5)` = alive but not queryable. Treating it as dead re-opens the duplicate-startup hole -> fall back to "alive" when in doubt (see `lib/pid_guard.is_process_alive`)
+- WMI `CommandLine LIKE '%foo%'` matches **your own query process** -> filter on `Name = 'python.exe'` before believing a stray process exists
 
 ## Encoding Safety Rules (Windows Japanese Environment)
 > Lesson learned: 2026-02-27 — AI agent caused system-wide contamination by setting
