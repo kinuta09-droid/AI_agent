@@ -58,7 +58,6 @@ MODEL_NAME = 'gemini-3.1-flash-lite-preview'
 # コンテンツ生成・最終サマリー等、出力品質が重要なタスク向け
 MODEL_NAME_HEAVY = 'gemini-2.5-flash'
 MAX_RETRIES = 5
-MAX_STEPS = 10  # ReAct loop limit
 
 HISTORY_FILE = r'D:\マイドライブ\Obsidian\Dev_Logs\chat_history.json'
 WORK_DIR = r'D:\マイドライブ\Obsidian'

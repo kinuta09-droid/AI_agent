@@ -16,7 +16,7 @@ from tools.tool_crypto import (
 )
 from engine_plan_execute import (
     run_plan_and_execute, extract_patterns, generate_performance_dashboard,
-    run_react_loop, log_execution, generate_plan, execute_plan, critique_results
+    log_execution, generate_plan, execute_plan, critique_results
 )
 from tools.tool_web import (
     tool_web_search, tool_get_youtube_transcript, tool_fetch_url, tool_fetch_daily_news

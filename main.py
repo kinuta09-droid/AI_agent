@@ -30,7 +30,7 @@ TOOLS = [
     {"name": "curate", "description": "興味に基づいてトピックを提案・調査し、ナレッジノートを作成する", "function": "tools.tool_curator.run_curation", "needs_arg": False},
     {"name": "setup", "description": "初回セットアップ: ナレッジベースを構築", "function": "tools.tool_curator.run_setup", "needs_arg": False},
     {"name": "topic_search", "description": "指定したキーワードで調査し、ナレッジノートを作成する", "function": "tools.tool_curator.search_and_save_topic", "needs_arg": True, "arg_name": "topic", "arg_prompt": "キーワード: "},
-    {"name": "agent", "description": "AIエージェントに自律実行させる", "function": "engine_plan_execute.run_react_loop", "needs_arg": True, "arg_name": "goal", "arg_prompt": "指示: "},
+    {"name": "agent", "description": "AIエージェントに自律実行させる", "function": "engine_plan_execute.run_plan_and_execute", "needs_arg": True, "arg_name": "goal", "arg_prompt": "指示: "},
     {"name": "prediction_audit", "description": "過去の仮想通貨予測を実際の価格と照合して精度を検証する", "function": "tools.tool_crypto.tool_audit_predictions", "needs_arg": False},
     {"name": "discord_bot", "description": "Discord Botを起動する", "function": "bot_discord.run_bot", "needs_arg": False, "long_running": True},
     {"name": "scheduler", "description": "スケジューラーを起動する", "function": "agent_scheduler.run_scheduler", "needs_arg": False, "long_running": True},

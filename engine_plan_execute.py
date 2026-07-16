@@ -2,22 +2,22 @@
 """
 Antigravity Plan-and-Execute Engine
 agent_hello.py から抽出された実行エンジン。
-Plan-and-Execute, ReAct Loop, Self-Improvement Protocol を提供する。
+Plan-and-Execute, Self-Improvement Protocol を提供する。
 """
 
 import json
 import datetime
 import time
-import traceback
 
 from google.genai import types
 
 from lib.lib_shared import (
-    client, MODEL_NAME, MODEL_NAME_HEAVY, MAX_STEPS,
+    client, MODEL_NAME, MODEL_NAME_HEAVY,
     safe_json_loads, load_json, save_json,
     LEARNING_DB_PATH, PERFORMANCE_DASHBOARD_PATH, VAULT_ROOT,
     retry,
 )
+from lib.tool_registry import get_tools_config
 
 # スキル観測は任意機能: 不在・破損でもツール実行を止めない
 try:
@@ -124,192 +124,12 @@ def _build_critique_schema(valid_tools: list) -> dict:
 
 
 # ---------------------------------------------------------
-# Curator Wrapper (lazy import to avoid circular dependency)
-# ---------------------------------------------------------
-
-def _tool_future_search_wrapper(topic: str = "") -> str:
-    """英語圏マルチエージェント未来リサーチをReActツールとして公開する。"""
-    try:
-        from tools.tool_future_search import run_future_search
-        return run_future_search(topic)
-    except Exception as e:
-        return f"[future_search error] {e}"
-
-
-def _tool_xtrend_wrapper(query: str = "", min_likes: int = 500) -> str:
-    """X(Twitter)のAIバズ投稿を収集し、技術スタック・難易度・ARMS親和性を分析する。"""
-    try:
-        from tools.tool_xtrend import run
-        queries = [q.strip() for q in query.split(",")] if query else None
-        features = run(queries=queries, min_likes=min_likes, no_save=False)
-        if not features:
-            return "[xtrend] 投稿が取得できませんでした"
-        summary = "\n".join(
-            f"- {f.get('feature_name','?')}: {f.get('summary','')} "
-            f"(難易度{f.get('difficulty',0)}/5, ARMS親和{f.get('arms_affinity',0)}/5)"
-            for f in features[:10]
-        )
-        return f"[xtrend] {len(features)}件の機能を分析しました。上位10件:\n{summary}"
-    except Exception as e:
-        return f"[xtrend error] {e}"
-
-
-def _tool_browser_use_wrapper(url: str, task: str = "このページの主要な情報を要約して") -> str:
-    """URLを開きGeminiでテキスト抽出する。JSレンダリング・動的コンテンツ対応。"""
-    try:
-        from tools.tool_browser_use import browse_and_extract
-        return browse_and_extract(url, task)
-    except Exception as e:
-        return f"[browser_use error] {e}"
-
-
-def _tool_xtrend_prompt_wrapper(feature_index: int = 1) -> str:
-    """XTrendで分析した機能のClaude Code実装指示書を生成する。feature_indexは1始まり。"""
-    try:
-        from tools.tool_xtrend import _load_feature_by_index, generate_claude_prompt
-        feature = _load_feature_by_index(int(feature_index))
-        if not feature:
-            return f"[xtrend_prompt] feature {feature_index} が見つかりません。先にtool_xtrend()を実行してください。"
-        prompt_text = generate_claude_prompt(feature, save=True)
-        name = feature.get("feature_name", "?")
-        return f"[xtrend_prompt] 「{name}」の実装指示書を生成しました。\n\n{prompt_text}"
-    except Exception as e:
-        return f"[xtrend_prompt error] {e}"
-
-
-def _tool_curate_wrapper() -> str:
-    """The Curator のトピック提案をReActツールとして公開する。"""
-    try:
-        from tools.tool_curator import read_main_context, get_curation_suggestions
-        context = read_main_context()
-        suggestions = get_curation_suggestions(context, "normal")
-        topics = suggestions.get("topics", [])
-        if not topics:
-            return "No suggestions generated."
-        lines = [f"- {t['title']}: {t['description']}" for t in topics]
-        return "Suggested topics:\n" + "\n".join(lines)
-    except Exception as e:
-        return f"Error: {e}"
-
-
-# ---------------------------------------------------------
 # Plan-and-Execute Engine
 # ---------------------------------------------------------
 
 def _get_tools_config():
-    """ツール一覧と実行マップを返す（ReAct / Plan-and-Execute 共用）。
-    
-    agent_hello のツール関数を lazy import して循環依存を回避。
-    """
-    import agent_hello as _ah
-
-    # Calendar/Task tools (lazy import)
-    try:
-        from tools.tool_calendar import (
-            tool_get_calendar, tool_add_event,
-            tool_create_task, tool_get_tasks,
-            tool_sync_to_daily_note,
-        )
-        _has_calendar = True
-    except ImportError:
-        _has_calendar = False
-
-    # crypto tools from tool_crypto
-    from tools.tool_crypto import tool_analyze_crypto, tool_scan_crypto_market, tool_audit_predictions
-
-    # briefing tool
-    from tools.tool_briefing_manager import tool_generate_briefing
-
-    # gmail tool (tool_gmail_manager は get_gmail_summary の名前で公開している)
-    from tools.tool_gmail_manager import get_gmail_summary as tool_gmail_check
-
-    # advanced obsidian tools
-    from tools.tool_obsidian import tool_fetch_context, tool_move_note, tool_refactor_note
-
-    # vault semantic search (optional — import失敗で /agent 全体を壊さない)
-    try:
-        from tools.tool_vault_index import tool_vault_semantic_search
-        _has_semantic_search = True
-    except ImportError as e:
-        print(f"[Engine] ⚠️ tool_vault_index unavailable ({e}) — semantic search disabled.")
-        _has_semantic_search = False
-
-    config_tools = [
-        {"name": "tool_web_search", "usage": "tool_web_search(query)", "description": "Web検索 (Tavily)"},
-        {"name": "tool_vault_search", "usage": "tool_vault_search(keywords)", "description": "Vault内をキーワード完全一致で検索。ファイル名や特定の語句が分かっている場合に使う。トピック・概念的な検索には tool_vault_semantic_search を優先"},
-        {"name": "tool_create_note", "usage": "tool_create_note(filename, content, summary)", "description": "ファイル作成"},
-        {"name": "tool_read_note", "usage": "tool_read_note(filename)", "description": "ファイル読込"},
-        {"name": "tool_update_note", "usage": "tool_update_note(filename, append_text)", "description": "追記"},
-        {"name": "tool_get_youtube_transcript", "usage": "tool_get_youtube_transcript(url='URL')", "description": "YouTube文字起こし取得"},
-        {"name": "tool_merge_weekly_reports", "usage": "tool_merge_weekly_reports()", "description": "週次レポートのマージとアーカイブ"},
-        {"name": "tool_fetch_daily_news", "usage": "tool_fetch_daily_news()", "description": "ニュース収集・編集・保存"},
-        {"name": "tool_fetch_url", "usage": "tool_fetch_url(url)", "description": "Webページのテキスト取得"},
-        {"name": "tool_analyze_crypto", "usage": "tool_analyze_crypto(symbol='BTC/USDT')", "description": "仮想通貨クオンツ分析"},
-        {"name": "tool_scan_crypto_market", "usage": "tool_scan_crypto_market()", "description": "主要20銘柄一括スキャン"},
-        {"name": "tool_audit_predictions", "usage": "tool_audit_predictions()", "description": "予測ログの答え合わせ"},
-        {"name": "tool_curate_topics", "usage": "tool_curate_topics()", "description": "ナレッジトピック提案"},
-        {"name": "tool_generate_briefing", "usage": "tool_generate_briefing()", "description": "デイリーブリーフィング生成（Crypto + Vault更新の3項目要約）"},
-        {"name": "tool_gmail_check", "usage": "tool_gmail_check(hours=12)", "description": "直近の重要メール要約（AIトリアージ + Obsidian保存）"},
-        {"name": "tool_fetch_context", "usage": "tool_fetch_context(filenames_comma_separated)", "description": "複数ファイルの文書をまとめて読み込む(カンマ区切り)"},
-        {"name": "tool_move_note", "usage": "tool_move_note(old_filename, new_dir_or_filename)", "description": "ノートを別フォルダに移動・リネーム"},
-        {"name": "tool_refactor_note", "usage": "tool_refactor_note(filename, instructions)", "description": "指示に基づいて既存のノート全体の内容を再構築・上書きする"},
-        {"name": "tool_future_search", "usage": "tool_future_search(topic='AIエージェントの未来')", "description": "未来シナリオ分析: 日本語トピックを英訳→Tavily英語ソース収集→Gemini 10視点マルチレンズ推論→個人化された日本語レポートをObsidianに保存"},
-        {"name": "tool_browser_use", "usage": "tool_browser_use(url='https://...', task='このページのXXXを教えて')", "description": "ブラウザでURLを開きJS描画後のページテキストをGeminiで解析（動的サイト・SPA対応）"},
-        {"name": "tool_xtrend", "usage": "tool_xtrend(query='AI agent,MCP', min_likes=500)", "description": "X(Twitter)のAIバズ投稿を収集し機能名/技術スタック/難易度/ARMS親和性を構造化分析してObsidianに保存"},
-        {"name": "tool_xtrend_prompt", "usage": "tool_xtrend_prompt(feature_index=1)", "description": "XTrend分析済み機能(1始まりの番号)のClaude Code実装指示書をGeminiで生成してlogsに保存"},
-    ]
-    tools_map = {
-        "tool_web_search": _ah.tool_web_search,
-        "tool_vault_search": _ah.tool_vault_search,
-        "tool_create_note": _ah.tool_create_note,
-        "tool_read_note": _ah.tool_read_note,
-        "tool_update_note": _ah.tool_update_note,
-        "tool_get_youtube_transcript": _ah.tool_get_youtube_transcript,
-        "tool_merge_weekly_reports": _ah.tool_merge_weekly_reports,
-        "tool_fetch_daily_news": _ah.tool_fetch_daily_news,
-        "tool_fetch_url": _ah.tool_fetch_url,
-        "tool_analyze_crypto": tool_analyze_crypto,
-        "tool_scan_crypto_market": tool_scan_crypto_market,
-        "tool_audit_predictions": tool_audit_predictions,
-        "tool_curate_topics": _tool_curate_wrapper,
-        "tool_generate_briefing": tool_generate_briefing,
-        "tool_gmail_check": tool_gmail_check,
-        "tool_fetch_context": tool_fetch_context,
-        "tool_move_note": tool_move_note,
-        "tool_refactor_note": tool_refactor_note,
-        "tool_future_search": _tool_future_search_wrapper,
-        "tool_browser_use": _tool_browser_use_wrapper,
-        "tool_xtrend": _tool_xtrend_wrapper,
-        "tool_xtrend_prompt": _tool_xtrend_prompt_wrapper,
-    }
-
-    # Vault semantic search を動的に追加 (calendar と同じ optional パターン)
-    if _has_semantic_search:
-        config_tools.insert(2, {
-            "name": "tool_vault_semantic_search",
-            "usage": "tool_vault_semantic_search(query, top_k=5)",
-            "description": "Vault内を意味・概念ベースで検索 (embedding類似度)。トピックや曖昧な言い回しの質問、過去メモの内容を探す場合はこちらを優先",
-        })
-        tools_map["tool_vault_semantic_search"] = tool_vault_semantic_search
-
-    # Calendar/Task tools を動的に追加
-    if _has_calendar:
-        config_tools.extend([
-            {"name": "tool_get_calendar", "usage": "tool_get_calendar(date='today', days=1)", "description": "Google Calendarから予定を取得"},
-            {"name": "tool_add_event", "usage": "tool_add_event(title, start_time, end_time='', description='')", "description": "Google Calendarに予定を追加"},
-            {"name": "tool_create_task", "usage": "tool_create_task(title, due_date='', priority=1, project='Inbox')", "description": "Todoistにタスクを追加"},
-            {"name": "tool_get_tasks", "usage": "tool_get_tasks(filter='today')", "description": "Todoistからタスク一覧を取得"},
-            {"name": "tool_sync_to_daily_note", "usage": "tool_sync_to_daily_note()", "description": "予定とタスクをデイリーノートに同期"},
-        ])
-        tools_map.update({
-            "tool_get_calendar": tool_get_calendar,
-            "tool_add_event": tool_add_event,
-            "tool_create_task": tool_create_task,
-            "tool_get_tasks": tool_get_tasks,
-            "tool_sync_to_daily_note": tool_sync_to_daily_note,
-        })
-
-    return config_tools, tools_map
+    """ツール一覧と実行マップを返す（lib.tool_registry へ委譲）。"""
+    return get_tools_config()
 
 
 def generate_plan(user_query: str) -> dict:
@@ -1120,152 +940,3 @@ def generate_performance_dashboard() -> str:
 
     return f"Dashboard updated: {PERFORMANCE_DASHBOARD_PATH}"
 
-
-# ---------------------------------------------------------
-# ReAct Engine (Legacy — 後方互換性のために残す)
-# ---------------------------------------------------------
-
-def run_react_loop(user_query, initial_history=None, step_callback=None):
-    """
-    Think-Act-Observe Loop
-    """
-    print(f"[ReAct] 🚀 Starting for: {user_query[:50]}...")
-
-    # _get_tools_config() から一元取得（calendar含む全ツール）
-    _config_tools, tools_map = _get_tools_config()
-
-    history = initial_history if initial_history else []
-    
-    for step_i in range(MAX_STEPS):
-        print(f"\n[ReAct] Step {step_i + 1}/{MAX_STEPS}")
-        
-        prompt = f"""
-        あなたは自律型AIアシスタントです。
-        【ゴール】: {user_query}
-        
-        現在までの経緯（履歴）:
-        {json.dumps(history, ensure_ascii=False, indent=2)}
-        
-        利用可能なツール:
-        1. tool_web_search(query): Web検索 (Tavilyを使用)
-        2. tool_vault_search(keywords): Vault内を検索
-        3. tool_create_note(filename, content, summary): ファイル作成
-        4. tool_read_note(filename): ファイル読込
-        5. tool_update_note(filename, append_text): 追記
-        6. tool_get_youtube_transcript(url): YouTube動画の文字起こしを取得
-        7. tool_fetch_url(url): 指定URLのWebページの内容（テキスト）を取得。ニュース記事やブログなどを読む時に使う。
-        8. tool_merge_weekly_reports(): 週次レポートのマージとアーカイブ（ファイルが増えすぎた時に提案/実行）
-        9. tool_fetch_daily_news(days): Web検索+RSS巡回でニュースを収集し、Geminiで編集・要約して02_Newsに保存、デイリーノートにリンク追記（daysはオプション、デフォルト1）
-           **重要**: このツールはニュースの収集・編集・保存・デイリーノート連携を全て完結する。実行後に tool_create_note で別のニュースファイルを作成してはならない。
-        10. tool_analyze_crypto(symbol): Strategy 2.0 総合クオンツ分析。ファンダメンタルズ分析(Why検索) + 落ちるナイフ回避(ADX+DM) + RSIダイバージェンス検知 + SMC流動性回収 + ケリー基準 + DCA計画を統合。レポートを03_Cryptoに保存。symbol例: "BTC/USDT", "ETH/USDT"
-        11. tool_scan_crypto_market(): 主要20銘柄を一括スキャンし、RSI・出来高変化・F&Gから注目すべき通貨をランキング。結果を03_Crypto/Market_Scan_{{date}}.mdに保存。「どの通貨が今アツい？」「おすすめは？」等の質問に使う。
-        12. tool_audit_predictions(): 過去の予測ログ(trade_log.json)を検証。Binanceから実績価格を取得し、TP到達→WIN / SL到達→LOSE を判定。LOSEの場合はTavilyで敗因ニュースを検索。結果を03_Crypto/Audit_Report/Audit_Report_{{date}}.mdに保存。「予測の答え合わせ」「過去の成績は？」等の質問に使う。
-        13. tool_curate_topics(): ユーザーの興味に基づいてナレッジトピックを3つ提案する（The Curator）。「おすすめのトピック」「何か面白い話題ない？」等の質問に使う。
-        14. tool_get_calendar(date='today', days=1): Google Calendarから予定を取得。「今日の予定」「明日のスケジュール」等に使う。
-        15. tool_add_event(title, start_time, end_time='', description=''): Google Calendarに予定を追加。「会議を追加して」等に使う。
-        16. tool_create_task(title, due_date='', priority=1, project='Inbox'): Todoistにタスクを追加。「リマインドして」「タスクを作って」等に使う。priority: 1=最高〜4=最低。
-        17. tool_get_tasks(filter='today'): Todoistからタスク一覧を取得。filter: 'today','overdue','week','all'。
-        18. tool_sync_to_daily_note(): Google Calendar + Todoistの内容をデイリーノートに同期する。
-
-        【指示】
-        - 「次に何をするべきか」を考え、JSONで出力してください。
-        - 必要な情報が揃ったら、"action": "finish" としてください。
-        
-        ## 出力およびツール利用の厳格なルール
-        1. **レポート作成の強制**:
-           ユーザーから「レポート」「要約」「分析」「まとめ」等の作成を求められた場合、その内容を直接最終回答（Agent_output）に記述してはならない。
-           必ず `tool_create_note` を使用し、`30_Main` フォルダ内に新しい Markdown ファイルとして保存すること。
-           **例外**: ニュース関連の依頼では `tool_fetch_daily_news` のみを使い、`tool_create_note` は使わない（二重作成防止）。
-
-        2. **Agent_output（最終回答）の役割制限**:
-            `Agent_output.md` に書き出す内容は、以下の「実行サマリー」のみに限定すること。
-            - 実行したステップの簡潔な説明
-            - 作成したレポートのファイル名（例：[[レポート名.md]] を作成しました）
-            - エラーが発生した場合の報告
-
-        3. **作業フローの順序**:
-            ① 情報収集（YouTube/Vault/Web）
-            ② `tool_create_note` による詳細レポートの作成（30_Main）
-            ③ 作成成功を確認後、`finish` を呼び出しサマリーのみを報告
-
-        - **重要**: ノートを作成する際、中身がプレースホルダー（例: [調査結果]）であってはいけません。必ず履歴にある「Observation」の内容を使ってください。
-        - **重要**: 検索結果が不十分なら、まだノート作成せず、追加検索を行ってください。
-        - **最重要 (パーソナライズ)**: Vault内検索（`tool_vault_search`）で関連する過去のメモが見つかった場合は、**必ずその内容を最終成果物に統合してください。**
-          - 「あなたの過去のメモ [[ファイル名]] によると〜」のように引用し、ユーザーの文脈に合わせた内容にしてください。
-          - 関連ノートのセクションには、見つかったノートへのリンク `[[ファイル名]]` を追記してください。
-
-        出力フォーマット (JSONのみ):
-        {{
-            "thought": "思考プロセス...",
-            "action": "ツール名" or "finish",
-            "args": {{ "引数名": "値" ... }}  (actionがfinishの場合は "summary": "完了報告（作成したファイル名を含む）" をargsに入れる)
-        }}
-        """
-
-        try:
-            response = _gemini_call(MODEL_NAME, prompt)
-            text = response.text
-            
-            # JSON Parse
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0]
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0]
-            
-            data = safe_json_loads(text)
-            
-            thought = data.get("thought", "")
-            action = data.get("action", "")
-            args = data.get("args", {})
-            
-            print(f"  💭 Thought: {thought}")
-            print(f"  🎬 Action: {action}")
-
-            # Callback for Discord/UI
-            if step_callback:
-                step_callback({
-                    "step": step_i + 1,
-                    "thought": thought,
-                    "action": action,
-                    "args": args,
-                    "observation": "Running..."
-                })
-            
-            if action == "finish":
-                print(f"[ReAct] ✅ Finished!")
-                return args.get("summary", "Done")
-            
-            if action in tools_map:
-                try:
-                    observation = tools_map[action](**args)
-                except Exception as e:
-                    observation = f"Error: {e}"
-            else:
-                observation = f"Error: Unknown tool '{action}'"
-            
-            print(f"  👀 Observation: {str(observation)[:200]}...")
-            
-            history.append({
-                "step": step_i + 1,
-                "thought": thought,
-                "action": action,
-                "args": args,
-                "observation": observation # Context for next turn
-            })
-
-            # Update Callback with Observation
-            if step_callback:
-                step_callback({
-                    "step": step_i + 1,
-                    "thought": thought,
-                    "action": action,
-                    "args": args,
-                    "observation": str(observation)[:500] + "..." # Truncate for display
-                })
-            
-        except Exception as e:
-            print(f"[ReAct] ❌ Error in loop: {e}")
-            traceback.print_exc()
-            time.sleep(2)
-            
-    return "Max steps reached."
