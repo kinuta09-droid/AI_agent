@@ -11,6 +11,7 @@ import re
 import io
 import asyncio
 from lib.lib_obsidian_utils import get_obsidian_uri, get_obsidian_uri_from_link
+from lib.pid_guard import acquire as _acquire_pid_lock, release as _release_pid_lock, read_owner as _read_pid_owner
 import datetime
 import signal
 import time
@@ -37,56 +38,11 @@ sys.stdout.reconfigure(encoding='utf-8')
 
 # ---------------------------------------------------------
 # PID Guard: 重複起動防止
+# 取得ロジックは lib.pid_guard (O_EXCL によるアトミック取得) に委譲する。
+# 旧実装の「存在チェック → 書き込み」は非アトミックで、ほぼ同時に起動した
+# 2プロセスが両方ロックを取れてしまい Bot の2重起動を招いた (2026-07-17)。
 # ---------------------------------------------------------
 PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_discord.pid")
-
-
-def _check_existing_bot():
-    """PID ファイルを確認し、既にボットが動作しているかチェックする。"""
-    if not os.path.exists(PID_FILE):
-        return
-    try:
-        with open(PID_FILE, 'r', encoding='utf-8') as f:
-            old_pid = int(f.read().strip())
-        if old_pid == os.getpid():
-            return
-
-        # Windows でプロセスが存在するか確認
-        import ctypes
-        PROCESS_QUERY_INFORMATION = 0x0400
-        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, old_pid)
-        if handle:
-            ctypes.windll.kernel32.CloseHandle(handle)
-            print(f"[Discord] ⚠️ Another bot instance is already running (PID {old_pid}). Exiting.")
-            # 生存中インスタンスの PID ファイルには触れずに終了する
-            sys.exit(0) # 正常終了として扱う（ループ防止）
-        # プロセスが存在しない = stale な PID ファイルなので削除
-        try:
-            os.remove(PID_FILE)
-        except OSError:
-            pass
-    except ValueError:
-        # 破損した PID ファイルは削除（後続の _write_pid で再作成）
-        try:
-            os.remove(PID_FILE)
-        except OSError:
-            pass
-    except OSError:
-        pass
-
-
-def _write_pid():
-    """自身の PID を記録する。"""
-    with open(PID_FILE, 'w', encoding='utf-8') as f:
-        f.write(str(os.getpid()))
-
-
-def _cleanup_pid():
-    """終了時に PID ファイルを削除する。"""
-    try:
-        os.remove(PID_FILE)
-    except OSError:
-        pass
 
 # ---------------------------------------------------------
 # Modular Imports
@@ -1211,13 +1167,15 @@ def run_bot():
         return
 
     # Standalone execution (or via subprocess)
-    _check_existing_bot()
-    _write_pid()
+    if not _acquire_pid_lock(PID_FILE):
+        print(f"[Discord] ⚠️ Another bot instance is already running "
+              f"(PID {_read_pid_owner(PID_FILE)}). Exiting.")
+        sys.exit(0)  # 正常終了として扱う（ループ防止）
     print("[Discord] 🤖 Starting Antigravity Discord Bot...")
     try:
         bot.run(DISCORD_TOKEN)
     finally:
-        _cleanup_pid()
+        _release_pid_lock(PID_FILE)
 
 
 if __name__ == "__main__":
