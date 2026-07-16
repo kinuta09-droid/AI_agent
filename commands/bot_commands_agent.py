@@ -3,6 +3,8 @@ import discord
 from discord import app_commands
 import asyncio
 import io
+import re
+import time
 
 # ツールをインポート
 from engine_plan_execute import (
@@ -21,6 +23,52 @@ def init_helpers(log_func, send_long_func, send_fallback_func):
     _log_to_daily_note = log_func
     _send_long_message = send_long_func
     _send_with_fallback = send_fallback_func
+
+# ---------------------------------------------------------
+# 短期セッション記憶 (Phase ③)
+# チャンネル毎に直前タスク1件を保持し、次回 /agent の計画プロンプトに注入する。
+# in-memory のみ (Bot再起動でリセットされるのは仕様)。
+# 読み書きともイベントループ側で行うため lock 不要。
+# ---------------------------------------------------------
+_SESSION_TTL_SECONDS = 30 * 60
+_GOAL_SNIPPET_CHARS = 200
+_RESULT_SNIPPET_CHARS = 1000
+_MAX_SESSION_FILES = 5
+_WIKILINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
+
+_sessions = {}  # channel_id -> {"goal": str, "summary": str, "files": list, "ts": float}
+
+
+def _get_session_context(channel_id) -> str:
+    """TTL内のセッションがあれば文脈テキストを返す。期限切れは削除して空文字。"""
+    entry = _sessions.get(channel_id)
+    if not entry:
+        return ""
+    if time.time() - entry["ts"] > _SESSION_TTL_SECONDS:
+        _sessions.pop(channel_id, None)
+        return ""
+    files = "、".join(f"[[{f}]]" for f in entry["files"]) if entry["files"] else "なし"
+    return (
+        f"- 直前の要求: {entry['goal']}\n"
+        f"- 直前の結果(先頭): {entry['summary']}\n"
+        f"- 関連ファイル: {files}"
+    )
+
+
+def _update_session(channel_id, goal: str, result: str) -> None:
+    """直前タスクの要約を保存する。[[wikilink]] は重複除去して最大5件抽出。"""
+    files = []
+    for name in _WIKILINK_RE.findall(result):
+        if name not in files:
+            files.append(name)
+        if len(files) >= _MAX_SESSION_FILES:
+            break
+    _sessions[channel_id] = {
+        "goal": goal[:_GOAL_SNIPPET_CHARS],
+        "summary": result[:_RESULT_SNIPPET_CHARS],
+        "files": files,
+        "ts": time.time(),
+    }
 
 async def cmd_agent(interaction: discord.Interaction, goal: str):
     """AIエージェントに自律的なタスクを依頼"""
@@ -69,13 +117,23 @@ async def cmd_agent(interaction: discord.Interaction, goal: str):
         except Exception as e:
             print(f"[AgentUI] Warning: Failed to update status: {e}")
 
+    session_context = _get_session_context(interaction.channel_id)
+
     try:
         loop = asyncio.get_running_loop()
         def sync_callback_wrapper(step_data):
             asyncio.run_coroutine_threadsafe(discord_pe_callback(step_data), loop)
-        result = await asyncio.to_thread(run_plan_and_execute, goal, step_callback=sync_callback_wrapper)
+        result = await asyncio.to_thread(
+            run_plan_and_execute, goal,
+            step_callback=sync_callback_wrapper,
+            session_context=session_context,
+        )
     except Exception as e:
         result = f"Error: {e}"
+
+    # 失敗結果は次回の文脈に混ぜない
+    if not result.startswith("Error:"):
+        _update_session(interaction.channel_id, goal, result)
 
     if _log_to_daily_note:
         await asyncio.to_thread(_log_to_daily_note, "command", f"/agent {goal}", result)

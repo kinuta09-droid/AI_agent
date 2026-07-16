@@ -132,8 +132,13 @@ def _get_tools_config():
     return get_tools_config()
 
 
-def generate_plan(user_query: str) -> dict:
+def generate_plan(user_query: str, session_context: str = "") -> dict:
     """ユーザーのクエリから実行計画を生成する。
+
+    Args:
+        user_query: ユーザーの要求
+        session_context: 直前タスクの文脈テキスト (空なら注入しない)。
+            整形はこの関数側で行うため、呼び出し元は素のテキストを渡すだけでよい。
 
     Returns:
         {
@@ -158,6 +163,16 @@ def generate_plan(user_query: str) -> dict:
     # 長期記憶: ユーザーに関する事実を注入 (learning_block と同型のパターン)
     memory_hint = _get_memory_block()
     memory_block = f"\n\n{memory_hint}" if memory_hint else ""
+
+    # 短期セッション記憶: 直前タスクの文脈を注入 (learning_block と同型のパターン)
+    session_block = ""
+    if session_context:
+        session_block = f"""
+
+【直前のタスク(参考)】
+{session_context}
+※ 要求が「それ」「さっき」「続き」「同じ」など直前の作業を参照している場合のみ、
+  この文脈を使って解釈すること。無関係な要求の場合は完全に無視する。"""
 
     today_str = datetime.datetime.now().strftime("%Y年%m月%d日")
 
@@ -206,7 +221,7 @@ def generate_plan(user_query: str) -> dict:
   - 例: 引数不要ツール → args_json: "{{}}"
 - 前のステップの実行結果に依存する引数（検索結果を元にしたレポート本文など）は
   args_json を空文字にして args_hint だけ書くこと（実行時に解決される）
-{learning_block}{memory_block}"""
+{learning_block}{memory_block}{session_block}"""
 
     return _gemini_json_call(MODEL_NAME, prompt, _build_plan_schema(valid_tools))
 
@@ -553,8 +568,12 @@ def critique_results(user_query: str, plan: list, results: list) -> dict:
 MAX_REVISIONS = 1  # 品質向上のため1回に制限（2回は時間浪費の原因）
 
 
-def run_plan_and_execute(user_query: str, step_callback=None) -> str:
+def run_plan_and_execute(user_query: str, step_callback=None,
+                         session_context: str = "") -> str:
     """Plan-and-Execute パターンのメインエントリーポイント。
+
+    session_context: 直前タスクの文脈 (短期セッション記憶)。generate_plan にパススルー。
+    デフォルト空文字なので既存呼び出し元 (scheduler / main.py 等) は無影響。
 
     1. generate_plan() で計画を作成
     2. execute_plan() で実行
@@ -570,7 +589,7 @@ def run_plan_and_execute(user_query: str, step_callback=None) -> str:
         step_callback({"phase": "plan", "status": "planning"})
 
     try:
-        plan_data = generate_plan(user_query)
+        plan_data = generate_plan(user_query, session_context=session_context)
     except Exception as e:
         print(f"[P&E] ❌ Plan generation failed: {e}")
         return f"計画生成に失敗しました: {e}"
