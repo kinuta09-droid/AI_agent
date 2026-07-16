@@ -10,6 +10,8 @@ import datetime
 import time
 import traceback
 
+from google.genai import types
+
 from lib.lib_shared import (
     client, MODEL_NAME, MODEL_NAME_HEAVY, MAX_STEPS,
     safe_json_loads, load_json, save_json,
@@ -38,6 +40,80 @@ except ImportError:
 def _gemini_call(model: str, prompt: str):
     """Gemini API 呼び出しを retry ラッパーで保護する共通ヘルパー。"""
     return client.models.generate_content(model=model, contents=prompt)
+
+
+@retry(max_retries=3, initial_delay=2)
+def _gemini_json_call(model: str, prompt: str, schema: dict = None) -> dict:
+    """JSON mode / 構造化出力で Gemini を呼び出す共通ヘルパー。
+
+    response_mime_type="application/json" によりJSON文法が保証されるため
+    正規表現サルベージ(safe_json_loads)への依存を原則なくす。
+    schema を渡すと response_schema でキー構造・enum まで強制できる。
+    preview モデルが schema 非対応だった場合の保険として、
+    parsed が取れないときのみ safe_json_loads にフォールバックする。
+    """
+    config_kwargs = {"response_mime_type": "application/json"}
+    if schema is not None:
+        config_kwargs["response_schema"] = schema
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(**config_kwargs),
+    )
+    parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, dict):
+        return parsed
+    return safe_json_loads(response.text)
+
+
+# ---------------------------------------------------------
+# Structured Output Schemas (動的enum: 有効ツールは起動構成で変動する)
+# ---------------------------------------------------------
+
+def _build_step_schema(valid_tools: list) -> dict:
+    """plan / revised_plan の1ステップ分のスキーマ。
+
+    tool を enum で制約し、存在しないツール名の提案を物理的に封じる。
+    args_json は「計画時点で引数が確定できる場合のみ」プランナーが埋める
+    JSON文字列 (引数はツール毎に任意キーのため、構造化出力では
+    ネストobjectにできず文字列渡しにする。JSON modeが文法を保証済み)。
+    """
+    return {
+        "type": "OBJECT",
+        "properties": {
+            "step": {"type": "INTEGER"},
+            "task": {"type": "STRING"},
+            "tool": {"type": "STRING", "enum": list(valid_tools)},
+            "args_hint": {"type": "STRING"},
+            "args_json": {"type": "STRING"},
+        },
+        "required": ["step", "task", "tool"],
+    }
+
+
+def _build_plan_schema(valid_tools: list) -> dict:
+    """generate_plan() 用のレスポンススキーマ。"""
+    return {
+        "type": "OBJECT",
+        "properties": {
+            "plan": {"type": "ARRAY", "items": _build_step_schema(valid_tools)},
+            "expected_outcome": {"type": "STRING"},
+        },
+        "required": ["plan", "expected_outcome"],
+    }
+
+
+def _build_critique_schema(valid_tools: list) -> dict:
+    """critique_results() 用のレスポンススキーマ。status を enum で強制する。"""
+    return {
+        "type": "OBJECT",
+        "properties": {
+            "status": {"type": "STRING", "enum": ["ok", "needs_revision", "failed"]},
+            "feedback": {"type": "STRING"},
+            "revised_plan": {"type": "ARRAY", "items": _build_step_schema(valid_tools)},
+        },
+        "required": ["status", "feedback"],
+    }
 
 
 # ---------------------------------------------------------
@@ -242,6 +318,7 @@ def generate_plan(user_query: str) -> dict:
         }
     """
     config_tools, _ = _get_tools_config()
+    valid_tools = [t["name"] for t in config_tools]
     tools_desc = "\n".join(
         f"- {t['name']}: {t['description']}  使い方: {t['usage']}"
         for t in config_tools
@@ -296,18 +373,40 @@ def generate_plan(user_query: str) -> dict:
 - **両方が必要な場合**: まず tool_web_search で外部情報を取得し、その後 tool_vault_semantic_search で関連する過去ノートを探す
 - **URLが与えられた場合**: tool_fetch_url でページ内容を取得する
 
-{learning_block}{memory_block}
-【出力フォーマット (JSONのみ)】:
-{{
-    "plan": [
-        {{"step": 1, "task": "タスクの説明", "tool": "使用するツール名", "args_hint": "引数のヒント"}},
-        {{"step": 2, "task": "タスクの説明", "tool": "使用するツール名", "args_hint": "引数のヒント"}}
-    ],
-    "expected_outcome": "最終的に何が達成されるか"
-}}"""
+【args_json の出力ルール】（実行を高速化するため重要！）
+- 引数がこの時点で確定できるステップは、args_json に引数のJSON文字列を出力すること
+  - 例: Step 1 の検索 → args_json: "{{\\"query\\": \\"AI 最新トレンド {today_str[:4]}\\"}}"
+  - 例: 引数不要ツール → args_json: "{{}}"
+- 前のステップの実行結果に依存する引数（検索結果を元にしたレポート本文など）は
+  args_json を空文字にして args_hint だけ書くこと（実行時に解決される）
+{learning_block}{memory_block}"""
 
-    response = _gemini_call(MODEL_NAME, prompt)
-    return safe_json_loads(response.text)
+    return _gemini_json_call(MODEL_NAME, prompt, _build_plan_schema(valid_tools))
+
+
+def _try_planned_args(item: dict) -> dict:
+    """plan項目の args_json が使えるなら dict を返す。使えなければ None。
+
+    None の場合は従来通り _resolve_tool_args() (Gemini呼び出し) で解決する。
+    プランナーが計画時点で引数を確定できたステップはここで拾われ、
+    ステップ毎の直列Gemini呼び出しが丸ごとスキップされる。
+    """
+    raw = item.get("args_json", "")
+    if not raw or not str(raw).strip():
+        return None
+    try:
+        args = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(args, dict):
+        return None
+    # tool_create_note は本文が前ステップの結果に依存するため、
+    # 必須キーが揃っていない事前確定引数は信用せず resolve に回す
+    if item.get("tool") == "tool_create_note" and not (
+        "filename" in args and "content" in args
+    ):
+        return None
+    return args
 
 
 def execute_plan(plan: list, step_callback=None) -> dict:
@@ -342,8 +441,10 @@ def execute_plan(plan: list, step_callback=None) -> dict:
                 "status": "running",
             })
 
-        # ツールの引数を Gemini に解決させる
-        args = _resolve_tool_args(tool_name, args_hint, task, accumulated_context)
+        # 計画時点で確定済みの引数があれば使い、なければ Gemini に解決させる
+        args = _try_planned_args(item)
+        if args is None:
+            args = _resolve_tool_args(tool_name, args_hint, task, accumulated_context)
 
         # tool_create_note の場合、content を専用プロンプトでリッチに再生成する
         # JSON制約内では長文生成が困難なため、2段階方式で品質を担保する
@@ -463,7 +564,14 @@ JSONのみ出力（説明不要）:"""
 
     for attempt in range(3):
         try:
-            response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
+            # スキーマなしJSON mode: 引数はツール毎に任意キーのため構造は縛らない
+            response = client.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json"
+                ),
+            )
             args = safe_json_loads(response.text)
             # 必須引数チェック (tool_create_note)
             if tool_name == "tool_create_note":
@@ -602,22 +710,15 @@ def critique_results(user_query: str, plan: list, results: list) -> dict:
 - 全ステップ成功だが情報が薄い → needs_revision（ただし追加ステップは最大2つまで）
 - 同じツールの再実行は避け、別の検索クエリや別ツールで補完すること
 
-【出力フォーマット (JSONのみ)】:
-{{
-    "status": "ok" or "needs_revision" or "failed",
-    "feedback": "評価コメント",
-    "revised_plan": [
-        {{"step": 1, "task": "追加タスク", "tool": "ツール名", "args_hint": "引数ヒント"}}
-    ]
-}}
-
-- status=ok: 目標達成、追加作業不要
+【statusの意味】
+- status=ok: 目標達成、追加作業不要（revised_planは空配列にする）
 - status=needs_revision: 部分的に成功、追加ステップが必要（revised_planに記載、最大2ステップ）
 - status=failed: 根本的に失敗、リトライ不可"""
 
     try:
-        response = _gemini_call(MODEL_NAME, prompt)
-        return safe_json_loads(response.text)
+        return _gemini_json_call(
+            MODEL_NAME, prompt, _build_critique_schema(valid_tools)
+        )
     except Exception as e:
         return {"status": "ok", "feedback": f"Critic evaluation failed ({e}), accepting results."}
 
