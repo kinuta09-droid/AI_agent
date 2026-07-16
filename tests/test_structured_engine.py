@@ -160,6 +160,25 @@ def test_json_call_fallback_to_safe_loads():
         engine.client = original
 
 
+def test_json_call_raises_on_unparseable():
+    # 空dictを黙って返すと下流で critique["status"] KeyError になるため、
+    # パース不能時は例外 → @retry に再試行させる仕様
+    original = engine.client
+    original_sleep = engine.time.sleep
+    try:
+        engine.time.sleep = lambda *_: None  # retry の待機を無効化
+        engine.client = _FakeClient(_FakeResponse(parsed=None, text="not json"))
+        try:
+            engine._gemini_json_call("model-x", "prompt")
+            assert False, "should have raised after retries"
+        except ValueError:
+            pass
+        print("✅ json call: パース不能 -> ValueError (retry対象)")
+    finally:
+        engine.client = original
+        engine.time.sleep = original_sleep
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

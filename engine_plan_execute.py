@@ -63,7 +63,14 @@ def _gemini_json_call(model: str, prompt: str, schema: dict = None) -> dict:
     parsed = getattr(response, "parsed", None)
     if isinstance(parsed, dict):
         return parsed
-    return safe_json_loads(response.text)
+    result = safe_json_loads(response.text)
+    if not result:
+        # 空dictを黙って返すと @retry が効かず、下流の critique["status"] 等で
+        # KeyError になる。例外にして retry ラッパーに再試行させる
+        raise ValueError(
+            f"Gemini JSON response unparseable (model={model}): {str(response.text)[:200]}"
+        )
+    return result
 
 
 # ---------------------------------------------------------

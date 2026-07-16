@@ -144,17 +144,21 @@ def retry(max_retries=MAX_RETRIES, initial_delay=2):
         def wrapper(*args, **kwargs):
             retries = 0
             delay = initial_delay
+            last_exc = None
             while retries < max_retries:
                 try:
                     return func(*args, **kwargs)
                 except Exception as e:
+                    last_exc = e
                     print(f"Retry {retries+1}/{max_retries} failed. Waiting {delay}s... Error: {e}")
                     traceback.print_exc()
                     retries += 1
                     time.sleep(delay)
                     delay *= 2
             print(f"Function {func.__name__} failed after {max_retries} retries.")
-            raise
+            # 裸の raise は except の外では RuntimeError("No active exception") に
+            # 化けて元のエラーを隠すため、保持した最終例外を投げ直す
+            raise last_exc
         return wrapper
     return decorator_retry
 
