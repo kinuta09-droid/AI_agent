@@ -18,44 +18,15 @@ from dotenv import load_dotenv
 
 # ---------------------------------------------------------
 # PID Guard: 多重起動防止
+# 取得ロジックは lib.pid_guard (O_EXCL によるアトミック取得) に委譲する。
+# 旧実装の「存在チェック → 書き込み」は非アトミックで、ほぼ同時に起動した
+# 2プロセスが両方ロックを取れてしまう。二重起動すると定時ジョブ
+# (06:00 の XTrend 等) が二重実行される。
+# 経緯: 同じ穴で Discord Bot が2重起動した (2026-07-17)。
 # ---------------------------------------------------------
+from lib.pid_guard import acquire as _acquire_pid_lock, release as _release_pid_lock, read_owner as _read_pid_owner
+
 PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_scheduler.pid")
-
-def _check_existing_scheduler():
-    """PID ファイルを確認し、既にスケジューラが動作しているかチェックする。"""
-    if not os.path.exists(PID_FILE):
-        return
-    try:
-        with open(PID_FILE, 'r', encoding='utf-8') as f:
-            old_pid = int(f.read().strip())
-        if old_pid == os.getpid():
-            return
-        
-        # Windows でプロセスが存在するか確認
-        import ctypes
-        PROCESS_QUERY_INFORMATION = 0x0400
-        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, old_pid)
-        if handle:
-            ctypes.windll.kernel32.CloseHandle(handle)
-            print(f"[Scheduler] ⚠️ Another scheduler instance is already running (PID {old_pid}). Exiting.")
-            # 生存中インスタンスの PID ファイルには触れずに終了する
-            sys.exit(0)
-        # プロセスが存在しない = stale な PID ファイルなので削除
-        try: os.remove(PID_FILE)
-        except OSError: pass
-    except ValueError:
-        # 破損した PID ファイルは削除（後続の _write_pid で再作成）
-        try: os.remove(PID_FILE)
-        except OSError: pass
-    except OSError:
-        pass
-
-def _write_pid():
-    with open(PID_FILE, 'w', encoding='utf-8') as f: f.write(str(os.getpid()))
-
-def _cleanup_pid():
-    try: os.remove(PID_FILE)
-    except OSError: pass
 
 # agent_hello.py と同じディレクトリなので直接 import
 # ツールを直接インポート
@@ -385,8 +356,10 @@ def _execute_task(task):
 
 
 def run_scheduler():
-    _check_existing_scheduler()
-    _write_pid()
+    if not _acquire_pid_lock(PID_FILE):
+        print(f"[Scheduler] ⚠️ Another scheduler instance is already running "
+              f"(PID {_read_pid_owner(PID_FILE)}). Exiting.")
+        sys.exit(0)  # 正常終了として扱う（ループ防止）
     try:
         logger.info("⏳ Started. Waiting for scheduled time...")
 
@@ -427,7 +400,7 @@ def run_scheduler():
                 logger.critical(f"🔥 Critical Scheduler Error: {e}")
                 time.sleep(5)
     finally:
-        _cleanup_pid()
+        _release_pid_lock(PID_FILE)
 
 if __name__ == "__main__":
     run_scheduler()
