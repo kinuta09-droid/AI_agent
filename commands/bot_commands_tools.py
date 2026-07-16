@@ -79,6 +79,26 @@ async def cmd_briefing(interaction: discord.Interaction):
         names = [f.get("feature_name", "?") for f in features]
         await interaction.channel.send("🔍 深掘りリサーチ:", view=BriefingDeepDiveView(names))
 
+async def cmd_memory(interaction: discord.Interaction):
+    """長期記憶 (User_Memory.md) の現在の内容を表示する (閲覧のみ)。"""
+    await interaction.response.defer()
+    try:
+        from tools.tool_user_memory import get_memory_block
+        block = get_memory_block(max_chars=3500)
+        if not block:
+            result = ("🧠 記憶はまだありません。毎晩02:45にChatlogから自動生成されます。\n"
+                      "(会話を重ねると、好み・目標・環境などが自動的に蓄積されていきます)")
+        else:
+            result = f"🧠 **現在の長期記憶** (編集は Obsidian で直接: `00_System/User_Memory.md`)\n\n{block}"
+    except Exception as e:
+        result = f"Error: {e}"
+
+    if _send_with_fallback:
+        await _send_with_fallback(interaction, result, title="User Memory", emoji="🧠")
+    else:
+        await interaction.followup.send(result[:2000])
+
+
 async def cmd_gmail_check(interaction: discord.Interaction, hours: int = 12):
     """直近の重要メール要約"""
     await interaction.response.defer()

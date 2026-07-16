@@ -72,6 +72,14 @@ except ImportError as _e:
     def update_vault_index():
         return f"Vault Semantic Index: tool_vault_index not available ({_vault_index_err})"
 
+# User Memory Distillation (optional)
+try:
+    from tools.tool_user_memory import distill_daily_memory
+except ImportError as _e:
+    _user_memory_err = str(_e)
+    def distill_daily_memory():
+        return f"User Memory: tool_user_memory not available ({_user_memory_err})"
+
 # ボタンの custom_id は bot プロセス側の永続 View (commands/bot_views.py) と
 # 一致させる必要があるため定数を直接 import する (discord.Client は起動しない)
 from commands.bot_views import DIVE_CUSTOM_IDS, SCHEDULER_LOG_CUSTOM_ID
@@ -308,113 +316,19 @@ SCHEDULE = [
         "name": "Performance Dashboard",
         "func": generate_performance_dashboard
     },
+    # User Memory Distillation (前日までのChatlogから長期記憶を蒸留。Gemini 1回/日)
+    # 02:45蒸留 → 03:15 Vault Index が更新後の User_Memory.md を同夜に再埋め込み
+    {
+        "time": "02:45",
+        "name": "User Memory Distillation",
+        "func": distill_daily_memory,
+    },
     # Vault Semantic Index (ローカルOllama埋め込み、API課金なし。:15分台は他ジョブと衝突しない)
     {
         "time": "03:15",
         "name": "Vault Semantic Index",
         "func": update_vault_index,
     },
-    # Audio Transcription Sync (Check every 30 mins)
-    {
-        "time": "00:00",
-        "name": "Audio Transcription Sync (Hourly)",
-        "func": tool_sync_audio_transcriptions
-    },
-    {
-        "time": "00:30",
-        "name": "Audio Transcription Sync (Half-hourly)",
-        "func": tool_sync_audio_transcriptions
-    },
-    {
-        "time": "01:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "01:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "02:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "02:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "03:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "03:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "04:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "04:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "05:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "05:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "06:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "06:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "07:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "07:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "08:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "08:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "09:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "09:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "10:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "10:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "11:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "11:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "12:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "12:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "13:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "13:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "14:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "14:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "15:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "15:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "16:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "16:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "17:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "17:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "18:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "18:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "19:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "19:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "20:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "20:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "21:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "21:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "22:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "22:30", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
-    {
-        "time": "23:00", "name": "Audio Sync", "func": tool_sync_audio_transcriptions },
     {
         "time": "23:30",
         "name": "Weekly Archive (30_Main → 50_Archive)",

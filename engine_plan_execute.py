@@ -26,6 +26,13 @@ except Exception as _observer_err:
     def observe(tool_name, func, caller, **kwargs):
         return func(**kwargs)
 
+# 長期記憶は任意機能: 不在でもプランナーを止めない
+try:
+    from tools.tool_user_memory import get_memory_block as _get_memory_block
+except ImportError:
+    def _get_memory_block(*args, **kwargs):
+        return ""
+
 
 @retry(max_retries=3, initial_delay=2)
 def _gemini_call(model: str, prompt: str):
@@ -244,6 +251,10 @@ def generate_plan(user_query: str) -> dict:
     learning_hint = get_enhanced_prompt(user_query)
     learning_block = f"\n\n{learning_hint}" if learning_hint else ""
 
+    # 長期記憶: ユーザーに関する事実を注入 (learning_block と同型のパターン)
+    memory_hint = _get_memory_block()
+    memory_block = f"\n\n{memory_hint}" if memory_hint else ""
+
     today_str = datetime.datetime.now().strftime("%Y年%m月%d日")
 
     prompt = f"""あなたはタスクプランナーです。
@@ -285,7 +296,7 @@ def generate_plan(user_query: str) -> dict:
 - **両方が必要な場合**: まず tool_web_search で外部情報を取得し、その後 tool_vault_semantic_search で関連する過去ノートを探す
 - **URLが与えられた場合**: tool_fetch_url でページ内容を取得する
 
-{learning_block}
+{learning_block}{memory_block}
 【出力フォーマット (JSONのみ)】:
 {{
     "plan": [

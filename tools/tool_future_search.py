@@ -443,7 +443,7 @@ def _synthesize_with_gemini(topic: str, agent_results: list, sources: list) -> s
 # ---------------------------------------------------------
 
 def _load_user_context() -> str:
-    """User_Profile.md と User_Interests.md を読み込んでユーザー文脈を返す。
+    """User_Profile.md / User_Interests.md / 長期記憶を読み込んでユーザー文脈を返す。
     存在しない場合は空文字を返す（幸福AIはユーザー情報なしでも動作する）。"""
     parts = []
     for filename, label in [
@@ -459,6 +459,15 @@ def _load_user_context() -> str:
                     parts.append(f"## {label}\n{content}")
             except Exception as e:
                 print(f"[FutureSearch] ⚠️ Could not read {filename}: {e}")
+
+    # 会話からの長期記憶 (optional)
+    try:
+        from tools.tool_user_memory import get_memory_block
+        memory = get_memory_block()
+        if memory:
+            parts.append(f"## User Memory (会話からの長期記憶)\n{memory}")
+    except ImportError:
+        pass
     return "\n\n".join(parts)
 
 

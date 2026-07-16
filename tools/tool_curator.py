@@ -77,6 +77,16 @@ def read_main_context(max_tokens: int = 30000) -> str:
         except Exception:
             pass
 
+    # 2b. User_Memory.md（会話からの長期記憶、存在すれば含める）
+    try:
+        from tools.tool_user_memory import get_memory_block
+        memory = get_memory_block()
+        if memory:
+            context_parts.append(f"## User Memory (会話からの長期記憶)\n{memory}\n")
+            char_count += len(memory)
+    except ImportError:
+        pass
+
     # 3. ファイル収集: KB優先、次に30_Main
     file_list = []  # (path, mtime, source)
 

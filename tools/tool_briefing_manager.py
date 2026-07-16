@@ -17,6 +17,13 @@ from lib.lib_shared import (
     VAULT_ROOT, WORK_DIR, fetch_fear_greed_index,
 )
 
+# 長期記憶 (optional — 3項目の選定を個人化する。不在でも動作)
+try:
+    from tools.tool_user_memory import get_memory_block as _get_memory_block
+except ImportError:
+    def _get_memory_block(*args, **kwargs):
+        return ""
+
 
 # ---------------------------------------------------------
 # Provider Registry
@@ -231,6 +238,8 @@ def tool_generate_briefing(include_content: bool = False) -> str:
 - 数値（価格、変動率など）は具体的に記載
 - アクションが必要な場合は明示
 - Markdown形式（箇条書き）
+
+{_get_memory_block() or "(ユーザーに関する記憶はまだありません)"}
 
 --- 情報ソース ---
 {raw_data}

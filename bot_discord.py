@@ -162,6 +162,14 @@ from commands import bot_commands_tools
 from commands import bot_commands_agent
 from commands import bot_commands_client
 from commands import bot_views
+
+# 長期記憶 (optional — import失敗でチャットを壊さない)
+try:
+    from tools.tool_user_memory import get_memory_block as _get_memory_block
+except ImportError:
+    def _get_memory_block(*args, **kwargs):
+        return ""
+
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
@@ -254,9 +262,12 @@ _chat_sessions: dict[int, dict] = {}
 
 
 def _gemini_chat_with_history(history: list) -> str:
-    """会話履歴を含めて Gemini に送信する（直近10件）。"""
+    """会話履歴を含めて Gemini に送信する（直近10件 + 長期記憶）。"""
     today_str = datetime.datetime.now().strftime("%Y年%m月%d日")
     system_msg = f"今日は{today_str}です。日本語で簡潔に応答してください。"
+    memory_block = _get_memory_block()
+    if memory_block:
+        system_msg = f"{system_msg}\n\n{memory_block}"
 
     contents = []
     for msg in history[-10:]:
@@ -853,15 +864,28 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
         return
 
     # --- Single message mode (with intent dispatch) ---
-    await interaction.response.defer()
+    is_deferred = False
+    try:
+        await interaction.response.defer()
+        is_deferred = True
+    except discord.NotFound:
+        print("[Chat] Warning: Interaction timed out before defer. Using channel send for fallback.")
+    except Exception as e:
+        print(f"[Chat] Unexpected error during defer: {e}")
 
     # 1. Intent 解析
-    intent, params = _parse_chat_intent(message.content)
+    intent, params = _parse_chat_intent(message)
 
     # 2. Tool Dispatch
     if intent == "curate":
-        await _dispatch_curate(interaction, params.get("query", ""))
-        await asyncio.to_thread(_log_to_daily_note, "chat", message.content, "[curate] Suggestions presented")
+        if is_deferred:
+            await _dispatch_curate(interaction, params.get("query", ""))
+        else:
+            try:
+                await interaction.channel.send(f"{interaction.user.mention} ⚠️ インタラクションタイムアウトのため、キュレートを開始できませんでした。")
+            except Exception:
+                pass
+        await asyncio.to_thread(_log_to_daily_note, "chat", message, "[curate] Suggestions presented")
         return
     elif intent == "tasks":
         result = await asyncio.to_thread(tool_get_tasks, "today")
@@ -878,15 +902,22 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
     elif intent == "scan":
         result = await asyncio.to_thread(tool_scan_crypto_market)
     elif intent == "agent":
-        await _dispatch_agent(interaction, params.get("query", ""))
+        if is_deferred:
+            await _dispatch_agent(interaction, params.get("query", ""))
+        else:
+            try:
+                await interaction.channel.send(f"{interaction.user.mention} ⚠️ インタラクションタイムアウトのため、エージェントを起動できませんでした。")
+            except Exception:
+                pass
         return
     else:
         # Default: Gemini chat
         today_str = datetime.datetime.now().strftime("%Y年%m月%d日")
         sys_msg = f"今日は{today_str}です。日本語で簡潔に応答してください。"
         try:
-            response = gemini_client.models.generate_content(
-                model=MODEL_NAME, contents=message.content,
+            response = await asyncio.to_thread(
+                gemini_client.models.generate_content,
+                model=MODEL_NAME, contents=message,
                 config={"system_instruction": sys_msg},
             )
             result = (response.text or "").strip() or "(応答なし)"
@@ -894,14 +925,26 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
             result = f"Gemini API Error: {e}"
 
     # Obsidian にログ
-    await asyncio.to_thread(_log_to_daily_note, "chat", message.content, result)
+    await asyncio.to_thread(_log_to_daily_note, "chat", message, result)
 
     # Discord に応答
     title_map = {
         "tasks": "✅ Tasks", "calendar": "📅 Calendar", "news": "📰 News",
         "crypto": "💰 Crypto", "scan": "📊 Market Scan", "chat": "💬 Chat",
     }
-    await _send_long_message(interaction, result, title=title_map.get(intent, "Chat"))
+    title = title_map.get(intent, "Chat")
+    if is_deferred:
+        await _send_long_message(interaction, result, title=title)
+    else:
+        try:
+            mention = f"{interaction.user.mention} **{title}** (Interaction Timed Out)"
+            if len(result) > 1900:
+                fb_file = _make_discord_file(result, f"{title.replace(' ', '_')}.md")
+                await interaction.channel.send(content=mention, file=fb_file)
+            else:
+                await interaction.channel.send(f"{mention}\n\n{result}")
+        except Exception as e:
+            print(f"[Discord] ❌ Failed to send fallback message in cmd_chat: {e}")
 
 
 @tree.command(name="news", description="今日のニュースを収集・保存")
@@ -912,6 +955,11 @@ async def cmd_news(interaction: discord.Interaction):
 @tree.command(name="briefing", description="デイリーブリーフィング生成（Crypto + Vault更新の3項目要約）")
 async def cmd_briefing(interaction: discord.Interaction):
     await bot_commands_tools.cmd_briefing(interaction)
+
+
+@tree.command(name="memory", description="長期記憶の現在の内容を表示（会話から毎晩自動抽出）")
+async def cmd_memory(interaction: discord.Interaction):
+    await bot_commands_tools.cmd_memory(interaction)
 
 
 @tree.command(name="gmail_check", description="直近の重要メール要約")

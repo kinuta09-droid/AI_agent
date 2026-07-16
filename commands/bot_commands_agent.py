@@ -24,9 +24,24 @@ def init_helpers(log_func, send_long_func, send_fallback_func):
 
 async def cmd_agent(interaction: discord.Interaction, goal: str):
     """AIエージェントに自律的なタスクを依頼"""
-    await interaction.response.defer()
+    is_deferred = False
+    try:
+        await interaction.response.defer()
+        is_deferred = True
+    except discord.NotFound:
+        print("[Agent] Warning: Interaction timed out before defer. Using channel send for fallback.")
+        try:
+            await interaction.channel.send(
+                f"{interaction.user.mention} 🤖 **エージェントを起動します...** (応答が遅延したため、通常メッセージで完了通知を行います)"
+            )
+        except Exception as e:
+            print(f"[Agent] Failed to send startup fallback message: {e}")
+    except Exception as e:
+        print(f"[Agent] Unexpected error during defer: {e}")
 
     async def discord_pe_callback(step_data):
+        if not is_deferred:
+            return
         phase = step_data.get("phase", "")
         try:
             if phase == "plan" and step_data.get("status") == "planning":
