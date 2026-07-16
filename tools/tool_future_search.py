@@ -291,8 +291,14 @@ def _build_multi_lens_prompt(topic: str, sources: list, user_context: str,
     )
 
     if user_context:
-        ctx_block = f"\n## このユーザーについて（分析を必ずこの人の関心・状況に関連づけること）\n{user_context}\n"
-        personalization_rule = "- このユーザーの関心・状況・目標に特に関連する示唆を明示的に強調する\n"
+        ctx_block = f"\n## このユーザーについて\n{user_context}\n"
+        personalization_rule = (
+            "- 上記ユーザー情報のうち、トピックと実際に関連する要素があれば積極的に活かし、"
+            "その交差点（例: ユーザーの業界・関心とトピックの結びつき）を具体的に示す。"
+            "わずかな接点でも洞察として有用なら取り入れること\n"
+            "- ただしトピックと無関係なユーザー情報を無理に紐付けない（こじつけは避ける）。"
+            "自然に関連する要素が乏しい軸では、無理に個人化せず一般的な示唆に留めてよい\n"
+        )
     else:
         ctx_block = ""
         personalization_rule = ""
@@ -472,8 +478,13 @@ def _generate_happiness_advice(topic: str, report: str, user_context: str) -> st
 
 ---
 
-絶対禁止: 一般論・当たり障りのないアドバイス・「〜しましょう」調の空虚な励まし。
-必須: ユーザーのコンテキスト（興味・スキル・状況・価値観）に直接紐付いた具体的提言。"""
+個人化の方針:
+- ユーザーのコンテキスト（興味・スキル・状況・価値観）がトピックと自然に関連する場合は、
+  その結びつきを具体的に活かした提言をする。わずかな接点でも有用なら積極的に取り入れること
+  （例: ユーザーの業界・関心とトピックの交差点を掘り下げる）。
+- ただしトピックと無関係な情報を無理にねじ込まない。こじつけは逆効果。
+  自然な接点が乏しい軸では、無理に個人化せず率直で具体的な示唆に留めてよい。
+避けるべき: 当たり障りのない空虚な励まし、および文脈と無関係な情報の強引な紐付け。"""
 
     print(f"[FutureSearch] 💛 Gemini: generating structured happiness advice...")
     response = client.models.generate_content(model=MODEL_NAME_HEAVY, contents=prompt)

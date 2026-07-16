@@ -63,17 +63,19 @@ def test_build_multi_lens_prompt_contents():
         assert persona["name"] in prompt, f"視点 {persona['name']} が欠落"
     # 全ソースが含まれる
     assert "SOURCE 1" in prompt and "SOURCE 10" in prompt
-    # user_context が含まれ、個人化ルールが有効化される
+    # user_context が含まれ、双方向の個人化ルール (積極活用 + こじつけ抑制) が有効化される
     assert "ユーザーは研究者" in prompt
-    assert "特に関連する示唆" in prompt
+    assert "積極的に活かし" in prompt          # 関連あれば積極的に
+    assert "こじつけは避ける" in prompt        # 無関係なら抑制
     assert "量子コンピュータ" in prompt
-    print("✅ マルチレンズプロンプト: 10視点 + 全ソース + 個人化")
+    print("✅ マルチレンズプロンプト: 10視点 + 全ソース + 双方向個人化ルール")
 
 
 def test_build_prompt_without_user_context():
     prompt = fs._build_multi_lens_prompt("topic", SOURCES[:5], "", "quick")
     # user_context 空なら個人化ルールは入らない (プロンプトを汚さない)
-    assert "特に関連する示唆" not in prompt
+    assert "積極的に活かし" not in prompt
+    assert "こじつけ" not in prompt
     print("✅ user_context 空 → 個人化ルールなし")
 
 
