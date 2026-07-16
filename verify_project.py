@@ -106,6 +106,7 @@ def run_verification():
     critical_modules = [
         'lib.lib_shared',
         'lib.lib_obsidian_utils',
+        'lib.pid_guard',
         'tools.tool_calendar',
         'tools.tool_web',
         'tools.tool_briefing_manager',
