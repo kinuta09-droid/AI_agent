@@ -51,13 +51,9 @@ def test_prompt_ordering():
     config_tools, _ = get_tools_config()
     names = [t["name"] for t in config_tools]
     assert names[0] == "tool_web_search"
-    assert names[1] == "tool_vault_search"
-    if "tool_vault_semantic_search" in names:
-        # 従来の insert(2) の並びを再現していること
-        assert names[2] == "tool_vault_semantic_search"
-        assert names[3] == "tool_create_note"
-    else:
-        assert names[2] == "tool_create_note"
+    # Phase④: keyword/semantic 2エントリ → hybrid 1エントリに置換 (optionalなし=常に存在)
+    assert names[1] == "tool_vault_hybrid_search"
+    assert names[2] == "tool_create_note"
     print("✅ registry: prompt ordering preserved")
 
 

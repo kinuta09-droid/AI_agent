@@ -203,7 +203,7 @@ def generate_plan(user_query: str, session_context: str = "") -> dict:
 
 【制約がある場合の代替案】（必ず代替手段を探す！空のplanは禁止！）
 - Web検索禁止で「ニュース」を求められた場合:
-  Step 1: tool_vault_search(keywords="news ニュース") で過去のニュースファイルを探す
+  Step 1: tool_vault_hybrid_search(query="news ニュース") で過去のニュースファイルを探す
   Step 2: tool_read_note でそのファイルを読んで内容を返す
 - ファイル作成禁止の場合: 結果をテキストで返すだけにする
 - **重要**: 代替手段がある限り、必ず1つ以上のステップを持つ計画を作成すること
@@ -211,8 +211,8 @@ def generate_plan(user_query: str, session_context: str = "") -> dict:
 
 【ツール選択の指針】
 - **外部情報が必要な場合** (最新ニュース、一般知識、技術情報など): tool_web_search を使う
-- **ユーザーの過去のメモや文脈が必要な場合**: tool_vault_semantic_search を優先する (トピック・概念で意味検索できる)。ファイル名や特定の語句が確実に分かっている場合のみ tool_vault_search (完全一致) を使う
-- **両方が必要な場合**: まず tool_web_search で外部情報を取得し、その後 tool_vault_semantic_search で関連する過去ノートを探す
+- **ユーザーの過去のメモや文脈が必要な場合**: tool_vault_hybrid_search を使う (キーワード+意味検索を自動統合)
+- **両方が必要な場合**: まず tool_web_search で外部情報を取得し、その後 tool_vault_hybrid_search で関連する過去ノートを探す
 - **URLが与えられた場合**: tool_fetch_url でページ内容を取得する
 
 【args_json の出力ルール】（実行を高速化するため重要！）

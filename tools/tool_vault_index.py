@@ -340,12 +340,14 @@ def update_vault_index(embed_fn=_call_ollama_embed, db_path: str = DB_PATH,
 # Semantic search tool (planner-facing)
 # ---------------------------------------------------------
 
-def tool_vault_semantic_search(query: str, top_k: int = 5,
-                               embed_fn=_call_ollama_embed,
-                               db_path: str = DB_PATH) -> str:
-    """Vault を意味ベースで検索する (embedding コサイン類似度)。
+def _semantic_hits(query: str, top_k: int = 5,
+                   embed_fn=_call_ollama_embed,
+                   db_path: str = DB_PATH):
+    """意味検索のコア。構造化ヒット(スコア降順) or soft-error 文字列を返す。
 
-    出力形式は tool_vault_search と揃える (プランナー側の扱いを変えないため)。
+    返値: [{"rel_path", "filename", "score", "snippet"}, ...] (成功)
+          str (失敗: 未構築 / [ERROR] / 空index — 例外は投げない規約)
+    ハイブリッド検索は返値が list かどうかでフォールバックを判定する。
     """
     if not query or not str(query).strip():
         return "No query."
@@ -385,11 +387,31 @@ def tool_vault_semantic_search(query: str, top_k: int = 5,
     hits = []
     for i in top_indices:
         filepath, heading, text, _ = rows[int(i)]
-        filename = os.path.basename(filepath)
         # サブ分割で見出し行が落ちたピースには見出しを補う (文脈をプランナーに渡す)
         snippet = text if (not heading or text.startswith("##")) else f"## {heading}\n{text}"
-        hits.append(f"- File: [[{filename}]] (score: {scores[int(i)]:.3f})\n  Snippet:\n{snippet}\n...")
-    return "\n\n".join(hits)
+        hits.append({
+            "rel_path": filepath,
+            "filename": os.path.basename(filepath),
+            "score": float(scores[int(i)]),
+            "snippet": snippet,
+        })
+    return hits
+
+
+def tool_vault_semantic_search(query: str, top_k: int = 5,
+                               embed_fn=_call_ollama_embed,
+                               db_path: str = DB_PATH) -> str:
+    """Vault を意味ベースで検索する (embedding コサイン類似度)。
+
+    出力形式は tool_vault_search と揃える (プランナー側の扱いを変えないため)。
+    """
+    hits = _semantic_hits(query, top_k, embed_fn=embed_fn, db_path=db_path)
+    if isinstance(hits, str):
+        return hits
+    return "\n\n".join(
+        f"- File: [[{h['filename']}]] (score: {h['score']:.3f})\n  Snippet:\n{h['snippet']}\n..."
+        for h in hits
+    )
 
 
 if __name__ == "__main__":

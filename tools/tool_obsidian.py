@@ -14,19 +14,25 @@ from lib.lib_shared import (
 )
 from lib.lib_obsidian_cli import run_obsidian_cli
 
-def tool_vault_search(keywords: str) -> str:
-    """Vault内をキーワード検索する"""
-    print(f"[Tool] 🧠 Searching Vault: {keywords}")
+def _keyword_hits(keywords: str, max_hits: int = 10) -> list:
+    """キーワード検索のコア。構造化ヒットを walk 順で返す (ハイブリッド検索から再利用)。
+
+    返値: [{"rel_path": "40_Report/foo.md", "filename": "foo.md",
+            "score": <マッチ行数>, "snippet": <初回マッチ行の前5/後25行>}, ...]
+    score はマッチした行の総数 (RRF のランク付けに使う。従来の 0/1 判定と
+    ヒット集合・snippet は同一)。
+    """
     kw_list = [k.strip() for k in keywords.split() if k.strip()]
-    if not kw_list: return "No keywords."
+    if not kw_list:
+        return []
     hits = []
-    MAX_HITS = 10
     for root, dirs, files in os.walk(VAULT_ROOT):
         dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
         for file in files:
             if not file.endswith('.md'): continue
+            abs_path = os.path.join(root, file)
             try:
-                with open(os.path.join(root, file), 'r', encoding='utf-8', errors='ignore') as f:
+                with open(abs_path, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read()
                 score = 0
                 snippet = ""
@@ -34,17 +40,31 @@ def tool_vault_search(keywords: str) -> str:
                 for i, line in enumerate(lines):
                     if any(k.lower() in line.lower() for k in kw_list):
                         score += 1
-                        # Expand context: 5 lines before, 25 lines after
-                        start = max(0, i - 5)
-                        end = min(len(lines), i + 25)
-                        snippet = "\n".join(lines[start:end])
-                        break
+                        if not snippet:
+                            # Expand context: 5 lines before, 25 lines after
+                            start = max(0, i - 5)
+                            end = min(len(lines), i + 25)
+                            snippet = "\n".join(lines[start:end])
                 if score > 0:
-                    hits.append(f"- File: [[{file}]]\n  Snippet:\n{snippet}\n...")
-                    if len(hits) >= MAX_HITS: break
+                    hits.append({
+                        "rel_path": os.path.relpath(abs_path, VAULT_ROOT).replace("\\", "/"),
+                        "filename": file,
+                        "score": score,
+                        "snippet": snippet,
+                    })
+                    if len(hits) >= max_hits: break
             except Exception as e:
                 print(f"⚠️ Vault scan skipped {file}: {e}")
-        if len(hits) >= MAX_HITS: break
+        if len(hits) >= max_hits: break
+    return hits
+
+def tool_vault_search(keywords: str) -> str:
+    """Vault内をキーワード検索する"""
+    print(f"[Tool] 🧠 Searching Vault: {keywords}")
+    kw_list = [k.strip() for k in keywords.split() if k.strip()]
+    if not kw_list: return "No keywords."
+    hits = [f"- File: [[{h['filename']}]]\n  Snippet:\n{h['snippet']}\n..."
+            for h in _keyword_hits(keywords)]
     return "\n\n".join(hits) if hits else "Vault内に見つかりませんでした。"
 
 def _extract_and_integrate_sections(content: str, tpl: str) -> tuple[str, str]:

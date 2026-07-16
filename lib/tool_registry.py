@@ -93,10 +93,8 @@ def _tool_curate_wrapper() -> str:
 TOOL_ENTRIES = [
     {"name": "tool_web_search", "usage": "tool_web_search(query)", "description": "Web検索 (Tavily)",
      "module": "tools.tool_web"},
-    {"name": "tool_vault_search", "usage": "tool_vault_search(keywords)", "description": "Vault内をキーワード完全一致で検索。ファイル名や特定の語句が分かっている場合に使う。トピック・概念的な検索には tool_vault_semantic_search を優先",
-     "module": "tools.tool_obsidian"},
-    {"name": "tool_vault_semantic_search", "usage": "tool_vault_semantic_search(query, top_k=5)", "description": "Vault内を意味・概念ベースで検索 (embedding類似度)。トピックや曖昧な言い回しの質問、過去メモの内容を探す場合はこちらを優先",
-     "module": "tools.tool_vault_index", "optional": True},
+    {"name": "tool_vault_hybrid_search", "usage": "tool_vault_hybrid_search(query, top_k=5)", "description": "Vault内検索 (キーワード+意味検索のハイブリッド)。過去のメモ・ノート・文脈を探す場合は常にこれを使う",
+     "module": "tools.tool_vault_hybrid"},
     {"name": "tool_create_note", "usage": "tool_create_note(filename, content, summary)", "description": "ファイル作成",
      "module": "tools.tool_obsidian"},
     {"name": "tool_read_note", "usage": "tool_read_note(filename)", "description": "ファイル読込",
