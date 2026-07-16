@@ -51,3 +51,7 @@ models/davidau-claude/*
 # Script scratch outputs
 scripts/davidau_test_output.md
 scripts/note_draft.md
+
+# Audio pipeline runtime artifacts
+tmp_audio/
+gemini_result.md

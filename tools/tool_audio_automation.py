@@ -91,14 +91,15 @@ def _transcribe_openai(file_path: str) -> str:
 
 def _summarize_gemini(text: str, original_name: str) -> str:
     """Gemini API を使用して要約を生成する (リトライ付き)。"""
-    import google.generativeai as genai
+    from google import genai
+    from google.genai.errors import APIError
     import time
-    from google.api_core import exceptions
     
-    genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
+    # 意図: 環境変数 GOOGLE_API_KEY からクライアントを作成し、最新の google-genai SDK を利用する
+    client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
     
-    # モデルの候補（順に試す）
-    models_to_try = ["gemini-1.5-flash", "gemini-2.0-flash"]
+    # モデルの候補（安定性とクォータを考慮し、最新の 2.5-flash を最優先にする）
+    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash"]
     
     prompt = f"""
     ファイル名: {original_name}
@@ -114,18 +115,26 @@ def _summarize_gemini(text: str, original_name: str) -> str:
     """
 
     for model_name in models_to_try:
-        model = genai.GenerativeModel(model_name)
         for attempt in range(3):
             try:
-                response = model.generate_content(prompt)
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt
+                )
                 return f"# {original_name} 要約\n\n日付: {datetime.date.today()}\n\n{response.text}\n\n---\n## 書き起こし\n{text}"
-            except exceptions.ResourceExhausted:
-                wait_time = (attempt + 1) * 5
-                logger.warning(f"Gemini API 429: Retrying in {wait_time}s... (Attempt {attempt+1})")
-                time.sleep(wait_time)
+            except APIError as e:
+                # 意図: クォータ超過 (429) の場合はウェイトを置いてリトライ。
+                # それ以外のエラー (404等) はリトライせず、速やかに次のフォールバックモデルへ移行する。
+                if e.code == 429:
+                    wait_time = (attempt + 1) * 5
+                    logger.warning(f"Gemini API 429: Retrying in {wait_time}s... (Attempt {attempt+1})")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"APIError with model {model_name}: {e.code} - {e.message}")
+                    break
             except Exception as e:
-                logger.error(f"Error with model {model_name}: {e}")
-                break # Try next model if possible
+                logger.error(f"Unexpected error with model {model_name}: {e}")
+                break
     
     raise Exception("Gemini API で要約を生成できませんでした。リトライ回数を超過しました。")
 

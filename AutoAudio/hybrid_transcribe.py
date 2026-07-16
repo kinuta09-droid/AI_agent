@@ -43,11 +43,9 @@ def transcribe():
 
 def summarize(text):
     print("\nSummarizing with Gemini...")
-    import google.generativeai as genai
-    genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
-    
-    # モデルの初期化
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    from google import genai
+    # 意図: 最新の google-genai SDK クライアントを初期化する
+    client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
     
     prompt = f"""
     以下の会議の文字起こしを元に要約を作成してください。
@@ -63,7 +61,11 @@ def summarize(text):
     言語: 日本語
     """
     
-    response = model.generate_content(prompt)
+    # 意図: 推奨モデルである gemini-2.5-flash を利用してコンテンツを生成する
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
     
     print("\n--- Summary Result ---")
     print(response.text)
