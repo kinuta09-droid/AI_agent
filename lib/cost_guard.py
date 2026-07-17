@@ -169,6 +169,17 @@ GEMINI_COUNTER = DailyCounter(
     name="Gemini API",
 )
 
+# --- Crypto Watcher 分析回数カウンタ (Phase 2) -----------------------------
+# 15分ウォッチャーが起動するフル分析 (tool_analyze_crypto = Gemini+Tavily) の
+# 日次上限。Gemini全体予算(200)とは別枠で先に止めることで、相場急変日に
+# ウォッチャーが予算を食い潰して定時ジョブを道連れにするのを防ぐ。
+WATCHER_COUNTER_PATH = os.path.join("C:\\AI_agent", "logs", "crypto_watcher_daily.json")
+WATCHER_COUNTER = DailyCounter(
+    path=WATCHER_COUNTER_PATH,
+    limit=get_limit("DAILY_WATCHER_ANALYSIS_LIMIT", 8),
+    name="Crypto Watcher分析",
+)
+
 
 def check_and_increment(n: int = 1) -> int:
     return GEMINI_COUNTER.check_and_increment(n)
