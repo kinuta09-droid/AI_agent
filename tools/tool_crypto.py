@@ -25,6 +25,7 @@ from lib.file_lock import FileLock
 from lib.quant_core import (
     _calculate_kelly, _detect_regime, _detect_liquidity_sweep,
     _check_divergence, _decide_signal, _compute_levels, get_float_env,
+    _daily_trend, _apply_daily_gate,
 )
 
 
@@ -229,9 +230,11 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
 
     exchange = ccxt.binance({'enableRateLimit': True})
 
-    # 1. 価格データの取得 (4時間足, 100本)
+    # 1. 価格データの取得 (4時間足, 300本)
+    # 300本必須: 旧100本ではEMA200がNaN→現在価格フォールバック→trendが常時
+    # "DOWN"となり trend_pullback ブランチが一度も発火できないバグがあった
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, '4h', limit=100)
+        ohlcv = exchange.fetch_ohlcv(symbol, '4h', limit=300)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     except Exception as e:
@@ -280,6 +283,27 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
     signal, confidence, signal_type, reasons = _decide_signal(
         news_risk, is_falling_knife, has_divergence, is_sweep, sweep_level,
         fng_value, current_rsi, regime, trend, adx)
+
+    # 5b. 日足ハードゲート (Phase3): 日足EMA200下抜け中は BUY/STRONG BUY を
+    # WATCH LIST に降格 (n8n通知・trade_log記録とも抑止される)。
+    # バックテスト(730日×3銘柄)では逆張り主体の本戦略と相性が悪く期待値を
+    # 悪化させた (nogate -0.01R vs gate -0.15R) ため既定OFF。
+    # トレンドフォロー寄りに調整する場合は .env CRYPTO_DAILY_GATE=1 で有効化
+    daily_gate_on = get_float_env("CRYPTO_DAILY_GATE", 0.0) != 0.0
+    daily_trend_str = None
+    if daily_gate_on:
+        try:
+            ohlcv_1d = exchange.fetch_ohlcv(symbol, '1d', limit=250)
+            df_1d = pd.DataFrame(ohlcv_1d, columns=['timestamp', 'open', 'high',
+                                                    'low', 'close', 'volume'])
+            daily_trend_str = _daily_trend(df_1d)
+        except Exception as e:
+            print(f"  ⚠️ Daily trend fetch failed: {e}")
+            daily_trend_str = "UNKNOWN"  # フェイルオープン (ゲート素通し)
+        signal, gate_note = _apply_daily_gate(signal, daily_trend_str)
+        if gate_note:
+            reasons.append(gate_note)
+            print(f"  ⛔ Daily gate: {signal} に降格 (日足 {daily_trend_str})")
 
     # 補足情報
     if current_price > ema200:
@@ -425,6 +449,8 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
         f"| 項目 | 結果 |\n"
         f"|---|---|\n"
         f"| 市場レジーム | {regime} |\n"
+        + (f"| 日足トレンド (ゲート有効) | {daily_trend_str} |\n"
+           if daily_trend_str else "") +
         f"| ニュースリスク | {risk_label} |\n"
         f"| 落ちるナイフ | {knife_str} |\n"
         f"| RSIダイバージェンス | {div_str} |\n"
