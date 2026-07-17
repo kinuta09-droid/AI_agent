@@ -21,6 +21,10 @@ from google.genai import types
 from tavily import TavilyClient
 import requests
 
+# cost_guard はモジュールレベルで lib_shared を import しないため循環しない
+# (save_json/load_json は cost_guard 側が関数内で遅延 import する)
+from lib.cost_guard import GeminiBudgetExceeded, check_and_increment
+
 # Windowsコンソールでの文字化け防止
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -149,6 +153,9 @@ def retry(max_retries=MAX_RETRIES, initial_delay=2):
             while retries < max_retries:
                 try:
                     return func(*args, **kwargs)
+                except GeminiBudgetExceeded:
+                    # 日次予算超過は待っても回復しない — バックオフ再試行せず即時再送出
+                    raise
                 except Exception as e:
                     last_exc = e
                     print(f"Retry {retries+1}/{max_retries} failed. Waiting {delay}s... Error: {e}")
@@ -279,3 +286,19 @@ def resolve_obsidian_links(text: str) -> str:
             except Exception as e:
                 print(f" --> Error reading {real_filename}: {e}")
     return expanded_text
+
+
+# ---------------------------------------------------------
+# Tier2-b: API Cost Guard — 共有clientの generate_content を日次上限付きに差し替え
+# ---------------------------------------------------------
+# `from lib.lib_shared import client` は値importだが、ここではオブジェクト上の
+# 束縛メソッドを差し替えるため、import順に関係なく全利用箇所に伝播する。
+# 呼び出し「前」にカウントする: 失敗したAPI呼び出しもリクエスト試行として
+# 消費されるため、過小計上より過大計上を選ぶ (セーフティネット用途)。
+_original_generate_content = client.models.generate_content
+
+def _guarded_generate_content(*args, **kwargs):
+    check_and_increment()  # 上限超過時は API を呼ばずに GeminiBudgetExceeded
+    return _original_generate_content(*args, **kwargs)
+
+client.models.generate_content = _guarded_generate_content

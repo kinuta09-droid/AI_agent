@@ -7,15 +7,23 @@ from lib.lib_persona import add_client_persona, get_all_personas
 from tools.tool_client_review import evaluate_deliverable, revise_deliverable, _save_improvement_log
 from engine_self_improve import analyze_weak_tools
 from lib.lib_shared import WORK_DIR, VAULT_ROOT
+from lib.cost_guard import GeminiBudgetExceeded
 from commands.bot_views import AllowedUserView
 
 class ClientReviewLoopView(AllowedUserView):
+    # Tier2-b コストガード: timeout=None の永続Viewのため、キャップがないと
+    # 1押下=最大6 Gemini呼び出し (改訂+再評価 ×3周) を無制限に繰り返せてしまう。
+    # カウントはView instance内 (in-memory)。Bot再起動でリセットされるが、
+    # bot.add_view の再登録がないため再起動後はボタン自体が反応しない — 許容。
+    MAX_PRESSES = 3
+
     def __init__(self, deliverable: str, job_description: str, persona_id: str, current_eval: dict):
         super().__init__(timeout=None)
         self.current_text = deliverable
         self.job_description = job_description
         self.persona_id = persona_id
         self.current_eval = current_eval
+        self.press_count = 0
         
         # 初期スコアと状態を保持（ログ用）
         self.initial_text = deliverable
@@ -53,6 +61,11 @@ class ClientReviewLoopView(AllowedUserView):
 
     @discord.ui.button(label="🔄 改善ループ開始 (最大3回)", style=discord.ButtonStyle.primary, custom_id="btn_revise_loop")
     async def btn_loop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.press_count >= self.MAX_PRESSES:
+            await interaction.response.send_message(
+                f"⚠️ 改善ループの上限({self.MAX_PRESSES}回)に達しています。", ephemeral=True)
+            return
+        self.press_count += 1
         await interaction.response.send_message("🔄 自律的改善ループを開始します... (少々お待ちください)", ephemeral=True)
         
         iteration = 0
@@ -60,16 +73,22 @@ class ClientReviewLoopView(AllowedUserView):
         
         # ループ処理（UIをブロックしないように進めるが、今回はここでawaitする）
         # 実際にはタスクとして投げて途中の進捗をEditするなど工夫可能
-        for i in range(max_loops):
-            iteration += 1
-            # 1. 改訂
-            self.current_text = revise_deliverable(self.current_text, self.job_description, self.persona_id, self.current_eval)
-            # 2. 再評価
-            self.current_eval = evaluate_deliverable(self.current_text, self.job_description, self.persona_id)
-            
-            status = self.current_eval.get("status", "fail")
-            if status == "pass":
-                break
+        try:
+            for i in range(max_loops):
+                iteration += 1
+                # 1. 改訂
+                self.current_text = revise_deliverable(self.current_text, self.job_description, self.persona_id, self.current_eval)
+                # 2. 再評価
+                self.current_eval = evaluate_deliverable(self.current_text, self.job_description, self.persona_id)
+
+                status = self.current_eval.get("status", "fail")
+                if status == "pass":
+                    break
+        except GeminiBudgetExceeded as e:
+            # ループ途中の予算超過: 黙って死ぬとユーザーには「開始します...」の
+            # まま何も起きないため、文言を返して終了する (押下分は消費済み扱い)
+            await interaction.followup.send(content=str(e), view=self)
+            return
                 
         # ログ保存
         _save_improvement_log(
@@ -80,7 +99,10 @@ class ClientReviewLoopView(AllowedUserView):
         
         # UI更新
         status = self.current_eval.get("status", "fail")
-        self.btn_loop.disabled = (status == "pass")
+        exhausted = self.press_count >= self.MAX_PRESSES
+        self.btn_loop.disabled = (status == "pass" or exhausted)
+        if exhausted and status != "pass":
+            self.btn_loop.label = f"⛔ 改善上限({self.MAX_PRESSES}回)到達"
         embed = self._create_embed(self.current_eval, iteration)
         
         # 合格した場合のみ Obsidian に出力
@@ -94,6 +116,8 @@ class ClientReviewLoopView(AllowedUserView):
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(self.current_text)
             file_path_msg = f"\n✅ 合格基準に達したため、完成版を保存しました: `40_Report/{filename}`"
+        elif exhausted:
+            file_path_msg = f"\n⛔ {max_loops}回改訂しましたが基準（8.0）に達しませんでした。改善ループの押下上限({self.MAX_PRESSES}回)に達したため、これ以上の自動改訂はできません。"
         else:
             file_path_msg = f"\n⚠️ {max_loops}回改訂しましたが基準（8.0）に達しませんでした。再度ボタンを押すと続きから改訂します。"
             

@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 # ---------------------------------------------------------
 from lib.pid_guard import acquire as _acquire_pid_lock, release as _release_pid_lock, read_owner as _read_pid_owner
 from lib import watchdog as _watchdog
+from lib.cost_guard import GeminiBudgetExceeded
 
 PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_scheduler.pid")
 
@@ -351,6 +352,11 @@ def _execute_task(task):
             if not silent:
                 send_discord_notification(f"✅ **Task Completed**: {task_name}\n>>> {short_result}")
 
+        except GeminiBudgetExceeded as e:
+            # 日次予算超過: 初回到達時に cost_guard がログチャンネルへ通知済み。
+            # 残りジョブ分の「❌ Task Failed」アラーム連打はスパムになるため
+            # ログのみでスキップ扱いにする。
+            logger.warning(f"⏸️ {task_name} skipped: {e}")
         except Exception as e:
             logger.error(f"❌ Error in {task_name}: {e}\n{traceback.format_exc()}")
             error_msg = str(e)[:1000]

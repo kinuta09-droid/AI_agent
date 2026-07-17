@@ -21,6 +21,7 @@ from lib.lib_shared import (
     retry,
 )
 from lib.tool_registry import get_tools_config
+from lib.cost_guard import GeminiBudgetExceeded
 
 # スキル観測は任意機能: 不在・破損でもツール実行を止めない
 try:
@@ -707,6 +708,10 @@ def run_plan_and_execute(user_query: str, step_callback=None,
 
     try:
         plan_data = generate_plan(user_query, session_context=session_context)
+    except GeminiBudgetExceeded as e:
+        # 日次予算超過は障害ではない — 完成済みの日本語文言をそのまま返す
+        print(f"[P&E] ⛔ Budget exceeded: {e}")
+        return str(e)
     except Exception as e:
         print(f"[P&E] ❌ Plan generation failed: {e}")
         return f"計画生成に失敗しました: {e}"

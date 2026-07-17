@@ -15,10 +15,10 @@ load_dotenv(r'C:\AI_agent\.env')
 # ---------------------------------------------------------
 # Gemini Client (lightweight init)
 # ---------------------------------------------------------
-from google import genai
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+# Tier2-b: 独自 genai.Client はコストガードの適用外になるため廃止。
+# 共有client (lib_shared, 日次上限ラップ済み) を使用箇所で遅延importする
+# ことで、メニュー起動の軽さ (lib_shared の重い初期化回避) は維持する。
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-flash")
-client = genai.Client(api_key=GOOGLE_API_KEY)
 
 # ---------------------------------------------------------
 # Tool Registry
@@ -157,6 +157,7 @@ def route_to_tool(user_input: str) -> dict:
     tool_list = "\n".join(f"- {t['name']}: {t['description']}" for t in TOOLS)
     prompt = f"あなたはタスクルーターです。ユーザーの入力に最も適したツールを選んでください。\n\n【ツール】\n{tool_list}\n\n【入力】\n{user_input}\n\nJSON形式: {{\"tool\": \"name\", \"arg\": \"val\"}}"
     try:
+        from lib.lib_shared import client  # 遅延import: コストガード適用済み共有client
         response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
         import json, re
         text = re.sub(r'```json\s*|\s*```', '', response.text.strip())

@@ -76,6 +76,11 @@ def _build_curate_embed(suggestions: dict, reject_count: int = 0) -> discord.Emb
     return embed
 
 
+# Tier2-b コストガード: 再提案は1ラウンド= Gemini 1 + Tavily 1 消費で、
+# reject_count はボタン文言変更のみだったため上限を追加 (無制限ループ防止)。
+MAX_REFINE_ROUNDS = 5
+
+
 class CurateView(discord.ui.View):
     """Interactive view for /curate with Deep Refinement Loop."""
 
@@ -124,13 +129,19 @@ class CurateView(discord.ui.View):
             btn_b.callback = self._make_ab_callback("option_b")
             self.add_item(btn_b)
 
-        # 再提案ボタン（Row 2）
-        skip_label = "🔄 別の提案を見る" if reject_count == 0 else f"🔄 もっと別の提案 ({reject_count}回目)"
+        # 再提案ボタン（Row 2）— 上限到達時は理由が伝わるよう disabled で残す
+        if reject_count >= MAX_REFINE_ROUNDS:
+            skip_label = f"⛔ 再提案上限({MAX_REFINE_ROUNDS}回)に達しました"
+        elif reject_count == 0:
+            skip_label = "🔄 別の提案を見る"
+        else:
+            skip_label = f"🔄 もっと別の提案 ({reject_count}回目)"
         btn_skip = discord.ui.Button(
             label=skip_label[:80],
             style=discord.ButtonStyle.secondary,
             custom_id="skip",
             row=2,
+            disabled=(reject_count >= MAX_REFINE_ROUNDS),
         )
         btn_skip.callback = self._refinement_callback
         self.add_item(btn_skip)
@@ -213,6 +224,13 @@ class CurateView(discord.ui.View):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message(
                 "このボタンは操作できません。", ephemeral=True
+            )
+            return
+
+        # 防御的二重チェック (ボタン disabled が本線、こちらは保険)
+        if self.reject_count >= MAX_REFINE_ROUNDS:
+            await interaction.response.send_message(
+                f"⛔ 再提案の上限({MAX_REFINE_ROUNDS}回)に達しています。", ephemeral=True
             )
             return
 

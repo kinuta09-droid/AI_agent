@@ -91,12 +91,12 @@ def _transcribe_openai(file_path: str) -> str:
 
 def _summarize_gemini(text: str, original_name: str) -> str:
     """Gemini API を使用して要約を生成する (リトライ付き)。"""
-    from google import genai
     from google.genai.errors import APIError
     import time
-    
-    # 意図: 環境変数 GOOGLE_API_KEY からクライアントを作成し、最新の google-genai SDK を利用する
-    client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
+
+    # Tier2-b: 独自clientはコストガード適用外になるため、日次上限ラップ済みの
+    # 共有clientへ切替 (遅延import: このツールはGemini不使用の経路もあるため)
+    from lib.lib_shared import client
     
     # モデルの候補（安定性とクォータを考慮し、最新の 2.5-flash を最優先にする）
     models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash"]
