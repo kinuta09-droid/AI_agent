@@ -13,8 +13,22 @@ tools/tool_crypto.py (ライブ分析) と scripts/backtest_crypto.py (バック
 - ここのロジックを変更したら CLAUDE.md の Backtest Gate に従い
   before/after バックテスト比較が必須
 """
+import os
+import datetime
+
 import pandas as pd
 import pandas_ta as ta_lib
+
+
+def get_float_env(name: str, default: float) -> float:
+    """環境変数からfloatを読む。未設定/パース不能は default。"""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
 
 
 def _calculate_kelly(win_rate: float, reward_ratio: float = 2.0, fraction: float = 0.25) -> float:
@@ -162,3 +176,148 @@ def _decide_signal(news_risk: str, is_falling_knife: bool, has_divergence: bool,
                 reasons.append(f"RSIが買われすぎ水準 ({current_rsi:.1f})")
 
     return signal, confidence, signal_type, reasons
+
+
+# ---------------------------------------------------------
+# Phase 3: 指標一括計算 / ATR水準 / 日足ゲート / トレード解決
+# ---------------------------------------------------------
+
+def _compute_indicators(df) -> dict:
+    """4h足OHLCV DataFrame から判定に必要な全指標を一括計算する。
+
+    ライブ (tool_analyze_crypto) とバックテスターの両方がこれを呼ぶことで
+    「同一ロジック」を構造的に保証する。df は変更しない (copyして計算)。
+    change_24h は 4h足前提 (6本=24時間前との比較) — live実装と同一。
+    EMA200 はデータ不足時 NaN → 現在価格フォールバック → trend="DOWN" に
+    倒れる (liveの従来挙動と同一。300本以上渡せば正しく計算される)。
+    """
+    df = df.copy()
+    df['rsi'] = ta_lib.rsi(df['close'], length=14)
+    df['ema50'] = ta_lib.ema(df['close'], length=50)
+    df['ema200'] = ta_lib.ema(df['close'], length=200)
+
+    latest = df.iloc[-1]
+    price = float(latest['close'])
+    current_rsi = float(latest['rsi']) if pd.notna(latest['rsi']) else 50.0
+    ema50 = float(latest['ema50']) if pd.notna(latest['ema50']) else price
+    ema200_valid = pd.notna(latest['ema200'])
+    ema200 = float(latest['ema200']) if ema200_valid else price
+
+    regime, adx, atr_pct, dmp, dmn, atr_value = _detect_regime(df)
+    is_sweep, sweep_level = _detect_liquidity_sweep(df)
+    has_divergence = _check_divergence(df)
+    is_falling_knife = (adx > 30) and (dmn > dmp)
+    trend = "UP" if price > ema200 else "DOWN"
+
+    price_24h_ago = float(df['close'].iloc[-7]) if len(df) >= 7 else price
+    change_24h = ((price - price_24h_ago) / price_24h_ago) * 100 if price_24h_ago else 0.0
+
+    return {
+        "price": price,
+        "rsi": current_rsi,
+        "ema50": ema50,
+        "ema200": ema200,
+        "ema200_valid": ema200_valid,
+        "regime": regime,
+        "adx": adx,
+        "atr_pct": atr_pct,
+        "atr_value": atr_value,
+        "dmp": dmp,
+        "dmn": dmn,
+        "is_sweep": is_sweep,
+        "sweep_level": sweep_level,
+        "has_divergence": has_divergence,
+        "is_falling_knife": is_falling_knife,
+        "trend": trend,
+        "change_24h": change_24h,
+    }
+
+
+def _compute_levels(price: float, atr_value: float,
+                    sl_mult: float = 2.0,
+                    dca_mults: tuple = (1.5, 3.0, 4.5),
+                    atr_floor_pct: float = 1.0,
+                    atr_cap_pct: float = 4.0) -> dict:
+    """ATR倍数ベースの動的DCA/SL水準を算出する (固定-5/-10/-15%の置き換え)。
+
+    atr_eff = clamp(atr_value, price×floor%, price×cap%)。
+    floor はレンジ相場で Stop が浅くなりすぎる事故 (例: 1×ATR=-0.5%) を、
+    cap は高ボラ相場で旧固定%より深くなる事故を防ぐ保険。
+    """
+    if price <= 0:
+        return {"dca_entry1": 0.0, "dca_entry2": 0.0, "dca_entry3": 0.0,
+                "dca_stop": 0.0, "atr_eff": 0.0, "atr_used_pct": 0.0,
+                "sl_mult": sl_mult, "dca_mults": tuple(dca_mults)}
+    floor = price * atr_floor_pct / 100.0
+    cap = price * atr_cap_pct / 100.0
+    atr_eff = min(max(atr_value, floor), cap)
+    return {
+        "dca_entry1": price - dca_mults[0] * atr_eff,
+        "dca_entry2": price - dca_mults[1] * atr_eff,
+        "dca_entry3": price - dca_mults[2] * atr_eff,
+        "dca_stop": price - sl_mult * atr_eff,
+        "atr_eff": atr_eff,
+        "atr_used_pct": (atr_eff / price) * 100.0,
+        "sl_mult": sl_mult,
+        "dca_mults": tuple(dca_mults),
+    }
+
+
+def _daily_trend(df_1d) -> str:
+    """日足終値 vs 日足EMA200 でトレンド判定 → "UP" | "DOWN" | "UNKNOWN"。
+
+    UNKNOWN はデータ不足/取得失敗 (フェイルオープン: ゲートは何もしない)。
+    """
+    if df_1d is None or len(df_1d) < 200:
+        return "UNKNOWN"
+    ema200_s = ta_lib.ema(df_1d['close'], length=200)
+    if ema200_s is None or pd.isna(ema200_s.iloc[-1]):
+        return "UNKNOWN"
+    return "UP" if float(df_1d['close'].iloc[-1]) > float(ema200_s.iloc[-1]) else "DOWN"
+
+
+def _apply_daily_gate(signal: str, daily_trend: str, enabled: bool = True) -> tuple:
+    """日足ハードゲート: 日足下降トレンド中は BUY/STRONG BUY を WATCH LIST に降格。
+
+    Returns: (signal, gate_note or None)
+    WATCH LIST は n8n通知にも trade_log 記録にも乗らないため、降格 = 完全遮断。
+    signal_type は呼び出し側で保持される (WATCH LISTは記録されないので
+    勝率統計は汚れない)。UNKNOWN は素通し (フェイルオープン)。
+    """
+    if not enabled or daily_trend != "DOWN":
+        return signal, None
+    if signal in ("BUY", "STRONG BUY"):
+        note = f"⛔ 日足フィルタ: 1d EMA200 下抜けのため {signal} → WATCH LIST に降格"
+        return "WATCH LIST", note
+    return signal, None
+
+
+def _resolve_trade(entry: float, stop: float, target: float,
+                   candles, entry_time: datetime.datetime,
+                   expiry_days: int = 21) -> tuple:
+    """1h足を時系列に走査してトレードの決着を判定する。
+
+    candles: 'timestamp'(datetime64) / 'high' / 'low' 列を持つ DataFrame
+    (時系列昇順)。entry_time より後のバーのみ評価する。
+
+    Returns: (status, exit_time, note)
+      status: "WIN" | "LOSE" | "EXPIRED" | "OPEN"(データ端まで未決着)
+
+    ライブ監査 (tool_audit_predictions) との判定差異:
+    - 監査は観測窓全体の min(low)/max(high) で SL優先判定 (時系列無視の悲観近似)。
+      本関数は時系列順に評価するため「TP先着→後日SL」を正しく WIN にできる。
+    - 同一バー内で SL/TP 両到達の場合は SL 優先 (悲観バイアス。バー内の
+      順序は1hデータでは不明のため、監査と同じ safe 側に倒す)。
+    """
+    expiry = entry_time + datetime.timedelta(days=expiry_days)
+    for row in candles.itertuples():
+        ts = row.timestamp
+        if ts <= entry_time:
+            continue
+        if ts >= expiry:
+            return "EXPIRED", ts, f"{expiry_days}日経過してもSL/TP未到達"
+        if float(row.low) <= stop:
+            return "LOSE", ts, f"SL ${stop:,.2f} 到達"
+        if float(row.high) >= target:
+            return "WIN", ts, f"TP ${target:,.2f} 到達"
+    return "OPEN", None, "データ端まで未決着"
