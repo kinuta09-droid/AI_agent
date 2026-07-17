@@ -154,7 +154,8 @@ def get_fng_history() -> dict:
         history = {}
         for item in data:
             ts = int(item["timestamp"])
-            date_str = datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+            date_str = datetime.datetime.fromtimestamp(
+                ts, datetime.timezone.utc).strftime("%Y-%m-%d")
             history[date_str] = int(item["value"])
         with open(FNG_CACHE_PATH, "w", encoding="utf-8") as f:
             json.dump(history, f)

@@ -25,7 +25,7 @@ from lib.file_lock import FileLock
 from lib.quant_core import (
     _calculate_kelly, _detect_regime, _detect_liquidity_sweep,
     _check_divergence, _decide_signal, _compute_levels, get_float_env,
-    _daily_trend, _apply_daily_gate,
+    _daily_trend, _apply_daily_gate, _compute_indicators,
 )
 
 
@@ -240,46 +240,40 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
     except Exception as e:
         return f"Error fetching {symbol} data: {e}"
 
-    # 2. テクニカル指標の計算
-    df['rsi'] = ta_lib.rsi(df['close'], length=14)
-    df['ema50'] = ta_lib.ema(df['close'], length=50)
-    df['ema200'] = ta_lib.ema(df['close'], length=200)
-    macd_df = ta_lib.macd(df['close'])
-    if macd_df is not None:
-        df = pd.concat([df, macd_df], axis=1)
+    # 2-4. テクニカル指標の一括計算 (バックテスターと同一の共有純関数。
+    # Backtest Gate: ライブ側だけの指標フォークを作らないこと)
+    ind = _compute_indicators(df)
+    current_price = ind["price"]
+    current_rsi = ind["rsi"]
+    ema50 = ind["ema50"]
+    ema200 = ind["ema200"]
+    regime = ind["regime"]
+    adx = ind["adx"]
+    atr_pct = ind["atr_pct"]
+    atr_value = ind["atr_value"]
+    is_sweep = ind["is_sweep"]
+    sweep_level = ind["sweep_level"]
+    has_divergence = ind["has_divergence"]
+    is_falling_knife = ind["is_falling_knife"]
+    trend = ind["trend"]
+    change_24h = ind["change_24h"]
 
-    latest = df.iloc[-1]
-    current_price = float(latest['close'])
-    current_rsi = float(latest['rsi']) if pd.notna(latest['rsi']) else 50.0
-    ema50 = float(latest['ema50']) if pd.notna(latest['ema50']) else current_price
-    ema200 = float(latest['ema200']) if pd.notna(latest['ema200']) else current_price
-
-    # 3. Fear & Greed Index の取得
-    fng_value, fng_class = fetch_fear_greed_index()
-
-    # 4. Next-Gen: レジーム検知 + SMC + ダイバージェンス + マーケットドライバー
-    regime, adx, atr_pct, dmp, dmn, atr_value = _detect_regime(df)
-    is_sweep, sweep_level = _detect_liquidity_sweep(df)
-    has_divergence = _check_divergence(df)
     print(f"  📈 Regime: {regime} (ADX={adx:.1f}, ATR%={atr_pct:.2f})")
     if is_sweep:
         print(f"  🎯 Liquidity Sweep detected at {sweep_level:.2f}")
     if has_divergence:
         print(f"  📊 RSI Bullish Divergence detected")
+    if is_falling_knife:
+        print(f"  🔪 Falling Knife warning (ADX={adx:.1f}, DM-={ind['dmn']:.1f} > DM+={ind['dmp']:.1f})")
 
-    # 4b. 24h変動率 + マーケットドライバー分析 ("Why")
-    price_24h_ago = float(df['close'].iloc[-7]) if len(df) >= 7 else current_price
-    change_24h = ((current_price - price_24h_ago) / price_24h_ago) * 100
+    # 3. Fear & Greed Index の取得
+    fng_value, fng_class = fetch_fear_greed_index()
+
+    # 4b. マーケットドライバー分析 ("Why")
     news_summary, news_risk = _analyze_market_drivers(symbol, change_24h)
     print(f"  🕵️ News Risk: {news_risk}")
 
-    # 4c. 落ちるナイフ判定 (ADX > 30 + 下降モメンタム)
-    is_falling_knife = (adx > 30) and (dmn > dmp)
-    if is_falling_knife:
-        print(f"  🔪 Falling Knife warning (ADX={adx:.1f}, DM-={dmn:.1f} > DM+={dmp:.1f})")
-
     # 5. Strategy 2.0 統合判定ロジック（→ _decide_signal に抽出済み）
-    trend = "UP" if current_price > ema200 else "DOWN"
     signal, confidence, signal_type, reasons = _decide_signal(
         news_risk, is_falling_knife, has_divergence, is_sweep, sweep_level,
         fng_value, current_rsi, regime, trend, adx)
@@ -564,7 +558,8 @@ def tool_scan_crypto_market() -> str:
     results = []
     for symbol in SCAN_SYMBOLS:
         try:
-            ohlcv = exchange.fetch_ohlcv(symbol, '4h', limit=100)
+            # 300本必須: 100本ではEMA200がNaN→トレンド列が全銘柄"DOWN"固定になる
+            ohlcv = exchange.fetch_ohlcv(symbol, '4h', limit=300)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
             rsi_series = ta_lib.rsi(df['close'], length=14)

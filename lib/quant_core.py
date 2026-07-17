@@ -298,7 +298,9 @@ def _resolve_trade(entry: float, stop: float, target: float,
     """1h足を時系列に走査してトレードの決着を判定する。
 
     candles: 'timestamp'(datetime64) / 'high' / 'low' 列を持つ DataFrame
-    (時系列昇順)。entry_time より後のバーのみ評価する。
+    (時系列昇順)。entry_time 以降に開始するバーを評価する (エントリー時刻
+    ちょうどに始まるバー = エントリー直後1時間を含む。ライブ監査の
+    fetch_ohlcv since=エントリー時刻 と同じ窓)。
 
     Returns: (status, exit_time, note)
       status: "WIN" | "LOSE" | "EXPIRED" | "OPEN"(データ端まで未決着)
@@ -312,7 +314,7 @@ def _resolve_trade(entry: float, stop: float, target: float,
     expiry = entry_time + datetime.timedelta(days=expiry_days)
     for row in candles.itertuples():
         ts = row.timestamp
-        if ts <= entry_time:
+        if ts < entry_time:
             continue
         if ts >= expiry:
             return "EXPIRED", ts, f"{expiry_days}日経過してもSL/TP未到達"

@@ -48,13 +48,14 @@ DEFAULT_SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 
 @dataclass
 class BTConfig:
+    """既定値はライブ (tool_analyze_crypto の .env 既定) と一致させること。"""
     label: str = "default"
     atr_levels: bool = True          # False = 旧固定% (Stop -12%)
-    sl_mult: float = 2.0
+    sl_mult: float = 2.5
     dca_mults: tuple = (1.5, 3.0, 4.5)
     atr_floor_pct: float = 1.0
     atr_cap_pct: float = 4.0
-    daily_gate: bool = True
+    daily_gate: bool = False         # ライブ既定OFF (Step5のA/B結果に基づく)
     expiry_days: int = 21
     cooldown_hours: float = 0.0
     window_bars: int = 300           # 4h足の指標計算窓 (100=旧liveのEMA200バグ再現)
@@ -351,24 +352,28 @@ def main():
     p.add_argument("--compare", default="none",
                    choices=["none", "fixed-vs-atr", "gate-vs-nogate",
                             "window-100-vs-300"])
-    p.add_argument("--sl-mult", type=float, default=2.0)
+    p.add_argument("--sl-mult", type=float, default=2.5)
     p.add_argument("--dca-mults", default="1.5,3.0,4.5")
     p.add_argument("--atr-floor-pct", type=float, default=1.0)
     p.add_argument("--atr-cap-pct", type=float, default=4.0)
-    p.add_argument("--no-daily-gate", action="store_true")
+    p.add_argument("--daily-gate", action="store_true",
+                   help="日足ハードゲートを有効化 (既定OFF=ライブ既定と一致)")
     p.add_argument("--cooldown-hours", type=float, default=0.0)
     p.add_argument("--window-bars", type=int, default=300)
     p.add_argument("--label", default="default")
     args = p.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    dca_mults = tuple(float(x) for x in args.dca_mults.split(","))
+    if len(dca_mults) != 3:
+        p.error("--dca-mults はカンマ区切りで3値必須 (例: 1.5,3.0,4.5)")
     base = BTConfig(
         label=args.label,
         sl_mult=args.sl_mult,
-        dca_mults=tuple(float(x) for x in args.dca_mults.split(",")),
+        dca_mults=dca_mults,
         atr_floor_pct=args.atr_floor_pct,
         atr_cap_pct=args.atr_cap_pct,
-        daily_gate=not args.no_daily_gate,
+        daily_gate=args.daily_gate,
         cooldown_hours=args.cooldown_hours,
         window_bars=args.window_bars,
     )

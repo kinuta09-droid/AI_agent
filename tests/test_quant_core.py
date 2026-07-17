@@ -149,9 +149,14 @@ def test_resolve_trade():
     st, ts, note = _resolve_trade(100, 96, 108, _candles([(1, 101, 99), (2, 102, 100)]), ENTRY_TIME)
     check("データ端まで未決着 → OPEN", st == "OPEN")
 
-    # entry_time 以前のバーは無視 (シグナルバー自身のヒゲで即決着しない)
-    st, ts, note = _resolve_trade(100, 96, 108, _candles([(0, 120, 80), (1, 101, 99)]), ENTRY_TIME)
-    check("entry_time以前のバーは無視", st == "OPEN")
+    # entry_time より前に開始したバーは無視 (シグナルバー自身のヒゲで即決着しない)
+    st, ts, note = _resolve_trade(100, 96, 108, _candles([(-1, 120, 80), (1, 101, 99)]), ENTRY_TIME)
+    check("entry_timeより前のバーは無視", st == "OPEN")
+
+    # entry_time ちょうどに開始するバー (=エントリー直後1時間) は評価対象
+    # (ライブ監査の since=エントリー時刻 と同じ窓)
+    st, ts, note = _resolve_trade(100, 96, 108, _candles([(0, 109, 100)]), ENTRY_TIME)
+    check("entry_time開始バーは評価対象 (TP→WIN)", st == "WIN")
 
 
 def _ohlcv_df(n, start, step):
