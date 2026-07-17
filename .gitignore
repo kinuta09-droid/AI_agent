@@ -15,6 +15,9 @@ antigravity_env/
 # State files
 bot_discord.pid
 learning_db.json
+learning_db_archive.jsonl
+learning_db.json.corrupt-*
+learning_db.json.tmp-*
 *.pid
 scheduler.log
 logs/
