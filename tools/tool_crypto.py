@@ -236,6 +236,20 @@ def _save_trade_log(logs: list):
     save_json(TRADE_LOG_PATH, logs)
 
 
+def _apply_audit_updates(logs: list, updates: dict) -> list:
+    """監査結果(id→更新フィールド)をログへ差分適用する(純関数・インプレース)。
+
+    全体上書きではなく id 一致レコードのみ更新することで、監査中
+    (ネットワーク往復で分単位)に bot/watcher が追記した新規予測を潰さない。
+    updates に対応レコードが無い id は無視される(監査後に手動削除された等)。
+    """
+    for t in logs:
+        u = updates.get(t.get("id"))
+        if u:
+            t.update(u)
+    return logs
+
+
 def _update_trade_log(mutator):
     """trade_log.json をプロセス間ロック下で load→mutate→save する。
 
@@ -917,14 +931,7 @@ def tool_audit_predictions() -> str:
         time.sleep(0.3)
 
     # JSONログ更新: ロック下で最新を再読込し、id一致レコードにのみ判定結果を適用
-    def _apply_updates(all_logs):
-        for t in all_logs:
-            u = updates.get(t.get("id"))
-            if u:
-                t.update(u)
-        return all_logs
-
-    logs = _update_trade_log(_apply_updates)
+    logs = _update_trade_log(lambda all_logs: _apply_audit_updates(all_logs, updates))
 
     # 統計セクション（今回の監査分）
     # EXPIREDのみの回でも統計を出す（total_closedではなくupdated_countで判定）

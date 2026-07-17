@@ -142,10 +142,39 @@ def test_update_trade_log_concurrent():
         _cleanup(path)
 
 
+def test_apply_audit_updates():
+    print("[Test] _apply_audit_updates — 監査差分マージ")
+    logs = [
+        {"id": "aaa", "status": "OPEN", "symbol": "BTC/USDT"},
+        {"id": "bbb", "status": "OPEN", "symbol": "ETH/USDT"},
+        {"id": "ccc", "status": "WIN", "symbol": "SOL/USDT"},  # 判定済み(対象外)
+        {"status": "OPEN", "symbol": "XRP/USDT"},              # id欠落legacy
+    ]
+    updates = {
+        "aaa": {"status": "LOSE", "audit_note": "SL到達", "audit_date": "2026-07-17"},
+        "zzz": {"status": "WIN"},  # 監査中に手動削除された等、対応レコードなし
+    }
+    merged = tc._apply_audit_updates(logs, updates)
+
+    check("id一致レコードに適用", merged[0]["status"] == "LOSE"
+          and merged[0]["audit_note"] == "SL到達")
+    check("update対象外レコードは無変更", merged[1]["status"] == "OPEN")
+    check("判定済みレコードは無変更", merged[2]["status"] == "WIN")
+    check("id欠落レコードでクラッシュしない", merged[3]["status"] == "OPEN")
+    check("対応レコードなしのupdateは無視", all(t.get("id") != "zzz" for t in merged))
+
+    # 監査中の追記が消えないこと (全体上書きだと消えるケース)
+    logs_with_new = logs + [{"id": "new1", "status": "OPEN", "symbol": "DOGE/USDT"}]
+    merged = tc._apply_audit_updates(logs_with_new, updates)
+    check("監査中の追記レコードが残る",
+          any(t.get("id") == "new1" for t in merged) and len(merged) == 5)
+
+
 if __name__ == "__main__":
     test_basic_acquire_release()
     test_timeout()
     test_no_lost_update()
     test_update_trade_log_concurrent()
+    test_apply_audit_updates()
     print(f"\n{'='*40}\nResult: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
