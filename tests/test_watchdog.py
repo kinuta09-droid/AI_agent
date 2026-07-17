@@ -112,11 +112,32 @@ def test_kill_process_dead_pid_returns_false():
     print("✅ watchdog: 死PID/無効PID への kill は False (OSError 捕捉)")
 
 
+def test_beat_creates_missing_parent_dir():
+    """logs/ が無い環境でも beat が親ディレクトリごと作成する。
+
+    自動作成しない実装だと heartbeat が永久に書かれず、watchdog が健全な
+    プロセスを300秒毎に殺し続ける無限再起動ループになる (grill で検出)。
+    """
+    base = tempfile.mkdtemp(prefix="watchdog_test_")
+    try:
+        hb = os.path.join(base, "logs", "test.hb")
+        beat(hb)
+        assert os.path.exists(hb), "親ディレクトリごと作成されるべき"
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    print("✅ watchdog: 親ディレクトリ欠落時は beat が自動作成")
+
+
 def test_beat_failure_is_swallowed():
     """書き込めないパスでも beat は例外を漏らさない (送出側ループを壊さない)。"""
-    bad_path = os.path.join(tempfile.gettempdir(),
-                            "watchdog_no_such_dir_xyz", "test.hb")
-    beat(bad_path)  # 例外が飛ばなければ OK
+    # ディレクトリは自動作成されるため、「ファイル名の位置に既にディレクトリが
+    # ある」という作成不能ケースで失敗させる
+    base = tempfile.mkdtemp(prefix="watchdog_test_")
+    try:
+        os.makedirs(os.path.join(base, "test.hb"))
+        beat(os.path.join(base, "test.hb"))  # 例外が飛ばなければ OK
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
     print("✅ watchdog: beat の書き込み失敗は握り潰される")
 
 

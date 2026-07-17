@@ -39,13 +39,20 @@ BEAT_INTERVAL = 30
 def beat(hb_file):
     """heartbeat を更新する。判定は mtime なので内容は診断用。
 
-    送出側のループを絶対に壊さないため、書き込み失敗は握り潰す
+    親ディレクトリ (logs/) は gitignore されており誰も作らないため、ここで
+    作成する。作らないと beat が永久に失敗し「健全なプロセスを watchdog が
+    定期処刑し続ける」無限再起動ループになる (grill 2026-07-17 で検出)。
+
+    送出側のループを絶対に壊さないため、失敗は種類を問わず握り潰す
     (heartbeat が止まれば watchdog が再起動してくれる、が正しい倒れ方)。
     """
     try:
+        parent = os.path.dirname(hb_file)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         with open(hb_file, 'w', encoding='utf-8') as f:
             f.write(str(time.time()))
-    except OSError:
+    except Exception:
         pass
 
 

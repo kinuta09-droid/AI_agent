@@ -95,7 +95,8 @@ def run_and_monitor():
 
     def start_process(name, script):
         print(f"  [Launcher] Starting {name}...")
-        return subprocess.Popen([python_exe, script])
+        # 絶対パスで起動 (cwd が C:\AI_agent 以外でもスーパーバイザが機能するように)
+        return subprocess.Popen([python_exe, os.path.join(_ROOT, script)])
 
     processes = {
         name: {
@@ -131,6 +132,9 @@ def run_and_monitor():
                     # ハンドル) を先に殺すと、実体が Discord Gateway を掴んだまま
                     # 孤児化する (2026-07-17 の再起動手順で確認済みの罠)。
                     # 実体が死ねば親は自然に exit し、上の poll() が再起動する。
+                    # PID 再利用による誤kill の心配は不要: 親は実体を wait して
+                    # exit するため「親が生存 (= このパスに来る) ⇔ 実体が生存」
+                    # であり、owner は常に生きた実体を指す。
                     owner = read_owner(svc["pid_file"])
                     killed = watchdog.kill_process(owner)
                     print(f"  [Watchdog] 🐕 {name} heartbeat stale ({age}s). "
