@@ -106,7 +106,9 @@ def get_ohlcv(symbol: str, timeframe: str, since_ms: int,
 
     if new_rows:
         new_df = pd.DataFrame(new_rows, columns=CSV_COLUMNS)
-        merged = pd.concat([cached, new_df], ignore_index=True)
+        # 空dfとのconcatはobject dtypeに化ける (pandas 2.x) ため空はスキップ
+        merged = (pd.concat([cached, new_df], ignore_index=True)
+                  if len(cached) else new_df)
     else:
         merged = cached
 
@@ -114,6 +116,9 @@ def get_ohlcv(symbol: str, timeframe: str, since_ms: int,
         return pd.DataFrame(columns=["timestamp"] + CSV_COLUMNS[1:])
 
     merged = merged.drop_duplicates(subset="ts").sort_values("ts").reset_index(drop=True)
+    merged = merged.astype({"ts": "int64", "open": "float64", "high": "float64",
+                            "low": "float64", "close": "float64",
+                            "volume": "float64"})
     # 未確定足を除外 (バー開始 + 期間 が現在より未来 = まだ形成中)
     merged = merged[merged["ts"] + tf_ms <= now_ms].reset_index(drop=True)
 

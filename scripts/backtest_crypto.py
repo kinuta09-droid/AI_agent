@@ -332,7 +332,9 @@ def write_outputs(results: list, symbols: list, days: int) -> str:
                "- 4h足確定毎の評価 (ライブは定時+急変駆動でシグナル密度が異なる)\n"
                "- 同一1hバー内SL/TP両到達はSL優先 (悲観側)\n")
 
-    report_path = os.path.join(BACKTEST_OUT_DIR, f"bt_{stamp}_report.md")
+    # 同一分内の連続実行で上書きしないよう、ラベルもファイル名に含める
+    labels = "-".join(res["config"].label for res in results)
+    report_path = os.path.join(BACKTEST_OUT_DIR, f"bt_{stamp}_{labels}_report.md")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
     return report_path
