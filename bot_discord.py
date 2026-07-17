@@ -12,6 +12,7 @@ import io
 import asyncio
 from lib.lib_obsidian_utils import get_obsidian_uri, get_obsidian_uri_from_link
 from lib.pid_guard import acquire as _acquire_pid_lock, release as _release_pid_lock, read_owner as _read_pid_owner
+from lib import watchdog as _watchdog
 import datetime
 import signal
 import time
@@ -43,6 +44,16 @@ sys.stdout.reconfigure(encoding='utf-8')
 # 2プロセスが両方ロックを取れてしまい Bot の2重起動を招いた (2026-07-17)。
 # ---------------------------------------------------------
 PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_discord.pid")
+
+# ---------------------------------------------------------
+# Watchdog Heartbeat: ハング検知 (Tier2-c)
+# イベントループ上で 30秒毎に heartbeat ファイルを更新する。更新が止まる =
+# イベントループが機能停止しているので、main.py のスーパーバイザが実体を
+# 強制再起動する。/agent 等の重い処理は asyncio.to_thread でループ外に
+# 逃がしてあるため、長時間タスク中でも heartbeat は止まらない (誤検知しない)。
+# ---------------------------------------------------------
+HEARTBEAT_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "logs", "bot_discord.hb")
 
 # ---------------------------------------------------------
 # Modular Imports
@@ -128,6 +139,7 @@ except ImportError:
 
 import discord
 from discord import app_commands
+from discord.ext import tasks
 from dotenv import load_dotenv
 
 # ---------------------------------------------------------
@@ -1115,10 +1127,19 @@ async def on_message(message: discord.Message):
 # Events
 # ---------------------------------------------------------
 
+@tasks.loop(seconds=_watchdog.BEAT_INTERVAL)
+async def _heartbeat_loop():
+    _watchdog.beat(HEARTBEAT_FILE)
+
+
 @bot.event
 async def on_ready():
     print(f"[Discord] ✅ Logged in as {bot.user} (ID: {bot.user.id})")
     print(f"[Discord] 🏰 Connected Guilds: {[g.id for g in bot.guilds]}")
+
+    # on_ready は再接続でも発火するため多重起動をガードする
+    if not _heartbeat_loop.is_running():
+        _heartbeat_loop.start()
 
     # bot_commands_curator のヘルパー初期化
     bot_commands_curator.init_helpers(
