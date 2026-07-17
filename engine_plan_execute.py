@@ -6,6 +6,7 @@ Plan-and-Execute, Self-Improvement Protocol を提供する。
 """
 
 import json
+import os
 import datetime
 import inspect
 import time
@@ -15,7 +16,8 @@ from google.genai import types
 from lib.lib_shared import (
     client, MODEL_NAME, MODEL_NAME_HEAVY,
     safe_json_loads, load_json, save_json,
-    LEARNING_DB_PATH, PERFORMANCE_DASHBOARD_PATH, VAULT_ROOT,
+    LEARNING_DB_PATH, LEARNING_DB_ARCHIVE_PATH,
+    PERFORMANCE_DASHBOARD_PATH, VAULT_ROOT,
     retry,
 )
 from lib.tool_registry import get_tools_config
@@ -824,14 +826,77 @@ def _generate_final_summary(user_query: str, results: list) -> str:
 # Self-Improvement Protocol
 # ---------------------------------------------------------
 
+# 学習DBに保持する最大エントリ数。超過分は archive JSONL へ退避する。
+LEARNING_DB_MAX_ENTRIES = 200
+# 信頼性・失敗パターン集計で参照する直近エントリ数（古い烙印を残さないための窓）
+RELIABILITY_WINDOW = 30
+
+
 def _load_learning_db() -> dict:
-    """学習DBを読み込む。存在しなければ空のDBを返す。"""
-    return load_json(LEARNING_DB_PATH, default={"executions": []})
+    """学習DBを読み込む。存在しなければ空のDBを返す。
+
+    ファイルは存在するのにパース失敗した場合（=破損）は、default で黙って
+    握り潰すと次の1回の書き込みで全履歴が恒久消滅する。そのため破損ファイルは
+    .corrupt-<timestamp> へ退避してから空DBで再開する。「無い」と「壊れている」を
+    区別する責務はこの呼び出し側にあり、汎用の load_json は変更しない。
+    """
+    if not os.path.exists(LEARNING_DB_PATH):
+        return {"executions": []}
+    try:
+        with open(LEARNING_DB_PATH, 'r', encoding='utf-8') as f:
+            db = json.load(f)
+        if not isinstance(db, dict) or "executions" not in db:
+            raise ValueError("learning_db に 'executions' キーが無い")
+        return db
+    except (json.JSONDecodeError, ValueError, IOError) as e:
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        quarantine = f"{LEARNING_DB_PATH}.corrupt-{stamp}"
+        try:
+            os.replace(LEARNING_DB_PATH, quarantine)
+            print(f"[P&E] ⚠️ learning_db が破損 ({e}) → {quarantine} へ退避し空DBで再開")
+        except OSError as move_err:
+            print(f"[P&E] ⚠️ learning_db が破損 ({e}) だが退避に失敗: {move_err}")
+        return {"executions": []}
 
 
 def _save_learning_db(db: dict) -> None:
     """学習DBを保存する。"""
     save_json(LEARNING_DB_PATH, db)
+
+
+def _next_exec_id(db: dict) -> str:
+    """単調増加カウンタ db['seq'] から exec_id を採番する。
+
+    旧実装は len(executions)+1 を採番の実体にしていたため、ローテーションで
+    リストを切り詰めると採番が巻き戻り同一日にIDが二度発行されうる。seq を
+    リスト長から切り離す。seq 未設定の既存DBは len(executions) から始めるので、
+    移行直後の次IDは旧実装の出力と一致する。
+    """
+    seq = db.get("seq", len(db.get("executions", [])))
+    seq += 1
+    db["seq"] = seq
+    return f"exec_{datetime.datetime.now().strftime('%Y%m%d')}_{seq:03d}"
+
+
+def _rotate_executions(db: dict, max_entries: int):
+    """(kept, overflow) を返す純粋関数。overflow は古い方から溢れたエントリ。
+
+    db自体は書き換えない。max_entries 以下ならoverflowは空。
+    """
+    execs = db.get("executions", [])
+    if len(execs) <= max_entries:
+        return execs, []
+    overflow = execs[:-max_entries]
+    kept = execs[-max_entries:]
+    return kept, overflow
+
+
+def _append_archive(entries: list) -> None:
+    """溢れたエントリを archive JSONL に1行1エントリで追記する。"""
+    os.makedirs(os.path.dirname(LEARNING_DB_ARCHIVE_PATH) or '.', exist_ok=True)
+    with open(LEARNING_DB_ARCHIVE_PATH, 'a', encoding='utf-8') as f:
+        for entry in entries:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def log_execution(query: str, plan: list, results: list,
@@ -860,7 +925,7 @@ def log_execution(query: str, plan: list, results: list,
     tools_used = list(dict.fromkeys(r.get("tool", "") for r in results))
 
     now = datetime.datetime.now()
-    exec_id = f"exec_{now.strftime('%Y%m%d')}_{len(db['executions']) + 1:03d}"
+    exec_id = _next_exec_id(db)
 
     entry = {
         "id": exec_id,
@@ -877,6 +942,17 @@ def log_execution(query: str, plan: list, results: list,
     }
 
     db["executions"].append(entry)
+
+    # ローテーション: 溢れた分を archive へ退避してから初めて trim する。
+    # archive 書き込みに失敗したら trim しない（捨てるより太らせる方が安全）。
+    kept, overflow = _rotate_executions(db, LEARNING_DB_MAX_ENTRIES)
+    if overflow:
+        try:
+            _append_archive(overflow)
+            db["executions"] = kept
+        except Exception as e:
+            print(f"[P&E] ⚠️ archive 追記に失敗 ({e}) → trim をスキップし全件保持")
+
     _save_learning_db(db)
     print(f"[P&E] 📝 Logged execution: {exec_id} ({outcome})")
 
@@ -989,10 +1065,13 @@ def get_enhanced_prompt(user_query: str) -> str:
             if len(recent_failures) >= 3:
                 break
 
-        # ツール信頼性の低いものを警告
+        # ツール信頼性の低いものを警告（直近 RELIABILITY_WINDOW 件のみ集計）。
+        # 全件走査だと一度 rate<0.8 に落ちたツールが以後どれだけ成功しても
+        # 全期間平均が上がりきらず「要注意」の烙印が残り続けるため窓を切る。
+        recent_execs = execs[-RELIABILITY_WINDOW:]
         tool_calls = {}
         tool_success = {}
-        for e in execs:
+        for e in recent_execs:
             is_ok = e["outcome"] in ("success", "partial")
             for t in e.get("tools_used", []):
                 if not t:

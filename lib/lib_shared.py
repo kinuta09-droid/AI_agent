@@ -8,6 +8,7 @@ API クライアント、定数、ユーティリティ関数を提供する。
 import os
 import sys
 import json
+import uuid
 import re
 import datetime
 import time
@@ -72,6 +73,7 @@ CRYPTO_DIR_NAME = "03_Crypto"
 DAILY_NOTE_DIR_NAME = "01_Daily"
 TRADE_LOG_PATH = os.path.join(VAULT_ROOT, "Dev_Logs", "trade_log.json")
 LEARNING_DB_PATH = os.path.join("C:\\AI_agent", "learning_db.json")
+LEARNING_DB_ARCHIVE_PATH = os.path.join("C:\\AI_agent", "learning_db_archive.jsonl")
 PERFORMANCE_DASHBOARD_PATH = os.path.join(VAULT_ROOT, "Dev_Logs", "Agent_Performance.md")
 
 # 除外したいフォルダ
@@ -215,10 +217,29 @@ def load_json(path: str, default=None):
 
 
 def save_json(path: str, data):
-    """JSONファイルを保存する。親ディレクトリがなければ作成する。"""
-    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """JSONファイルを原子的に保存する。親ディレクトリがなければ作成する。
+
+    同一ディレクトリの一時ファイルへ書き込んでから os.replace で差し替える。
+    書き込み途中でクラッシュしても元ファイルは無傷のまま残り、半端に truncate
+    された JSON が残らない（load_json が破損を default 握り潰しで隠すため重要）。
+    """
+    directory = os.path.dirname(path) or '.'
+    os.makedirs(directory, exist_ok=True)
+    # pid だけでは同一プロセス内の並行スレッド (asyncio.to_thread 経由の
+    # 同時 /agent 実行) が同じ tmp を掴んで潰し合うため uuid で一意化する。
+    tmp_path = f"{path}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    try:
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)  # 同一ボリューム上で原子的
+    except Exception:
+        # 一時ファイルが残っていたら掃除して元ファイルを守る
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        raise
 
 
 def find_file_in_vault(filename: str) -> str | None:
