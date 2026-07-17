@@ -143,6 +143,84 @@ def _check_divergence(df, rsi_col: str = 'rsi', window: int = 20) -> bool:
     return (current_low <= float(prev_low)) and (float(current_rsi) > float(prev_rsi) + 3)
 
 
+def _decide_signal(news_risk: str, is_falling_knife: bool, has_divergence: bool,
+                   is_sweep: bool, sweep_level: float, fng_value: int,
+                   current_rsi: float, regime: str, trend: str, adx: float) -> tuple:
+    """
+    Strategy 2.0 統合判定ロジック（純関数）。
+    Returns: (signal, confidence, signal_type, reasons)
+    signal_type は最初に成立したブランチで確定する
+    (優先順位: smc_sweep > panic_reversal > trend_pullback > rsi_oversold)。
+    """
+    signal = "NEUTRAL"
+    confidence = 0.0
+    signal_type = None
+    reasons = []
+
+    # 0: ファンダメンタルズ・リスク（最優先 - テクニカル無効化）
+    if news_risk == "SYSTEMIC_RISK":
+        signal = "STAY AWAY"
+        confidence = 0.0
+        reasons.append("⚠️ ファンダメンタルズに深刻な悪材料あり。テクニカル無効。")
+
+    # A: 落ちるナイフ回避（ダイバージェンスなしの強い下落局面）
+    elif is_falling_knife and not has_divergence:
+        signal = "WAIT"
+        confidence = 0.0
+        reasons.append(f"📉 下落トレンドが強すぎます (ADX: {adx:.1f})。底打ち確認（ダイバージェンス）まで待機。")
+
+    else:
+        # B: SMC Liquidity Sweep
+        if is_sweep:
+            signal = "STRONG BUY"
+            confidence = 0.65
+            signal_type = "smc_sweep"
+            reasons.append(f"流動性回収を検知: 直近安値 ${sweep_level:,.2f} をヒゲで割込み反発（SMC）")
+
+        # C: パニック・リバーサル（ダイバージェンスで確度UP）
+        if fng_value < 20 and current_rsi < 25:
+            if has_divergence:
+                signal = "STRONG BUY"
+                confidence = max(confidence, 0.65)
+                if signal_type is None:
+                    signal_type = "panic_reversal"
+                reasons.append(f"極度の恐怖 (F&G: {fng_value}) + 売られすぎ (RSI: {current_rsi:.1f}) + ダイバージェンス確認")
+            else:
+                if signal == "NEUTRAL":
+                    signal = "WATCH LIST"
+                    confidence = max(confidence, 0.35)
+                    if signal_type is None:
+                        signal_type = "panic_reversal"
+                reasons.append(f"極度の恐怖 (F&G: {fng_value}) + 売られすぎ (RSI: {current_rsi:.1f})。反転兆候待ち。")
+
+        # D: トレンドフォロー押し目
+        if signal == "NEUTRAL" and regime == "TRENDING" and trend == "UP" and current_rsi < 45:
+            signal = "BUY"
+            confidence = 0.55
+            signal_type = "trend_pullback"
+            reasons.append(f"上昇トレンド中の押し目 (RSI: {current_rsi:.1f}, ADX: {adx:.1f})")
+
+        # E: RSI判定（ダイバージェンスで確度UP）
+        if signal == "NEUTRAL":
+            if current_rsi < 30:
+                if has_divergence:
+                    signal = "BUY"
+                    confidence = 0.55
+                    signal_type = "rsi_oversold"
+                    reasons.append(f"RSI売られすぎ ({current_rsi:.1f}) + ダイバージェンス確認。反転の可能性。")
+                else:
+                    signal = "WATCH LIST"
+                    confidence = 0.35
+                    signal_type = "rsi_oversold"
+                    reasons.append(f"RSI売られすぎ水準 ({current_rsi:.1f}) だが反転兆候なし。監視継続。")
+            elif current_rsi > 70:
+                signal = "OVERBOUGHT"
+                confidence = 0.45
+                reasons.append(f"RSIが買われすぎ水準 ({current_rsi:.1f})")
+
+    return signal, confidence, signal_type, reasons
+
+
 # ---------------------------------------------------------
 # Trade Log (Prediction Audit System)
 # ---------------------------------------------------------
@@ -157,8 +235,58 @@ def _save_trade_log(logs: list):
     save_json(TRADE_LOG_PATH, logs)
 
 
+# 実測勝率をKellyに採用する最低サンプル数。これ未満は既定confidenceを使う
+MIN_AUDIT_SAMPLES = 20
+# 実測勝率の上限クランプ（少数サンプルの偶然の連勝でポジションが暴走しない保険）
+EMPIRICAL_WIN_RATE_CAP = 0.75
+
+
+def _get_signal_stats(logs: list = None) -> dict:
+    """
+    判定済み(WIN/LOSE)レコードをsignal_type別に集計する。
+    EXPIREDは観測窓の限界によるクローズであり勝敗ではないため除外。
+    signal_type未設定の旧レコードは "legacy" として分離集計。
+    Returns: {signal_type: {"wins": int, "losses": int, "win_rate": float}}
+    """
+    if logs is None:
+        logs = _load_trade_log()
+    stats = {}
+    for t in logs:
+        if t.get("status") not in ("WIN", "LOSE"):
+            continue
+        stype = t.get("signal_type") or "legacy"
+        s = stats.setdefault(stype, {"wins": 0, "losses": 0, "win_rate": 0.0})
+        if t["status"] == "WIN":
+            s["wins"] += 1
+        else:
+            s["losses"] += 1
+    for s in stats.values():
+        total = s["wins"] + s["losses"]
+        s["win_rate"] = s["wins"] / total if total else 0.0
+    return stats
+
+
+def _resolve_win_rate(signal_type: str, default_confidence: float) -> tuple:
+    """
+    Kellyに渡す勝率を決定する。
+    判定済みサンプルが MIN_AUDIT_SAMPLES 以上ある種別は実測勝率
+    （EMPIRICAL_WIN_RATE_CAP でクランプ）、それ未満は既定confidence。
+    Returns: (win_rate, basis, sample_count)  basis: "実測" | "既定値"
+    """
+    if not signal_type:
+        return default_confidence, "既定値", 0
+    stats = _get_signal_stats().get(signal_type)
+    if not stats:
+        return default_confidence, "既定値", 0
+    n = stats["wins"] + stats["losses"]
+    if n < MIN_AUDIT_SAMPLES:
+        return default_confidence, "既定値", n
+    return min(stats["win_rate"], EMPIRICAL_WIN_RATE_CAP), "実測", n
+
+
 def _save_prediction(symbol: str, signal: str, entry_price: float,
-                     stop_loss: float, kelly_pct: float, reasons: list) -> str:
+                     stop_loss: float, kelly_pct: float, reasons: list,
+                     signal_type: str = "unknown") -> str:
     """BUY系シグナル発生時に予測をログに記録する。"""
     logs = _load_trade_log()
 
@@ -170,6 +298,7 @@ def _save_prediction(symbol: str, signal: str, entry_price: float,
         "timestamp": datetime.datetime.now().isoformat(),
         "symbol": symbol,
         "signal": signal,
+        "signal_type": signal_type or "unknown",
         "entry_price": round(entry_price, 2),
         "stop_loss": round(stop_loss, 2),
         "target_price": round(target_price, 2),
@@ -248,64 +377,11 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
     if is_falling_knife:
         print(f"  🔪 Falling Knife warning (ADX={adx:.1f}, DM-={dmn:.1f} > DM+={dmp:.1f})")
 
-    # 5. Strategy 2.0 統合判定ロジック
-    signal = "NEUTRAL"
-    confidence = 0.0
-    reasons = []
+    # 5. Strategy 2.0 統合判定ロジック（→ _decide_signal に抽出済み）
     trend = "UP" if current_price > ema200 else "DOWN"
-
-    # 0: ファンダメンタルズ・リスク（最優先 - テクニカル無効化）
-    if news_risk == "SYSTEMIC_RISK":
-        signal = "STAY AWAY"
-        confidence = 0.0
-        reasons.append("⚠️ ファンダメンタルズに深刻な悪材料あり。テクニカル無効。")
-
-    # A: 落ちるナイフ回避（ダイバージェンスなしの強い下落局面）
-    elif is_falling_knife and not has_divergence:
-        signal = "WAIT"
-        confidence = 0.0
-        reasons.append(f"📉 下落トレンドが強すぎます (ADX: {adx:.1f})。底打ち確認（ダイバージェンス）まで待機。")
-
-    else:
-        # B: SMC Liquidity Sweep
-        if is_sweep:
-            signal = "STRONG BUY"
-            confidence = 0.65
-            reasons.append(f"流動性回収を検知: 直近安値 ${sweep_level:,.2f} をヒゲで割込み反発（SMC）")
-
-        # C: パニック・リバーサル（ダイバージェンスで確度UP）
-        if fng_value < 20 and current_rsi < 25:
-            if has_divergence:
-                signal = "STRONG BUY"
-                confidence = max(confidence, 0.65)
-                reasons.append(f"極度の恐怖 (F&G: {fng_value}) + 売られすぎ (RSI: {current_rsi:.1f}) + ダイバージェンス確認")
-            else:
-                if signal == "NEUTRAL":
-                    signal = "WATCH LIST"
-                    confidence = max(confidence, 0.35)
-                reasons.append(f"極度の恐怖 (F&G: {fng_value}) + 売られすぎ (RSI: {current_rsi:.1f})。反転兆候待ち。")
-
-        # D: トレンドフォロー押し目
-        if signal == "NEUTRAL" and regime == "TRENDING" and trend == "UP" and current_rsi < 45:
-            signal = "BUY"
-            confidence = 0.55
-            reasons.append(f"上昇トレンド中の押し目 (RSI: {current_rsi:.1f}, ADX: {adx:.1f})")
-
-        # E: RSI判定（ダイバージェンスで確度UP）
-        if signal == "NEUTRAL":
-            if current_rsi < 30:
-                if has_divergence:
-                    signal = "BUY"
-                    confidence = 0.55
-                    reasons.append(f"RSI売られすぎ ({current_rsi:.1f}) + ダイバージェンス確認。反転の可能性。")
-                else:
-                    signal = "WATCH LIST"
-                    confidence = 0.35
-                    reasons.append(f"RSI売られすぎ水準 ({current_rsi:.1f}) だが反転兆候なし。監視継続。")
-            elif current_rsi > 70:
-                signal = "OVERBOUGHT"
-                confidence = 0.45
-                reasons.append(f"RSIが買われすぎ水準 ({current_rsi:.1f})")
+    signal, confidence, signal_type, reasons = _decide_signal(
+        news_risk, is_falling_knife, has_divergence, is_sweep, sweep_level,
+        fng_value, current_rsi, regime, trend, adx)
 
     # 補足情報
     if current_price > ema200:
@@ -320,7 +396,13 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
         reasons.append("ニュース分析: 一時的な調整局面（構造的リスクなし）")
 
     # 6. ケリー基準でポジションサイズ算出
-    kelly_pct = _calculate_kelly(confidence)
+    # 監査済みサンプルが十分な種別は実測勝率、それ以外は既定confidenceを使う
+    win_rate_used, win_rate_basis, sample_n = _resolve_win_rate(signal_type, confidence)
+    if win_rate_basis == "実測":
+        win_rate_label = f"{win_rate_used*100:.0f}% (実測 n={sample_n})"
+    else:
+        win_rate_label = f"{win_rate_used*100:.0f}% (既定値)"
+    kelly_pct = _calculate_kelly(win_rate_used)
     if regime == "VOLATILE":
         kelly_pct *= 0.5
         reasons.append(f"高ボラティリティ環境のためポジション半減 (ATR%: {atr_pct:.2f}%)")
@@ -350,7 +432,7 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
 【分析データ】
 - 通貨: {symbol}
 - 現在価格: ${current_price:,.2f}（24h変動: {change_24h:+.1f}%）
-- シグナル: {signal}（推定勝率: {confidence*100:.0f}%）
+- シグナル: {signal}（推定勝率: {win_rate_label}）
 - 市場レジーム: {regime}（ADX={adx:.1f}, ボラティリティ={atr_pct:.2f}%）
 - トレンド: {trend}
 - RSI: {current_rsi:.1f}（30以下=売られすぎ、70以上=買われすぎ）
@@ -400,7 +482,7 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
         f"# {signal_emoji} Crypto Analysis: {symbol} ({today_str})\n\n"
         f"> [!SUMMARY] 判定結果\n"
         f"> **Signal: {signal}** | Regime: {regime} | Trend: {trend} | Price: ${current_price:,.2f} ({change_24h:+.1f}%)\n"
-        f"> 推定勝率: {confidence*100:.0f}% | 推奨ポジション: 資金の{kelly_pct:.1f}% | リスク: {risk_label}\n\n"
+        f"> 推定勝率: {win_rate_label} | 推奨ポジション: 資金の{kelly_pct:.1f}% | リスク: {risk_label}\n\n"
         f"> [!TIP] 初心者向けまとめ\n"
         f"{beginner_callout}\n\n"
         f"## 🕵️ マーケットドライバー (Why)\n"
@@ -423,7 +505,7 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
         f"| 落ちるナイフ | {knife_str} |\n"
         f"| RSIダイバージェンス | {div_str} |\n"
         f"| 流動性回収 (SMC) | {sweep_str} |\n"
-        f"| 推定勝率 | {confidence*100:.0f}% |\n"
+        f"| 推定勝率 | {win_rate_label} |\n"
         f"| 推奨ポジション (Kelly) | 資金の**{kelly_pct:.1f}%** |\n\n"
     )
 
@@ -463,6 +545,7 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
                             f"RSI: {current_rsi:.1f} | F&G: {fng_value} | Risk: {news_risk}\n"
                             f"Kelly: {kelly_pct:.1f}% | Divergence: {'Yes' if has_divergence else 'No'}",
                     "signal": signal,
+                    "signal_type": signal_type or "unknown",
                     "symbol": symbol,
                     "price": current_price,
                     "change_24h": round(change_24h, 2),
@@ -482,10 +565,12 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
         else:
             print(f"  ⚠️ N8N_WEBHOOK_URL not set, skipping notification")
 
-    # 11. BUY系シグナルなら予測をtrade_logに記録（Prediction Audit System）
-    if signal in ["BUY", "STRONG BUY", "WATCH LIST"]:
+    # 11. 売買シグナル(BUY/STRONG BUY)のみ予測をtrade_logに記録（Prediction Audit System）
+    # WATCH LISTは「様子見」であり売買コールではないため、勝率統計を汚染しないよう除外
+    if signal in ["BUY", "STRONG BUY"]:
         try:
-            _save_prediction(symbol, signal, current_price, dca_stop, kelly_pct, reasons)
+            _save_prediction(symbol, signal, current_price, dca_stop, kelly_pct,
+                             reasons, signal_type=signal_type)
         except Exception as e:
             print(f"  ⚠️ Prediction log failed: {e}")
 
@@ -495,7 +580,7 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
 # 主要アルトコインのスキャン対象リスト
 SCAN_SYMBOLS = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT",
-    "DOGE/USDT", "AVAX/USDT", "DOT/USDT", "LINK/USDT", "MATIC/USDT",
+    "DOGE/USDT", "AVAX/USDT", "DOT/USDT", "LINK/USDT", "POL/USDT",
     "ATOM/USDT", "UNI/USDT", "LTC/USDT", "NEAR/USDT", "APT/USDT",
     "OP/USDT", "ARB/USDT", "SUI/USDT", "FIL/USDT", "INJ/USDT",
 ]
@@ -710,6 +795,7 @@ def tool_audit_predictions() -> str:
     updated_count = 0
     win_count = 0
     lose_count = 0
+    expired_count = 0
 
     for trade in open_trades:
         symbol = trade["symbol"]
@@ -765,6 +851,15 @@ def tool_audit_predictions() -> str:
             gain_pct = ((trade["target_price"] - trade["entry_price"]) / trade["entry_price"]) * 100
             audit_comment = f"利確目標(${trade['target_price']:,.2f})達成。利益: +{gain_pct:.1f}%。予測通りの値動き。"
 
+        # 判定: 21日経過でも未到達 → EXPIRED
+        # (fetch_ohlcv 1h×500本 ≒ 20.8日が観測窓の上限。これを超えたOPENは
+        #  以降のSL/TPヒットを正しく検出できないため期限切れでクローズする)
+        elif (datetime.datetime.now() - entry_time).days >= 21:
+            new_status = "EXPIRED"
+            expired_count += 1
+            audit_comment = (f"エントリーから21日経過してもSL/TP未到達のため期限切れクローズ。"
+                             f"最終確認価格: ${current_close:,.2f}。勝率統計からは除外。")
+
         else:
             # まだ決着がついていない
             dist_to_tp = ((trade["target_price"] - current_close) / current_close) * 100
@@ -778,11 +873,12 @@ def tool_audit_predictions() -> str:
             trade["audit_date"] = today_str
             updated_count += 1
 
-            icon = "✅" if new_status == "WIN" else "❌"
+            icon = {"WIN": "✅", "LOSE": "❌", "EXPIRED": "⌛"}.get(new_status, "❓")
             report += (
                 f"## {icon} {symbol} — {new_status} (ID: {trade['id']})\n"
                 f"| 項目 | 値 |\n|---|---|\n"
                 f"| シグナル | {trade['signal']} |\n"
+                f"| シグナル種別 | {trade.get('signal_type', 'legacy')} |\n"
                 f"| エントリー | ${trade['entry_price']:,.2f} |\n"
                 f"| ターゲット | ${trade['target_price']:,.2f} |\n"
                 f"| ストップ | ${trade['stop_loss']:,.2f} |\n"
@@ -800,19 +896,37 @@ def tool_audit_predictions() -> str:
     # JSONログ更新
     _save_trade_log(logs)
 
-    # 統計セクション
+    # 統計セクション（今回の監査分）
     total_closed = win_count + lose_count
     if total_closed > 0:
         win_rate = (win_count / total_closed) * 100
         report += (
-            f"## 📈 統計\n"
+            f"## 📈 統計（今回の監査分）\n"
             f"| 項目 | 値 |\n|---|---|\n"
             f"| 判定済み | {total_closed}件 |\n"
             f"| WIN | {win_count}件 |\n"
             f"| LOSE | {lose_count}件 |\n"
             f"| 勝率 | {win_rate:.1f}% |\n"
-            f"| 未決着 | {len(open_trades) - total_closed}件 |\n\n"
+            f"| EXPIRED (期限切れ) | {expired_count}件 |\n"
+            f"| 未決着 | {len(open_trades) - updated_count}件 |\n\n"
         )
+
+    # シグナル種別ごとの累積実績（Kellyの実測勝率ソース。n>=MIN_AUDIT_SAMPLESで実測に切替）
+    signal_stats = _get_signal_stats(logs)
+    if signal_stats:
+        report += (
+            f"## 🎯 シグナル種別ごとの累積実績\n"
+            f"| 種別 | WIN | LOSE | 勝率 | Kelly実測適用 |\n"
+            f"|---|---|---|---|---|\n"
+        )
+        for stype, s in sorted(signal_stats.items()):
+            n = s["wins"] + s["losses"]
+            applied = "✅ 適用中" if n >= MIN_AUDIT_SAMPLES else f"⏳ あと{MIN_AUDIT_SAMPLES - n}件"
+            report += (
+                f"| {stype} | {s['wins']} | {s['losses']} | "
+                f"{s['win_rate']*100:.1f}% (n={n}) | {applied} |\n"
+            )
+        report += "\n"
 
     if updated_count == 0:
         still_open = len(open_trades)
@@ -828,4 +942,5 @@ def tool_audit_predictions() -> str:
         f.write(report)
     print(f"  ✅ Audit report saved: {report_path}")
 
-    return f"Success: {updated_count}件を判定 (WIN:{win_count}, LOSE:{lose_count})。レポート: [[{CRYPTO_DIR_NAME}/Audit_Report/{report_filename}]]"
+    return (f"Success: {updated_count}件を判定 (WIN:{win_count}, LOSE:{lose_count}, "
+            f"EXPIRED:{expired_count})。レポート: [[{CRYPTO_DIR_NAME}/Audit_Report/{report_filename}]]")
