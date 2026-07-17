@@ -115,6 +115,8 @@ TOOL_ENTRIES = [
      "module": "tools.tool_crypto"},
     {"name": "tool_audit_predictions", "usage": "tool_audit_predictions()", "description": "予測ログの答え合わせ",
      "module": "tools.tool_crypto"},
+    {"name": "tool_crypto_stats", "usage": "tool_crypto_stats()", "description": "仮想通貨の予測成績ダッシュボード（signal_type別の勝率・期待値R・OPEN中の予測一覧）",
+     "module": "tools.tool_crypto_stats"},
     {"name": "tool_curate_topics", "usage": "tool_curate_topics()", "description": "ナレッジトピック提案",
      "func": _tool_curate_wrapper},
     {"name": "tool_generate_briefing", "usage": "tool_generate_briefing()", "description": "デイリーブリーフィング生成（Crypto + Vault更新の3項目要約）",

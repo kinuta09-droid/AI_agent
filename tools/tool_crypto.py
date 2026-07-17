@@ -20,49 +20,18 @@ from lib.lib_shared import (
     fetch_fear_greed_index, load_json, save_json,
 )
 from lib.file_lock import FileLock
+# 純関数群は lib/quant_core.py に分離 (バックテスターと共有)。
+# ここで再輸入することで既存の呼び出し・テスト (tc._decide_signal 等) は不変
+from lib.quant_core import (
+    _calculate_kelly, _detect_regime, _detect_liquidity_sweep,
+    _check_divergence, _decide_signal, _compute_levels, get_float_env,
+    _daily_trend, _apply_daily_gate, _compute_indicators,
+)
 
 
 # ---------------------------------------------------------
 # Next-Gen Quant Helpers
 # ---------------------------------------------------------
-
-def _calculate_kelly(win_rate: float, reward_ratio: float = 2.0, fraction: float = 0.25) -> float:
-    """フラクショナル・ケリー基準でポジションサイズ(%)を算出"""
-    if win_rate <= 0:
-        return 0.0
-    q = 1 - win_rate
-    kelly_f = (win_rate * reward_ratio - q) / reward_ratio
-    return max(kelly_f * fraction * 100, 0.0)
-
-
-def _detect_regime(df) -> tuple:
-    """ADX + ATR% で市場レジームを判定 → (regime, adx, atr_pct, dmp, dmn)"""
-    adx_s = ta_lib.adx(df['high'], df['low'], df['close'], length=14)
-    atr_s = ta_lib.atr(df['high'], df['low'], df['close'], length=14)
-    adx = float(adx_s['ADX_14'].iloc[-1]) if adx_s is not None and pd.notna(adx_s['ADX_14'].iloc[-1]) else 20.0
-    dmp = float(adx_s['DMP_14'].iloc[-1]) if adx_s is not None and 'DMP_14' in adx_s.columns and pd.notna(adx_s['DMP_14'].iloc[-1]) else 0.0
-    dmn = float(adx_s['DMN_14'].iloc[-1]) if adx_s is not None and 'DMN_14' in adx_s.columns and pd.notna(adx_s['DMN_14'].iloc[-1]) else 0.0
-    atr_val = float(atr_s.iloc[-1]) if atr_s is not None and pd.notna(atr_s.iloc[-1]) else 0.0
-    atr_pct = (atr_val / float(df['close'].iloc[-1])) * 100 if df['close'].iloc[-1] > 0 else 0.0
-
-    if atr_pct > 3.0:
-        regime = "VOLATILE"
-    elif adx > 25:
-        regime = "TRENDING"
-    else:
-        regime = "SIDEWAYS"
-    return regime, adx, atr_pct, dmp, dmn
-
-
-def _detect_liquidity_sweep(df, window: int = 20) -> tuple:
-    """SMC: 直近安値をヒゲで割り込み終値で戻すパターン → (bool, sweep_level)"""
-    if len(df) < window + 1:
-        return False, 0.0
-    recent_low = float(df['low'].iloc[-(window+1):-1].min())
-    latest = df.iloc[-1]
-    is_sweep = (float(latest['low']) < recent_low) and (float(latest['close']) > recent_low)
-    return is_sweep, recent_low
-
 
 def _analyze_market_drivers(symbol: str, change_pct_24h: float) -> tuple:
     """
@@ -115,111 +84,6 @@ def _analyze_market_drivers(symbol: str, change_pct_24h: float) -> tuple:
         risk_level = "NEUTRAL"
 
     return "\n".join(summary_lines), risk_level
-
-
-def _check_divergence(df, rsi_col: str = 'rsi', window: int = 20) -> bool:
-    """
-    強気RSIダイバージェンス検知:
-    価格は安値を更新（または同等）だが、RSIは切り上がっている場合にTrue。
-    """
-    if len(df) < window + 1 or rsi_col not in df.columns:
-        return False
-
-    lookback = df.iloc[-(window+1):-1]
-    if lookback['low'].isna().all() or lookback[rsi_col].isna().all():
-        return False
-
-    last_low_idx = lookback['low'].idxmin()
-    if pd.isna(last_low_idx):
-        return False
-
-    current_low = float(df['low'].iloc[-1])
-    prev_low = float(df['low'].loc[last_low_idx])
-    prev_rsi = df[rsi_col].loc[last_low_idx]
-    current_rsi = df[rsi_col].iloc[-1]
-
-    if pd.isna(prev_rsi) or pd.isna(current_rsi):
-        return False
-
-    return (current_low <= float(prev_low)) and (float(current_rsi) > float(prev_rsi) + 3)
-
-
-def _decide_signal(news_risk: str, is_falling_knife: bool, has_divergence: bool,
-                   is_sweep: bool, sweep_level: float, fng_value: int,
-                   current_rsi: float, regime: str, trend: str, adx: float) -> tuple:
-    """
-    Strategy 2.0 統合判定ロジック（純関数）。
-    Returns: (signal, confidence, signal_type, reasons)
-    signal_type は最初に成立したブランチで確定する
-    (優先順位: smc_sweep > panic_reversal > trend_pullback > rsi_oversold)。
-    """
-    signal = "NEUTRAL"
-    confidence = 0.0
-    signal_type = None
-    reasons = []
-
-    # 0: ファンダメンタルズ・リスク（最優先 - テクニカル無効化）
-    if news_risk == "SYSTEMIC_RISK":
-        signal = "STAY AWAY"
-        confidence = 0.0
-        reasons.append("⚠️ ファンダメンタルズに深刻な悪材料あり。テクニカル無効。")
-
-    # A: 落ちるナイフ回避（ダイバージェンスなしの強い下落局面）
-    elif is_falling_knife and not has_divergence:
-        signal = "WAIT"
-        confidence = 0.0
-        reasons.append(f"📉 下落トレンドが強すぎます (ADX: {adx:.1f})。底打ち確認（ダイバージェンス）まで待機。")
-
-    else:
-        # B: SMC Liquidity Sweep
-        if is_sweep:
-            signal = "STRONG BUY"
-            confidence = 0.65
-            signal_type = "smc_sweep"
-            reasons.append(f"流動性回収を検知: 直近安値 ${sweep_level:,.2f} をヒゲで割込み反発（SMC）")
-
-        # C: パニック・リバーサル（ダイバージェンスで確度UP）
-        if fng_value < 20 and current_rsi < 25:
-            if has_divergence:
-                signal = "STRONG BUY"
-                confidence = max(confidence, 0.65)
-                if signal_type is None:
-                    signal_type = "panic_reversal"
-                reasons.append(f"極度の恐怖 (F&G: {fng_value}) + 売られすぎ (RSI: {current_rsi:.1f}) + ダイバージェンス確認")
-            else:
-                if signal == "NEUTRAL":
-                    signal = "WATCH LIST"
-                    confidence = max(confidence, 0.35)
-                    if signal_type is None:
-                        signal_type = "panic_reversal"
-                reasons.append(f"極度の恐怖 (F&G: {fng_value}) + 売られすぎ (RSI: {current_rsi:.1f})。反転兆候待ち。")
-
-        # D: トレンドフォロー押し目
-        if signal == "NEUTRAL" and regime == "TRENDING" and trend == "UP" and current_rsi < 45:
-            signal = "BUY"
-            confidence = 0.55
-            signal_type = "trend_pullback"
-            reasons.append(f"上昇トレンド中の押し目 (RSI: {current_rsi:.1f}, ADX: {adx:.1f})")
-
-        # E: RSI判定（ダイバージェンスで確度UP）
-        if signal == "NEUTRAL":
-            if current_rsi < 30:
-                if has_divergence:
-                    signal = "BUY"
-                    confidence = 0.55
-                    signal_type = "rsi_oversold"
-                    reasons.append(f"RSI売られすぎ ({current_rsi:.1f}) + ダイバージェンス確認。反転の可能性。")
-                else:
-                    signal = "WATCH LIST"
-                    confidence = 0.35
-                    signal_type = "rsi_oversold"
-                    reasons.append(f"RSI売られすぎ水準 ({current_rsi:.1f}) だが反転兆候なし。監視継続。")
-            elif current_rsi > 70:
-                signal = "OVERBOUGHT"
-                confidence = 0.45
-                reasons.append(f"RSIが買われすぎ水準 ({current_rsi:.1f})")
-
-    return signal, confidence, signal_type, reasons
 
 
 # ---------------------------------------------------------
@@ -317,8 +181,13 @@ def _resolve_win_rate(signal_type: str, default_confidence: float) -> tuple:
 
 def _save_prediction(symbol: str, signal: str, entry_price: float,
                      stop_loss: float, kelly_pct: float, reasons: list,
-                     signal_type: str = "unknown") -> str:
-    """BUY系シグナル発生時に予測をログに記録する。"""
+                     signal_type: str = "unknown", extra: dict = None) -> str:
+    """BUY系シグナル発生時に予測をログに記録する。
+
+    extra: 追加の記録フィールド (ATR水準のトレーサビリティ等)。
+    スキーマは追加のみ — 監査/watcher/Kellyは既存フィールドしか読まないため
+    旧レコードと混在しても安全。
+    """
     risk = entry_price - stop_loss
     target_price = entry_price + (risk * 2) if risk > 0 else entry_price * 1.10
 
@@ -336,6 +205,8 @@ def _save_prediction(symbol: str, signal: str, entry_price: float,
         "status": "OPEN",
         "audit_note": ""
     }
+    if extra:
+        record.update(extra)
 
     _update_trade_log(lambda logs: logs.append(record))
     print(f"  📝 Prediction logged: {record['id']} ({symbol} {signal} @ ${entry_price:,.2f})")
@@ -359,57 +230,74 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
 
     exchange = ccxt.binance({'enableRateLimit': True})
 
-    # 1. 価格データの取得 (4時間足, 100本)
+    # 1. 価格データの取得 (4時間足, 300本)
+    # 300本必須: 旧100本ではEMA200がNaN→現在価格フォールバック→trendが常時
+    # "DOWN"となり trend_pullback ブランチが一度も発火できないバグがあった
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, '4h', limit=100)
+        ohlcv = exchange.fetch_ohlcv(symbol, '4h', limit=300)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     except Exception as e:
         return f"Error fetching {symbol} data: {e}"
 
-    # 2. テクニカル指標の計算
-    df['rsi'] = ta_lib.rsi(df['close'], length=14)
-    df['ema50'] = ta_lib.ema(df['close'], length=50)
-    df['ema200'] = ta_lib.ema(df['close'], length=200)
-    macd_df = ta_lib.macd(df['close'])
-    if macd_df is not None:
-        df = pd.concat([df, macd_df], axis=1)
+    # 2-4. テクニカル指標の一括計算 (バックテスターと同一の共有純関数。
+    # Backtest Gate: ライブ側だけの指標フォークを作らないこと)
+    ind = _compute_indicators(df)
+    current_price = ind["price"]
+    current_rsi = ind["rsi"]
+    ema50 = ind["ema50"]
+    ema200 = ind["ema200"]
+    regime = ind["regime"]
+    adx = ind["adx"]
+    atr_pct = ind["atr_pct"]
+    atr_value = ind["atr_value"]
+    is_sweep = ind["is_sweep"]
+    sweep_level = ind["sweep_level"]
+    has_divergence = ind["has_divergence"]
+    is_falling_knife = ind["is_falling_knife"]
+    trend = ind["trend"]
+    change_24h = ind["change_24h"]
 
-    latest = df.iloc[-1]
-    current_price = float(latest['close'])
-    current_rsi = float(latest['rsi']) if pd.notna(latest['rsi']) else 50.0
-    ema50 = float(latest['ema50']) if pd.notna(latest['ema50']) else current_price
-    ema200 = float(latest['ema200']) if pd.notna(latest['ema200']) else current_price
-
-    # 3. Fear & Greed Index の取得
-    fng_value, fng_class = fetch_fear_greed_index()
-
-    # 4. Next-Gen: レジーム検知 + SMC + ダイバージェンス + マーケットドライバー
-    regime, adx, atr_pct, dmp, dmn = _detect_regime(df)
-    is_sweep, sweep_level = _detect_liquidity_sweep(df)
-    has_divergence = _check_divergence(df)
     print(f"  📈 Regime: {regime} (ADX={adx:.1f}, ATR%={atr_pct:.2f})")
     if is_sweep:
         print(f"  🎯 Liquidity Sweep detected at {sweep_level:.2f}")
     if has_divergence:
         print(f"  📊 RSI Bullish Divergence detected")
+    if is_falling_knife:
+        print(f"  🔪 Falling Knife warning (ADX={adx:.1f}, DM-={ind['dmn']:.1f} > DM+={ind['dmp']:.1f})")
 
-    # 4b. 24h変動率 + マーケットドライバー分析 ("Why")
-    price_24h_ago = float(df['close'].iloc[-7]) if len(df) >= 7 else current_price
-    change_24h = ((current_price - price_24h_ago) / price_24h_ago) * 100
+    # 3. Fear & Greed Index の取得
+    fng_value, fng_class = fetch_fear_greed_index()
+
+    # 4b. マーケットドライバー分析 ("Why")
     news_summary, news_risk = _analyze_market_drivers(symbol, change_24h)
     print(f"  🕵️ News Risk: {news_risk}")
 
-    # 4c. 落ちるナイフ判定 (ADX > 30 + 下降モメンタム)
-    is_falling_knife = (adx > 30) and (dmn > dmp)
-    if is_falling_knife:
-        print(f"  🔪 Falling Knife warning (ADX={adx:.1f}, DM-={dmn:.1f} > DM+={dmp:.1f})")
-
     # 5. Strategy 2.0 統合判定ロジック（→ _decide_signal に抽出済み）
-    trend = "UP" if current_price > ema200 else "DOWN"
     signal, confidence, signal_type, reasons = _decide_signal(
         news_risk, is_falling_knife, has_divergence, is_sweep, sweep_level,
         fng_value, current_rsi, regime, trend, adx)
+
+    # 5b. 日足ハードゲート (Phase3): 日足EMA200下抜け中は BUY/STRONG BUY を
+    # WATCH LIST に降格 (n8n通知・trade_log記録とも抑止される)。
+    # バックテスト(730日×3銘柄)では逆張り主体の本戦略と相性が悪く期待値を
+    # 悪化させた (nogate -0.01R vs gate -0.15R) ため既定OFF。
+    # トレンドフォロー寄りに調整する場合は .env CRYPTO_DAILY_GATE=1 で有効化
+    daily_gate_on = get_float_env("CRYPTO_DAILY_GATE", 0.0) != 0.0
+    daily_trend_str = None
+    if daily_gate_on:
+        try:
+            ohlcv_1d = exchange.fetch_ohlcv(symbol, '1d', limit=250)
+            df_1d = pd.DataFrame(ohlcv_1d, columns=['timestamp', 'open', 'high',
+                                                    'low', 'close', 'volume'])
+            daily_trend_str = _daily_trend(df_1d)
+        except Exception as e:
+            print(f"  ⚠️ Daily trend fetch failed: {e}")
+            daily_trend_str = "UNKNOWN"  # フェイルオープン (ゲート素通し)
+        signal, gate_note = _apply_daily_gate(signal, daily_trend_str)
+        if gate_note:
+            reasons.append(gate_note)
+            print(f"  ⛔ Daily gate: {signal} に降格 (日足 {daily_trend_str})")
 
     # 補足情報
     if current_price > ema200:
@@ -436,10 +324,34 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
         reasons.append(f"高ボラティリティ環境のためポジション半減 (ATR%: {atr_pct:.2f}%)")
 
     # 6b. DCA計画（分割エントリー水準）
-    dca_entry1 = current_price * 0.95
-    dca_entry2 = current_price * 0.90
-    dca_entry3 = current_price * 0.85
-    dca_stop = current_price * 0.88
+    # Phase3: ATR倍数ベースの動的水準 (旧固定-5/-10/-15%はEXPIRED濫発のため廃止。
+    # バックテスト730日×3銘柄: EXPIRED 45→10件, 平均保有335h→138h)。
+    # CRYPTO_ATR_LEVELS=0 で旧固定%へ即時復帰可能 (再起動不要のキルスイッチ)
+    atr_levels_on = get_float_env("CRYPTO_ATR_LEVELS", 1.0) != 0.0
+    if atr_levels_on:
+        levels = _compute_levels(
+            current_price, atr_value,
+            sl_mult=get_float_env("CRYPTO_ATR_SL_MULT", 2.5),
+            dca_mults=(get_float_env("CRYPTO_ATR_DCA1_MULT", 1.5),
+                       get_float_env("CRYPTO_ATR_DCA2_MULT", 3.0),
+                       get_float_env("CRYPTO_ATR_DCA3_MULT", 4.5)),
+            atr_floor_pct=get_float_env("CRYPTO_ATR_FLOOR_PCT", 1.0),
+            atr_cap_pct=get_float_env("CRYPTO_ATR_CAP_PCT", 4.0))
+        dca_entry1 = levels["dca_entry1"]
+        dca_entry2 = levels["dca_entry2"]
+        dca_entry3 = levels["dca_entry3"]
+        dca_stop = levels["dca_stop"]
+        levels_mode = "atr"
+    else:
+        dca_entry1 = current_price * 0.95
+        dca_entry2 = current_price * 0.90
+        dca_entry3 = current_price * 0.85
+        dca_stop = current_price * 0.88
+        levels = None
+        levels_mode = "fixed"
+
+    def _pct(level: float) -> float:
+        return (level / current_price - 1) * 100 if current_price else 0.0
 
     signal_emoji = {
         "STRONG BUY": "🔥", "BUY": "🟢", "WATCH LIST": "👀",
@@ -451,8 +363,10 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
     # 7. Geminiで初心者向け要約を生成
     print(f"  🤖 Generating beginner-friendly summary...")
     beginner_summary = ""
-    dca_text = (f"DCA Entry1: ${dca_entry1:,.2f}(-5%), Entry2: ${dca_entry2:,.2f}(-10%), "
-                f"Entry3: ${dca_entry3:,.2f}(-15%), Stop: ${dca_stop:,.2f}(-12%)")
+    dca_text = (f"DCA Entry1: ${dca_entry1:,.2f}({_pct(dca_entry1):+.1f}%), "
+                f"Entry2: ${dca_entry2:,.2f}({_pct(dca_entry2):+.1f}%), "
+                f"Entry3: ${dca_entry3:,.2f}({_pct(dca_entry3):+.1f}%), "
+                f"Stop: ${dca_stop:,.2f}({_pct(dca_stop):+.1f}%)")
     try:
         beginner_prompt = f"""あなたは仮想通貨の初心者向けアドバイザーです。
 以下のテクニカル分析結果を、仮想通貨をこれから始めたい人でもわかるように、やさしい日本語で解説してください。
@@ -529,6 +443,8 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
         f"| 項目 | 結果 |\n"
         f"|---|---|\n"
         f"| 市場レジーム | {regime} |\n"
+        + (f"| 日足トレンド (ゲート有効) | {daily_trend_str} |\n"
+           if daily_trend_str else "") +
         f"| ニュースリスク | {risk_label} |\n"
         f"| 落ちるナイフ | {knife_str} |\n"
         f"| RSIダイバージェンス | {div_str} |\n"
@@ -539,14 +455,19 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
 
     # DCA計画セクション（BUY系シグナルのみ）
     if signal in ["STRONG BUY", "BUY", "WATCH LIST"]:
+        if levels_mode == "atr":
+            mode_note = (f"ATRベース (実効ATR {levels['atr_used_pct']:.2f}% × "
+                         f"SL{levels['sl_mult']}倍)")
+        else:
+            mode_note = "固定% (レガシーモード)"
         report += (
-            f"## 📋 DCA計画 (分割エントリー)\n"
+            f"## 📋 DCA計画 (分割エントリー) — {mode_note}\n"
             f"| レベル | 価格 | 現在値から |\n"
             f"|---|---|---|\n"
-            f"| Entry 1 | ${dca_entry1:,.2f} | -5% |\n"
-            f"| Entry 2 | ${dca_entry2:,.2f} | -10% |\n"
-            f"| Entry 3 | ${dca_entry3:,.2f} | -15% |\n"
-            f"| Stop Loss | ${dca_stop:,.2f} | -12% |\n\n"
+            f"| Entry 1 | ${dca_entry1:,.2f} | {_pct(dca_entry1):+.1f}% |\n"
+            f"| Entry 2 | ${dca_entry2:,.2f} | {_pct(dca_entry2):+.1f}% |\n"
+            f"| Entry 3 | ${dca_entry3:,.2f} | {_pct(dca_entry3):+.1f}% |\n"
+            f"| Stop Loss | ${dca_stop:,.2f} | {_pct(dca_stop):+.1f}% |\n\n"
         )
 
     report += f"## 📝 分析\n{analysis_text}\n"
@@ -597,8 +518,15 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
     # WATCH LISTは「様子見」であり売買コールではないため、勝率統計を汚染しないよう除外
     if signal in ["BUY", "STRONG BUY"]:
         try:
+            extra = {"levels_mode": levels_mode}
+            if levels is not None:
+                extra.update({
+                    "atr_value": round(atr_value, 6),
+                    "atr_used_pct": round(levels["atr_used_pct"], 2),
+                    "sl_atr_mult": levels["sl_mult"],
+                })
             _save_prediction(symbol, signal, current_price, dca_stop, kelly_pct,
-                             reasons, signal_type=signal_type)
+                             reasons, signal_type=signal_type, extra=extra)
         except Exception as e:
             print(f"  ⚠️ Prediction log failed: {e}")
 
@@ -630,7 +558,8 @@ def tool_scan_crypto_market() -> str:
     results = []
     for symbol in SCAN_SYMBOLS:
         try:
-            ohlcv = exchange.fetch_ohlcv(symbol, '4h', limit=100)
+            # 300本必須: 100本ではEMA200がNaN→トレンド列が全銘柄"DOWN"固定になる
+            ohlcv = exchange.fetch_ohlcv(symbol, '4h', limit=300)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
             rsi_series = ta_lib.rsi(df['close'], length=14)
