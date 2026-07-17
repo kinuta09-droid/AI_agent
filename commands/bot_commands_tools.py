@@ -171,6 +171,64 @@ async def cmd_scan(interaction: discord.Interaction):
         await interaction.followup.send(**send_kwargs)
 
 
+async def cmd_crypto_stats(interaction: discord.Interaction):
+    """予測成績ダッシュボード (trade_log集計・読み取り専用)"""
+    await interaction.response.defer()
+    try:
+        from tools.tool_crypto_stats import tool_crypto_stats
+        result = await asyncio.to_thread(tool_crypto_stats)
+    except Exception as e:
+        result = f"Error: {e}"
+
+    if _log_to_daily_note:
+        await asyncio.to_thread(_log_to_daily_note, "command", "/crypto-stats", result)
+
+    display_content = _format_discord_content(result) if _format_discord_content else result
+    embed = discord.Embed(
+        title="Crypto Stats",
+        description=display_content[:1500] if len(display_content) > 1500 else display_content,
+        color=0xf0b90b  # Binance yellow
+    )
+    file = _make_discord_file(result, f"Crypto_Stats_{datetime.datetime.now().strftime('%Y-%m-%d')}.md") if len(result) > 1500 else None
+
+    if _send_with_fallback:
+        await _send_with_fallback(interaction, result, title="Crypto Stats", emoji="📊", embed=embed, file=file)
+    else:
+        send_kwargs = {"embed": embed}
+        if file is not None:
+            send_kwargs["file"] = file
+        await interaction.followup.send(**send_kwargs)
+
+
+async def cmd_watchlist(interaction: discord.Interaction):
+    """ウォッチャー監視状況 (20銘柄変動・クールダウン・SL/TP距離)"""
+    await interaction.response.defer()
+    try:
+        from tools.tool_crypto_watcher import tool_watchlist_status
+        result = await asyncio.to_thread(tool_watchlist_status)
+    except Exception as e:
+        result = f"Error: {e}"
+
+    if _log_to_daily_note:
+        await asyncio.to_thread(_log_to_daily_note, "command", "/watchlist", result)
+
+    display_content = _format_discord_content(result) if _format_discord_content else result
+    embed = discord.Embed(
+        title="Crypto Watchlist",
+        description=display_content[:1500] if len(display_content) > 1500 else display_content,
+        color=0x00bfff
+    )
+    file = _make_discord_file(result, f"Watchlist_{datetime.datetime.now().strftime('%Y-%m-%d')}.md") if len(result) > 1500 else None
+
+    if _send_with_fallback:
+        await _send_with_fallback(interaction, result, title="Crypto Watchlist", emoji="👀", embed=embed, file=file)
+    else:
+        send_kwargs = {"embed": embed}
+        if file is not None:
+            send_kwargs["file"] = file
+        await interaction.followup.send(**send_kwargs)
+
+
 # ---------------------------------------------------------
 # 新機能コマンド (XTrend / BrowserUse / FutureSearch)
 # ---------------------------------------------------------
