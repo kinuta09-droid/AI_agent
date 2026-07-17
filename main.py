@@ -55,41 +55,95 @@ def _get_function(func_path: str):
 # ---------------------------------------------------------
 # Parallel Launcher & Monitor
 # ---------------------------------------------------------
+
+# Watchdog (Tier2-c): 各サービスの heartbeat / PID ファイル。
+# poll() は「死亡」しか検知できないため、heartbeat の鮮度で「ハング」を検知する。
+# パスは各サービス側の定義 (bot_discord.HEARTBEAT_FILE 等) と一致させること。
+# import で揃えないのは、スーパーバイザに discord 等の重量級依存を持ち込まないため。
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+SERVICES = {
+    "discord_bot": {
+        "script": "bot_discord.py",
+        "hb_file": os.path.join(_ROOT, "logs", "bot_discord.hb"),
+        "pid_file": os.path.join(_ROOT, "bot_discord.pid"),
+    },
+    "scheduler": {
+        "script": "agent_scheduler.py",
+        "hb_file": os.path.join(_ROOT, "logs", "agent_scheduler.hb"),
+        "pid_file": os.path.join(_ROOT, "agent_scheduler.pid"),
+    },
+}
+
+# kill → ランチャー親 exit → poll() 検知 のタイムラグ中に再killを連打しないための猶予
+_KILL_COOLDOWN = 60
+
+
 def run_and_monitor():
-    """Bot と Scheduler を別ウィンドウで起動し、監視（自動再起動）する"""
+    """Bot と Scheduler を起動し、監視（死亡 = 自動再起動 / ハング = 強制再起動）する"""
+    from lib import watchdog
+    from lib.pid_guard import read_owner
+
     print("\n" + "="*50)
     print("  🛰️ ARMS Parallel Launcher & Monitor")
     print("  - Starting Discord Bot & Scheduler...")
     print("  - Auto-restart enabled (5s delay)")
+    print(f"  - Watchdog: heartbeat stale > {watchdog.STALE_THRESHOLD}s -> force restart")
     print("  - Ctrl+C to stop all and return to menu")
     print("="*50 + "\n")
 
     python_exe = sys.executable
-    processes = {}
 
     def start_process(name, script):
         print(f"  [Launcher] Starting {name}...")
-        # 新しいコンソールウィンドウで起動 (Windows)
-        return subprocess.Popen(
-            [python_exe, script]
-            # creationflags=subprocess.CREATE_NEW_CONSOLE
-        )
+        return subprocess.Popen([python_exe, script])
 
-    processes["discord_bot"] = start_process("Discord Bot", "bot_discord.py")
-    processes["scheduler"] = start_process("Scheduler", "agent_scheduler.py")
+    processes = {
+        name: {
+            "proc": start_process(name, svc["script"]),
+            "started_at": time.time(),   # ハング判定の起点 (起動猶予を兼ねる)
+            "killed_at": 0.0,            # 直近の watchdog kill 時刻
+        }
+        for name, svc in SERVICES.items()
+    }
 
     try:
         while True:
             time.sleep(5)
-            for name, proc in processes.items():
-                if proc.poll() is not None:
-                    print(f"  [Monitor] ⚠️ {name} has stopped (code: {proc.returncode}). Restarting...")
-                    script = "bot_discord.py" if name == "discord_bot" else "agent_scheduler.py"
-                    processes[name] = start_process(name, script)
+            now = time.time()
+            for name, state in processes.items():
+                svc = SERVICES[name]
+
+                # --- 死亡検知 (既存): ランチャー親の exit を拾って再生成 ---
+                if state["proc"].poll() is not None:
+                    print(f"  [Monitor] ⚠️ {name} has stopped "
+                          f"(code: {state['proc'].returncode}). Restarting...")
+                    state["proc"] = start_process(name, svc["script"])
+                    state["started_at"] = time.time()
+                    state["killed_at"] = 0.0
+                    continue
+
+                # --- ハング検知 (Watchdog): heartbeat の鮮度で判定 ---
+                if now - state["killed_at"] < _KILL_COOLDOWN:
+                    continue  # kill 直後: 親の exit を poll が拾うまで待つ
+                if watchdog.is_stale(svc["hb_file"], state["started_at"], now=now):
+                    age = int(watchdog.age_seconds(svc["hb_file"], state["started_at"], now=now))
+                    # 殺すのは PID ファイルが指す「実体」のみ。ランチャー親 (Popen
+                    # ハンドル) を先に殺すと、実体が Discord Gateway を掴んだまま
+                    # 孤児化する (2026-07-17 の再起動手順で確認済みの罠)。
+                    # 実体が死ねば親は自然に exit し、上の poll() が再起動する。
+                    owner = read_owner(svc["pid_file"])
+                    killed = watchdog.kill_process(owner)
+                    print(f"  [Watchdog] 🐕 {name} heartbeat stale ({age}s). "
+                          f"Killing PID {owner} -> {'ok' if killed else 'failed/gone'}")
+                    watchdog.notify_discord(
+                        f"🐕 **Watchdog**: `{name}` の heartbeat が {age} 秒更新されていません。"
+                        f"実体 (PID {owner}) を強制再起動します (kill={'成功' if killed else '対象なし'})"
+                    )
+                    state["killed_at"] = now  # 失敗時もクールダウン後に再試行
     except KeyboardInterrupt:
         print("\n  [Launcher] 🛑 Stopping all processes...")
-        for proc in processes.values():
-            proc.terminate()
+        for state in processes.values():
+            state["proc"].terminate()
         print("  [Launcher] All processes terminated.")
 
 # ---------------------------------------------------------

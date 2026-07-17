@@ -25,8 +25,15 @@ from dotenv import load_dotenv
 # 経緯: 同じ穴で Discord Bot が2重起動した (2026-07-17)。
 # ---------------------------------------------------------
 from lib.pid_guard import acquire as _acquire_pid_lock, release as _release_pid_lock, read_owner as _read_pid_owner
+from lib import watchdog as _watchdog
 
 PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_scheduler.pid")
+
+# Watchdog Heartbeat (Tier2-c): メインループが 30秒毎に更新する。
+# ジョブはワーカースレッドで実行されるためループは常に回っており、
+# 更新停止 = プロセスの機能停止。main.py のスーパーバイザが強制再起動する。
+HEARTBEAT_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "logs", "agent_scheduler.hb")
 
 # agent_hello.py と同じディレクトリなので直接 import
 # ツールを直接インポート
@@ -371,8 +378,15 @@ def run_scheduler():
         # 最後に実行した分を記録（重複実行防止用）
         last_run_minute = ""
 
+        # Watchdog heartbeat の前回送出時刻 (30秒スロットリング)
+        last_beat = 0.0
+
         while True:
             try:
+                if time.time() - last_beat >= _watchdog.BEAT_INTERVAL:
+                    _watchdog.beat(HEARTBEAT_FILE)
+                    last_beat = time.time()
+
                 now = datetime.datetime.now()
                 current_time = now.strftime("%H:%M")
 
