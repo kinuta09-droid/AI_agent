@@ -858,7 +858,7 @@ def tool_audit_predictions() -> str:
             new_status = "EXPIRED"
             expired_count += 1
             audit_comment = (f"エントリーから21日経過してもSL/TP未到達のため期限切れクローズ。"
-                             f"最終確認価格: ${current_close:,.2f}。勝率統計からは除外。")
+                             f"観測窓の最終価格: ${current_close:,.2f}（現在値ではない）。勝率統計からは除外。")
 
         else:
             # まだ決着がついていない
@@ -897,16 +897,17 @@ def tool_audit_predictions() -> str:
     _save_trade_log(logs)
 
     # 統計セクション（今回の監査分）
+    # EXPIREDのみの回でも統計を出す（total_closedではなくupdated_countで判定）
     total_closed = win_count + lose_count
-    if total_closed > 0:
-        win_rate = (win_count / total_closed) * 100
+    if updated_count > 0:
+        win_rate_str = f"{(win_count / total_closed) * 100:.1f}%" if total_closed > 0 else "—"
         report += (
             f"## 📈 統計（今回の監査分）\n"
             f"| 項目 | 値 |\n|---|---|\n"
             f"| 判定済み | {total_closed}件 |\n"
             f"| WIN | {win_count}件 |\n"
             f"| LOSE | {lose_count}件 |\n"
-            f"| 勝率 | {win_rate:.1f}% |\n"
+            f"| 勝率 | {win_rate_str} |\n"
             f"| EXPIRED (期限切れ) | {expired_count}件 |\n"
             f"| 未決着 | {len(open_trades) - updated_count}件 |\n\n"
         )
