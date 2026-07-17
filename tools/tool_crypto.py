@@ -24,7 +24,7 @@ from lib.file_lock import FileLock
 # ここで再輸入することで既存の呼び出し・テスト (tc._decide_signal 等) は不変
 from lib.quant_core import (
     _calculate_kelly, _detect_regime, _detect_liquidity_sweep,
-    _check_divergence, _decide_signal,
+    _check_divergence, _decide_signal, _compute_levels, get_float_env,
 )
 
 
@@ -180,8 +180,13 @@ def _resolve_win_rate(signal_type: str, default_confidence: float) -> tuple:
 
 def _save_prediction(symbol: str, signal: str, entry_price: float,
                      stop_loss: float, kelly_pct: float, reasons: list,
-                     signal_type: str = "unknown") -> str:
-    """BUY系シグナル発生時に予測をログに記録する。"""
+                     signal_type: str = "unknown", extra: dict = None) -> str:
+    """BUY系シグナル発生時に予測をログに記録する。
+
+    extra: 追加の記録フィールド (ATR水準のトレーサビリティ等)。
+    スキーマは追加のみ — 監査/watcher/Kellyは既存フィールドしか読まないため
+    旧レコードと混在しても安全。
+    """
     risk = entry_price - stop_loss
     target_price = entry_price + (risk * 2) if risk > 0 else entry_price * 1.10
 
@@ -199,6 +204,8 @@ def _save_prediction(symbol: str, signal: str, entry_price: float,
         "status": "OPEN",
         "audit_note": ""
     }
+    if extra:
+        record.update(extra)
 
     _update_trade_log(lambda logs: logs.append(record))
     print(f"  📝 Prediction logged: {record['id']} ({symbol} {signal} @ ${entry_price:,.2f})")
@@ -299,10 +306,34 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
         reasons.append(f"高ボラティリティ環境のためポジション半減 (ATR%: {atr_pct:.2f}%)")
 
     # 6b. DCA計画（分割エントリー水準）
-    dca_entry1 = current_price * 0.95
-    dca_entry2 = current_price * 0.90
-    dca_entry3 = current_price * 0.85
-    dca_stop = current_price * 0.88
+    # Phase3: ATR倍数ベースの動的水準 (旧固定-5/-10/-15%はEXPIRED濫発のため廃止。
+    # バックテスト730日×3銘柄: EXPIRED 45→10件, 平均保有335h→138h)。
+    # CRYPTO_ATR_LEVELS=0 で旧固定%へ即時復帰可能 (再起動不要のキルスイッチ)
+    atr_levels_on = get_float_env("CRYPTO_ATR_LEVELS", 1.0) != 0.0
+    if atr_levels_on:
+        levels = _compute_levels(
+            current_price, atr_value,
+            sl_mult=get_float_env("CRYPTO_ATR_SL_MULT", 2.5),
+            dca_mults=(get_float_env("CRYPTO_ATR_DCA1_MULT", 1.5),
+                       get_float_env("CRYPTO_ATR_DCA2_MULT", 3.0),
+                       get_float_env("CRYPTO_ATR_DCA3_MULT", 4.5)),
+            atr_floor_pct=get_float_env("CRYPTO_ATR_FLOOR_PCT", 1.0),
+            atr_cap_pct=get_float_env("CRYPTO_ATR_CAP_PCT", 4.0))
+        dca_entry1 = levels["dca_entry1"]
+        dca_entry2 = levels["dca_entry2"]
+        dca_entry3 = levels["dca_entry3"]
+        dca_stop = levels["dca_stop"]
+        levels_mode = "atr"
+    else:
+        dca_entry1 = current_price * 0.95
+        dca_entry2 = current_price * 0.90
+        dca_entry3 = current_price * 0.85
+        dca_stop = current_price * 0.88
+        levels = None
+        levels_mode = "fixed"
+
+    def _pct(level: float) -> float:
+        return (level / current_price - 1) * 100 if current_price else 0.0
 
     signal_emoji = {
         "STRONG BUY": "🔥", "BUY": "🟢", "WATCH LIST": "👀",
@@ -314,8 +345,10 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
     # 7. Geminiで初心者向け要約を生成
     print(f"  🤖 Generating beginner-friendly summary...")
     beginner_summary = ""
-    dca_text = (f"DCA Entry1: ${dca_entry1:,.2f}(-5%), Entry2: ${dca_entry2:,.2f}(-10%), "
-                f"Entry3: ${dca_entry3:,.2f}(-15%), Stop: ${dca_stop:,.2f}(-12%)")
+    dca_text = (f"DCA Entry1: ${dca_entry1:,.2f}({_pct(dca_entry1):+.1f}%), "
+                f"Entry2: ${dca_entry2:,.2f}({_pct(dca_entry2):+.1f}%), "
+                f"Entry3: ${dca_entry3:,.2f}({_pct(dca_entry3):+.1f}%), "
+                f"Stop: ${dca_stop:,.2f}({_pct(dca_stop):+.1f}%)")
     try:
         beginner_prompt = f"""あなたは仮想通貨の初心者向けアドバイザーです。
 以下のテクニカル分析結果を、仮想通貨をこれから始めたい人でもわかるように、やさしい日本語で解説してください。
@@ -402,14 +435,19 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
 
     # DCA計画セクション（BUY系シグナルのみ）
     if signal in ["STRONG BUY", "BUY", "WATCH LIST"]:
+        if levels_mode == "atr":
+            mode_note = (f"ATRベース (実効ATR {levels['atr_used_pct']:.2f}% × "
+                         f"SL{levels['sl_mult']}倍)")
+        else:
+            mode_note = "固定% (レガシーモード)"
         report += (
-            f"## 📋 DCA計画 (分割エントリー)\n"
+            f"## 📋 DCA計画 (分割エントリー) — {mode_note}\n"
             f"| レベル | 価格 | 現在値から |\n"
             f"|---|---|---|\n"
-            f"| Entry 1 | ${dca_entry1:,.2f} | -5% |\n"
-            f"| Entry 2 | ${dca_entry2:,.2f} | -10% |\n"
-            f"| Entry 3 | ${dca_entry3:,.2f} | -15% |\n"
-            f"| Stop Loss | ${dca_stop:,.2f} | -12% |\n\n"
+            f"| Entry 1 | ${dca_entry1:,.2f} | {_pct(dca_entry1):+.1f}% |\n"
+            f"| Entry 2 | ${dca_entry2:,.2f} | {_pct(dca_entry2):+.1f}% |\n"
+            f"| Entry 3 | ${dca_entry3:,.2f} | {_pct(dca_entry3):+.1f}% |\n"
+            f"| Stop Loss | ${dca_stop:,.2f} | {_pct(dca_stop):+.1f}% |\n\n"
         )
 
     report += f"## 📝 分析\n{analysis_text}\n"
@@ -460,8 +498,15 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
     # WATCH LISTは「様子見」であり売買コールではないため、勝率統計を汚染しないよう除外
     if signal in ["BUY", "STRONG BUY"]:
         try:
+            extra = {"levels_mode": levels_mode}
+            if levels is not None:
+                extra.update({
+                    "atr_value": round(atr_value, 6),
+                    "atr_used_pct": round(levels["atr_used_pct"], 2),
+                    "sl_atr_mult": levels["sl_mult"],
+                })
             _save_prediction(symbol, signal, current_price, dca_stop, kelly_pct,
-                             reasons, signal_type=signal_type)
+                             reasons, signal_type=signal_type, extra=extra)
         except Exception as e:
             print(f"  ⚠️ Prediction log failed: {e}")
 
