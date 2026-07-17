@@ -291,6 +291,11 @@ SCHEDULE = [
         "func": tool_scan_crypto_market
     },
     {
+        "time": "22:30",
+        "name": "Crypto Prediction Audit",
+        "func": tool_audit_predictions
+    },
+    {
         "time": "23:00",
         "name": "Performance Dashboard",
         "func": generate_performance_dashboard
