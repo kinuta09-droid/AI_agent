@@ -40,6 +40,7 @@ HEARTBEAT_FILE = os.path.join(
 # ツールを直接インポート
 from tools.tool_web import tool_fetch_daily_news
 from tools.tool_crypto import tool_scan_crypto_market, tool_analyze_crypto, tool_audit_predictions
+from tools.tool_crypto_watcher import tool_crypto_watch
 from engine_plan_execute import generate_performance_dashboard
 from tools.tool_obsidian import tool_merge_weekly_reports
 
@@ -295,6 +296,14 @@ SCHEDULE = [
         "name": "Crypto Prediction Audit",
         "func": tool_audit_predictions
     },
+    # Crypto Event Watcher (Phase 2): 15分毎の無料監視。閾値超過時のみ
+    # フル分析+Discord通知を自前で行うため silent (15分毎の定型通知はスパム)
+    {
+        "every_minutes": 15,
+        "name": "Crypto Event Watcher",
+        "func": tool_crypto_watch,
+        "silent": True,
+    },
     {
         "time": "23:00",
         "name": "Performance Dashboard",
@@ -384,7 +393,8 @@ def run_scheduler():
         # 設定されたスケジュールを一覧表示（+ 多重実行防止ロックを初期化）
         for task in SCHEDULE:
             task["_lock"] = threading.Lock()
-            logger.info(f" - {task['time']}: {task['name']}")
+            when = task.get("time") or f"every {task['every_minutes']}min"
+            logger.info(f" - {when}: {task['name']}")
 
         # 最後に実行した分を記録（重複実行防止用）
         last_run_minute = ""
@@ -404,7 +414,12 @@ def run_scheduler():
                 # 分が変わった瞬間のみチェック
                 if current_time != last_run_minute:
                     for task in SCHEDULE:
-                        if current_time == task["time"] and (
+                        # "time": 日次 HH:MM 発火 / "every_minutes": N分間隔発火
+                        if "every_minutes" in task:
+                            due = now.minute % task["every_minutes"] == 0
+                        else:
+                            due = current_time == task["time"]
+                        if due and (
                             "weekday" not in task or now.weekday() == task["weekday"]
                         ):
                             # 長時間タスクがループをブロックして他ジョブが

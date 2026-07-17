@@ -19,6 +19,7 @@ from lib.lib_shared import (
     VAULT_ROOT, CRYPTO_DIR_NAME, TRADE_LOG_PATH,
     fetch_fear_greed_index, load_json, save_json,
 )
+from lib.file_lock import FileLock
 
 
 # ---------------------------------------------------------
@@ -235,6 +236,22 @@ def _save_trade_log(logs: list):
     save_json(TRADE_LOG_PATH, logs)
 
 
+def _update_trade_log(mutator):
+    """trade_log.json をプロセス間ロック下で load→mutate→save する。
+
+    bot(/crypto)・scheduler(22:30監査)・watcher(15分毎) の3プロセスが
+    同一ファイルを read-modify-write するため、系列全体をロックしないと
+    追記と更新が互いを潰す (save_json の原子性は破損防止であって
+    lost-update 防止ではない)。
+    mutator は logs(list) をインプレース変更する callable。戻り値を透過する。
+    """
+    with FileLock(TRADE_LOG_PATH):
+        logs = load_json(TRADE_LOG_PATH, default=[])
+        result = mutator(logs)
+        save_json(TRADE_LOG_PATH, logs)
+        return result
+
+
 # 実測勝率をKellyに採用する最低サンプル数。これ未満は既定confidenceを使う
 MIN_AUDIT_SAMPLES = 20
 # 実測勝率の上限クランプ（少数サンプルの偶然の連勝でポジションが暴走しない保険）
@@ -288,8 +305,6 @@ def _save_prediction(symbol: str, signal: str, entry_price: float,
                      stop_loss: float, kelly_pct: float, reasons: list,
                      signal_type: str = "unknown") -> str:
     """BUY系シグナル発生時に予測をログに記録する。"""
-    logs = _load_trade_log()
-
     risk = entry_price - stop_loss
     target_price = entry_price + (risk * 2) if risk > 0 else entry_price * 1.10
 
@@ -308,8 +323,7 @@ def _save_prediction(symbol: str, signal: str, entry_price: float,
         "audit_note": ""
     }
 
-    logs.append(record)
-    _save_trade_log(logs)
+    _update_trade_log(lambda logs: logs.append(record))
     print(f"  📝 Prediction logged: {record['id']} ({symbol} {signal} @ ${entry_price:,.2f})")
     return record["id"]
 
@@ -796,6 +810,10 @@ def tool_audit_predictions() -> str:
     win_count = 0
     lose_count = 0
     expired_count = 0
+    # 監査はネットワーク往復で分単位かかるため、ロックは保存時のみ取得する。
+    # ループ中は更新内容を id キーで貯めておき、最後にロック下で再読込→適用する
+    # (監査中に bot/watcher が追記した新レコードを潰さないため)
+    updates = {}
 
     for trade in open_trades:
         symbol = trade["symbol"]
@@ -866,11 +884,16 @@ def tool_audit_predictions() -> str:
             dist_to_sl = ((current_close - trade["stop_loss"]) / current_close) * 100
             audit_comment = f"未決着 ({hours_elapsed}h経過)。現在値: ${current_close:,.2f} (TP まで {dist_to_tp:+.1f}%, SL まで {dist_to_sl:.1f}%)"
 
-        # ログ更新
+        # ログ更新 (localのtradeはレポート描画用、updatesが保存時の正)
         if new_status != "OPEN":
             trade["status"] = new_status
             trade["audit_note"] = audit_comment
             trade["audit_date"] = today_str
+            updates[trade["id"]] = {
+                "status": new_status,
+                "audit_note": audit_comment,
+                "audit_date": today_str,
+            }
             updated_count += 1
 
             icon = {"WIN": "✅", "LOSE": "❌", "EXPIRED": "⌛"}.get(new_status, "❓")
@@ -893,8 +916,15 @@ def tool_audit_predictions() -> str:
 
         time.sleep(0.3)
 
-    # JSONログ更新
-    _save_trade_log(logs)
+    # JSONログ更新: ロック下で最新を再読込し、id一致レコードにのみ判定結果を適用
+    def _apply_updates(all_logs):
+        for t in all_logs:
+            u = updates.get(t.get("id"))
+            if u:
+                t.update(u)
+        return all_logs
+
+    logs = _update_trade_log(_apply_updates)
 
     # 統計セクション（今回の監査分）
     # EXPIREDのみの回でも統計を出す（total_closedではなくupdated_countで判定）
