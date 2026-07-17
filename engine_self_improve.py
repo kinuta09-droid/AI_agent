@@ -9,31 +9,17 @@ import os
 import json
 import uuid
 import datetime
-from lib.lib_shared import client, MODEL_NAME, safe_json_loads, WORK_DIR
+from lib.lib_shared import client, MODEL_NAME, safe_json_loads, WORK_DIR, load_json, save_json
 
 IMPROVEMENT_LOG_PATH = os.path.join(WORK_DIR, "improvement_log.json")
 SYSTEM_PATCHES_PATH = os.path.join(WORK_DIR, "system_patches.json")
-
-def _load_json(filepath: str, default):
-    if not os.path.exists(filepath):
-        return default
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return default
-
-def _save_json(filepath: str, data):
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
 
 def analyze_weak_tools() -> str:
     """
     improvement_log.json の最新データから、点数の大幅な上昇・低下の事例を抽出し、
     Gemini で要因を分析して汎用的な学習パッチを生成する。
     """
-    logs = _load_json(IMPROVEMENT_LOG_PATH, [])
+    logs = load_json(IMPROVEMENT_LOG_PATH, [])
     if not logs:
         return "データ不足: improvement_log.json に学習データがありません。"
 
@@ -87,7 +73,7 @@ def analyze_weak_tools() -> str:
             return "パッチの生成に失敗しました（空のデータ）。"
             
         # system_patches.json に追記（未承認状態）
-        patches = _load_json(SYSTEM_PATCHES_PATH, [])
+        patches = load_json(SYSTEM_PATCHES_PATH, [])
         new_patch = {
             "id": f"patch-{uuid.uuid4().hex[:8]}",
             "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -97,7 +83,8 @@ def analyze_weak_tools() -> str:
             "target_persona": result.get("target_persona", "ALL")
         }
         patches.append(new_patch)
-        _save_json(SYSTEM_PATCHES_PATH, patches)
+        # 原子的保存 (tmp+os.replace): 書込中クラッシュでの破損防止 — learning_db と同方式
+        save_json(SYSTEM_PATCHES_PATH, patches)
         
         return f"✅ 新しい改善パッチを生成し、承認待ち(approved: false)として追加しました。\n- 分析: {new_patch['analysis_summary']}\n- パッチ: {new_patch['patch_hint']}"
     except Exception as e:
@@ -108,7 +95,7 @@ def get_approved_patch_hints() -> str:
     system_patches.json から承認済み（approved: true）のパッチをすべて連結して返す。
     engine_plan_execute のメインプロンプトに注入するための関数。
     """
-    patches = _load_json(SYSTEM_PATCHES_PATH, [])
+    patches = load_json(SYSTEM_PATCHES_PATH, [])
     approved = [p["patch_hint"] for p in patches if p.get("approved") is True]
     
     if not approved:
