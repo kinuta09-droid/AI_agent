@@ -31,6 +31,20 @@ from lib.lib_shared import (
     WORK_DIR,
     retry,
 )
+from lib.cost_guard import DailyCounter, GeminiBudgetExceeded, get_limit
+
+# Tier2-b コストガード: /future はスラッシュコマンド・深掘りボタン・
+# ツールレジストリ・スケジューラ06:30自動実行の4経路から呼ばれるため、
+# ツール層のここ1箇所で日次実行回数を制限する。Gemini (2-3回/実行) だけ
+# でなく Tavily クォータ (5-15ソース/実行) の保護も兼ねる。
+# グローバル日次上限 (DAILY_GEMINI_CALL_LIMIT) とは意図的な二層構え。
+FUTURE_SEARCH_DAILY_LIMIT = get_limit("FUTURE_SEARCH_DAILY_LIMIT", 3)
+_RUN_COUNTER = DailyCounter(
+    path=os.path.join("C:\\AI_agent", "logs", "future_search_daily.json"),
+    limit=FUTURE_SEARCH_DAILY_LIMIT,
+    name="FutureSearch",
+    notify=False,
+)
 
 # ---------------------------------------------------------
 # CONFIGURATION
@@ -707,6 +721,13 @@ def run_future_search(topic: str = "", depth: str = DEFAULT_DEPTH,
     if not topic or not topic.strip():
         return "Error: トピックが空です。"
     topic = topic.strip()
+
+    # 日次実行上限 (Gemini/Tavily 消費前にチェック。文字列返却は既存エラー規約)
+    try:
+        _RUN_COUNTER.check_and_increment()
+    except GeminiBudgetExceeded:
+        return (f"Error: 未来検索の1日あたり実行上限"
+                f"({FUTURE_SEARCH_DAILY_LIMIT}回)に達しました。明日再度お試しください。")
     if depth not in DEPTH_CONFIG:
         depth = DEFAULT_DEPTH
     n_sources = DEPTH_CONFIG[depth]["sources"]

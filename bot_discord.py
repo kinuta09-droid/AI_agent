@@ -248,6 +248,8 @@ def _gemini_chat_with_history(history: list) -> str:
         )
         return (response.text or "").strip() or "(応答なし)"
     except Exception as e:
+        # GeminiBudgetExceeded (日次上限) もここに落ちる: BitNetローカル
+        # フォールバックが発動するのが意図した縮退モード (変更不要)。
         print(f"[Discord] Gemini API error: {e}")
         if BITNET_AVAILABLE:
             last_msg = history[-1]["content"] if history else ""
