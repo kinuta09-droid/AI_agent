@@ -121,6 +121,8 @@ def run_verification():
         'tools.tool_xtrend',
         'tools.tool_vault_index',
         'tools.tool_user_memory',
+        'tools.tool_crypto_stats',
+        'tools.tool_crypto_watcher',
         'engine_plan_execute'
     ]
     

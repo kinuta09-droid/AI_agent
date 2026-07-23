@@ -41,6 +41,7 @@ HEARTBEAT_FILE = os.path.join(
 from tools.tool_web import tool_fetch_daily_news
 from tools.tool_crypto import tool_scan_crypto_market, tool_analyze_crypto, tool_audit_predictions
 from tools.tool_crypto_watcher import tool_crypto_watch
+from tools.tool_crypto_stats import tool_weekly_crypto_report
 from engine_plan_execute import generate_performance_dashboard
 from tools.tool_obsidian import tool_merge_weekly_reports
 
@@ -295,6 +296,14 @@ SCHEDULE = [
         "time": "22:30",
         "name": "Crypto Prediction Audit",
         "func": tool_audit_predictions
+    },
+    # Weekly Crypto Report (Phase 4): 日曜22:30監査の直後・23:30アーカイブ前。
+    # 判定済みデータが最新の状態で週次集計 → Obsidian保存 + 定型通知
+    {
+        "time": "22:50",
+        "name": "Weekly Crypto Report",
+        "func": tool_weekly_crypto_report,
+        "weekday": 6,  # 日曜のみ
     },
     # Crypto Event Watcher (Phase 2): 15分毎の無料監視。閾値超過時のみ
     # フル分析+Discord通知を自前で行うため silent (15分毎の定型通知はスパム)

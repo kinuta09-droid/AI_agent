@@ -131,6 +131,15 @@ subprocess.Popen(cmd, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
 - Verify behavior diff against main branch when applicable
 - Run relevant `test_*.py` files before committing
 
+### Backtest Gate (crypto logic)
+- `lib/quant_core.py` / `tools/tool_crypto.py` のシグナル・水準・ゲートロジック変更は
+  **before/after バックテスト比較が必須**:
+  `py scripts/backtest_crypto.py --symbols BTC/USDT,ETH/USDT,SOL/USDT --days 730 --compare ...`
+- 比較表（signal_type別 勝率・期待値R・トレード数）をコミットメッセージに貼る。比較なしはマージ禁止
+- バックテストとライブは `lib/quant_core.py` の純関数を共有する。**ロジックのフォーク禁止**
+  （ライブ側だけ/バックテスト側だけの判定分岐を作らない）
+- 既知の制約: news_risk はバックテストで再現不能（NEUTRAL固定）、評価密度はライブと異なる
+
 ### Grill Me Rules
 1. **Before PR**: Claude must challenge every change — "Why is this necessary?"
 2. **Edge cases**: Identify at least 3 edge cases per function change

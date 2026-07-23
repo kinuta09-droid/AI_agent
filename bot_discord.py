@@ -949,6 +949,16 @@ async def cmd_scan(interaction: discord.Interaction):
     await bot_commands_tools.cmd_scan(interaction)
 
 
+@tree.command(name="crypto-stats", description="予測成績ダッシュボード（種別勝率・期待値R・OPEN一覧）")
+async def cmd_crypto_stats(interaction: discord.Interaction):
+    await bot_commands_tools.cmd_crypto_stats(interaction)
+
+
+@tree.command(name="watchlist", description="ウォッチャー監視状況（20銘柄変動・クールダウン・SL/TP距離）")
+async def cmd_watchlist(interaction: discord.Interaction):
+    await bot_commands_tools.cmd_watchlist(interaction)
+
+
 @tree.command(name="xtrend", description="X(Twitter)のAIトレンドを収集・分析してObsidianに保存")
 @app_commands.describe(min_likes="最低いいね数 (デフォルト: 500)")
 async def cmd_xtrend(interaction: discord.Interaction, min_likes: int = 500):
