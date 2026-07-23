@@ -155,8 +155,12 @@ def run_and_monitor():
 def route_to_tool(user_input: str) -> dict:
     # --- 一次判定: BitNetローカルルーター（Gemini日次枠を消費しない）---
     # 引数不要ツールにBitNetが「高確信」で一致した時だけGeminiをスキップする。
-    # 曖昧・空・例外、または引数が必要なツール（引数抽出はGemini依存）は、
-    # 下の従来Geminiパスへフォールスルーする。BitNet不在時も同様に縮退する。
+    # 次のいずれかは下の従来Geminiパスへフォールスルーする:
+    #   - 曖昧/空/例外/exe不在 (route_tool_confident が None を返す)
+    #   - needs_arg=True (引数抽出はGemini依存)
+    #   - long_running=True (discord_bot/scheduler 等、常駐プロセスの起動は
+    #     取り消しづらい重い副作用。低品質なローカルモデルの一存で無確認起動させず、
+    #     必ずGeminiの二次判定を経由させる)
     try:
         from tools.tool_bitnet import route_tool_confident  # 遅延import
         tool_names = [t["name"] for t in TOOLS]
@@ -164,10 +168,10 @@ def route_to_tool(user_input: str) -> dict:
         bit_tool, _reason = route_tool_confident(user_input, tool_names, tool_descriptions)
         if bit_tool:
             chosen = next((t for t in TOOLS if t["name"] == bit_tool), None)
-            if chosen and not chosen.get("needs_arg"):
+            if chosen and not chosen.get("needs_arg") and not chosen.get("long_running"):
                 print(f"  ⚡ BitNet → [{bit_tool}] (Gemini skip)")
                 return {"tool": bit_tool, "arg": None}
-            # needs_arg=True のツールは引数抽出のためGeminiへ委譲（フォールスルー）
+            # needs_arg / long_running のツールはGeminiへ委譲（フォールスルー）
     except Exception as e:
         # BitNet不在/失敗は縮退: 従来のGeminiパスへ進む
         print(f"[route_to_tool] BitNet stage skipped: {e}")
