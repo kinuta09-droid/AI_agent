@@ -153,6 +153,26 @@ def run_and_monitor():
 # AI Router & Menu Functions
 # ---------------------------------------------------------
 def route_to_tool(user_input: str) -> dict:
+    # --- 一次判定: BitNetローカルルーター（Gemini日次枠を消費しない）---
+    # 引数不要ツールにBitNetが「高確信」で一致した時だけGeminiをスキップする。
+    # 曖昧・空・例外、または引数が必要なツール（引数抽出はGemini依存）は、
+    # 下の従来Geminiパスへフォールスルーする。BitNet不在時も同様に縮退する。
+    try:
+        from tools.tool_bitnet import route_tool_confident  # 遅延import
+        tool_names = [t["name"] for t in TOOLS]
+        tool_descriptions = {t["name"]: t["description"] for t in TOOLS}
+        bit_tool, _reason = route_tool_confident(user_input, tool_names, tool_descriptions)
+        if bit_tool:
+            chosen = next((t for t in TOOLS if t["name"] == bit_tool), None)
+            if chosen and not chosen.get("needs_arg"):
+                print(f"  ⚡ BitNet → [{bit_tool}] (Gemini skip)")
+                return {"tool": bit_tool, "arg": None}
+            # needs_arg=True のツールは引数抽出のためGeminiへ委譲（フォールスルー）
+    except Exception as e:
+        # BitNet不在/失敗は縮退: 従来のGeminiパスへ進む
+        print(f"[route_to_tool] BitNet stage skipped: {e}")
+
+    # --- 二次判定: 従来のGeminiルーター（引数抽出込み）---
     tool_list = "\n".join(f"- {t['name']}: {t['description']}" for t in TOOLS)
     prompt = f"あなたはタスクルーターです。ユーザーの入力に最も適したツールを選んでください。\n\n【ツール】\n{tool_list}\n\n【入力】\n{user_input}\n\nJSON形式: {{\"tool\": \"name\", \"arg\": \"val\"}}"
     try:
