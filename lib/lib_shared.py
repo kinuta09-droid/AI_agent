@@ -59,9 +59,13 @@ except Exception as e:
 # CONFIGURATION
 # ---------------------------------------------------------
 
-MODEL_NAME = 'gemini-3.1-flash-lite-preview'
+# ルーティング判定・多数のツール向け（軽量・高スループット）
+# .env の GEMINI_MODEL_LIGHT で上書き可（未設定時は現行値＝挙動不変）。
+# 世代交代・ロールバックはコード編集不要で .env 1行 + 再起動のみ（施策③）。
+MODEL_NAME = os.getenv("GEMINI_MODEL_LIGHT", 'gemini-3.1-flash-lite-preview')
 # コンテンツ生成・最終サマリー等、出力品質が重要なタスク向け
-MODEL_NAME_HEAVY = 'gemini-2.5-flash'
+# .env の GEMINI_MODEL_HEAVY で上書き可（未設定時は現行値＝挙動不変）。
+MODEL_NAME_HEAVY = os.getenv("GEMINI_MODEL_HEAVY", 'gemini-2.5-flash')
 MAX_RETRIES = 5
 
 HISTORY_FILE = r'D:\マイドライブ\Obsidian\Dev_Logs\chat_history.json'
