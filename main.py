@@ -16,9 +16,8 @@ load_dotenv(r'C:\AI_agent\.env')
 # Gemini Client (lightweight init)
 # ---------------------------------------------------------
 # Tier2-b: 独自 genai.Client はコストガードの適用外になるため廃止。
-# 共有client (lib_shared, 日次上限ラップ済み) を使用箇所で遅延importする
-# ことで、メニュー起動の軽さ (lib_shared の重い初期化回避) は維持する。
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-flash")
+# 共有client・MODEL_NAME (lib_shared, 日次上限ラップ済み) を使用箇所で
+# 遅延importすることで、メニュー起動の軽さ (lib_shared の重い初期化回避) は維持する。
 
 # ---------------------------------------------------------
 # Tool Registry
@@ -154,10 +153,34 @@ def run_and_monitor():
 # AI Router & Menu Functions
 # ---------------------------------------------------------
 def route_to_tool(user_input: str) -> dict:
+    # --- 一次判定: BitNetローカルルーター（Gemini日次枠を消費しない）---
+    # 引数不要ツールにBitNetが「高確信」で一致した時だけGeminiをスキップする。
+    # 次のいずれかは下の従来Geminiパスへフォールスルーする:
+    #   - 曖昧/空/例外/exe不在 (route_tool_confident が None を返す)
+    #   - needs_arg=True (引数抽出はGemini依存)
+    #   - long_running=True (discord_bot/scheduler 等、常駐プロセスの起動は
+    #     取り消しづらい重い副作用。低品質なローカルモデルの一存で無確認起動させず、
+    #     必ずGeminiの二次判定を経由させる)
+    try:
+        from tools.tool_bitnet import route_tool_confident  # 遅延import
+        tool_names = [t["name"] for t in TOOLS]
+        tool_descriptions = {t["name"]: t["description"] for t in TOOLS}
+        bit_tool, _reason = route_tool_confident(user_input, tool_names, tool_descriptions)
+        if bit_tool:
+            chosen = next((t for t in TOOLS if t["name"] == bit_tool), None)
+            if chosen and not chosen.get("needs_arg") and not chosen.get("long_running"):
+                print(f"  ⚡ BitNet → [{bit_tool}] (Gemini skip)")
+                return {"tool": bit_tool, "arg": None}
+            # needs_arg / long_running のツールはGeminiへ委譲（フォールスルー）
+    except Exception as e:
+        # BitNet不在/失敗は縮退: 従来のGeminiパスへ進む
+        print(f"[route_to_tool] BitNet stage skipped: {e}")
+
+    # --- 二次判定: 従来のGeminiルーター（引数抽出込み）---
     tool_list = "\n".join(f"- {t['name']}: {t['description']}" for t in TOOLS)
     prompt = f"あなたはタスクルーターです。ユーザーの入力に最も適したツールを選んでください。\n\n【ツール】\n{tool_list}\n\n【入力】\n{user_input}\n\nJSON形式: {{\"tool\": \"name\", \"arg\": \"val\"}}"
     try:
-        from lib.lib_shared import client  # 遅延import: コストガード適用済み共有client
+        from lib.lib_shared import client, MODEL_NAME  # 遅延import: コストガード適用済み共有client
         response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
         import json, re
         text = re.sub(r'```json\s*|\s*```', '', response.text.strip())

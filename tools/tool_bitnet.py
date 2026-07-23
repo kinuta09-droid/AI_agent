@@ -158,6 +158,90 @@ def route_tool(user_input: str, tool_names: list[str], tool_descriptions: dict =
         return tool_names[-1]  # fallback: 最後のツール（通常 "agent"）
 
 
+def route_tool_confident(
+    user_input: str,
+    tool_names: list[str],
+    tool_descriptions: dict = None,
+    catchall: str = "agent",
+) -> tuple[str | None, str]:
+    """
+    確信度付きローカルルーター（二段ルーティングの一次判定用）。
+
+    既存 route_tool() は必ずツール名を返す（曖昧時は tool_names[-1] にフォールバック）
+    が、この関数は「BitNetがツール名を *そのまま* 出力した高確信ケース」だけツール名を返し、
+    曖昧・キャッチオール・空出力・例外時は None を返す。呼び出し側（main.route_to_tool）が
+    None を見て Gemini へエスカレーションできるようにするための確信度シグナル版。
+
+    高確信の定義: BitNet出力の先頭トークンに実ツール名が forward 一致すること
+    （t.lower() in raw.lower()）。reverse/曖昧一致は precision 優先で不採用にし、
+    誤ルーティングによるサイレント劣化の被害範囲を最小化する。
+
+    Args:
+        user_input: ユーザーの自然言語入力
+        tool_names: 選択肢のツール名リスト
+        tool_descriptions: {name: description} の辞書（任意・精度向上）
+        catchall: 汎用フォールバックツール名。これに一致してもエスカレーション扱い
+
+    Returns:
+        (tool_name, reason):
+          - (str, "clean_match"): 高確信。Gemini をスキップしてよい
+          - (None, reason):       低確信。呼び出し側で Gemini へフォールバック
+                                  reason ∈ {"no_tools","empty_output","catchall",
+                                            "ambiguous","error:<msg>"}
+    """
+    if not tool_names:
+        return None, "no_tools"
+
+    # ツールリストを説明付きで組み立てる（route_tool と同じ書式）
+    if tool_descriptions:
+        tool_lines = "\n".join(
+            f"- {name}: {tool_descriptions.get(name, '')}"
+            for name in tool_names
+        )
+        tool_section = f"Tools:\n{tool_lines}"
+    else:
+        tool_section = f"Tools: [{', '.join(tool_names)}]"
+
+    prompt = (
+        f"You are a task router. Select the single best tool for the user's request.\n"
+        f"{tool_section}\n\n"
+        f"Rules: Reply with ONLY the tool name. No explanation.\n"
+        f"User request: \"{user_input}\"\n"
+        f"Best tool name:"
+    )
+
+    try:
+        result = _run_bitnet(prompt, max_tokens=10, temperature=0.1)
+    except Exception as e:
+        # exe不在・subprocess失敗は縮退: 呼び出し側で Gemini へ委譲させる
+        logger.error(f"[BitNet ConfidentRouter] escalate (exec error): {e}")
+        return None, f"error:{e}"
+
+    raw_text = (result.get("text") or "").strip()
+    if not raw_text:
+        logger.info("[BitNet ConfidentRouter] escalate (empty output)")
+        return None, "empty_output"
+
+    raw = raw_text.split()[0].rstrip(".,;:")
+
+    # 高確信: ツール名が出力先頭トークンに forward 一致（かつ catchall ではない）
+    clean = next((t for t in tool_names if t.lower() in raw.lower()), None)
+    if clean and clean != catchall:
+        logger.info(
+            f"[BitNet ConfidentRouter] '{user_input[:30]}' → {clean} "
+            f"({result.get('elapsed_sec')}s, clean_match)"
+        )
+        return clean, "clean_match"
+
+    # 曖昧一致 / catchall一致 / 無一致 は Gemini へ委譲
+    reason = "catchall" if clean == catchall else "ambiguous"
+    logger.info(
+        f"[BitNet ConfidentRouter] '{user_input[:30]}' → escalate "
+        f"({result.get('elapsed_sec')}s, {reason}, raw={raw!r})"
+    )
+    return None, reason
+
+
 def summarize(text: str, lines: int = 3) -> str:
     """
     テキストをローカルで要約する。Obsidianノートや長文に使用。
