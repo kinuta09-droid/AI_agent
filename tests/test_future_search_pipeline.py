@@ -86,6 +86,60 @@ def test_depth_source_counts():
     print("✅ depth → ソース数マッピング")
 
 
+def test_format_sources_section():
+    section = fs._format_sources_section(SOURCES[:3])
+    # 見出し + 各ソースがマークダウンリンクで、番号はプロンプトと同じ 1始まり
+    assert section.startswith("## 参考ソース")
+    assert "- **[SOURCE 1]** [Source 0](https://example.com/0)" in section
+    assert "- **[SOURCE 3]** [Source 2](https://example.com/2)" in section
+    # 空リストは空文字（末尾に空セクションを付けない）
+    assert fs._format_sources_section([]) == ""
+    print("✅ 参考ソース一覧: 1始まり番号 + 実URLリンク化")
+
+
+def test_format_sources_missing_url_and_title():
+    sources = [
+        {"title": "", "url": ""},
+        {"title": "Has Title", "url": ""},
+    ]
+    section = fs._format_sources_section(sources)
+    # URLなしはリンク化せずタイトルのみ、タイトルもなければプレースホルダ
+    assert "- **[SOURCE 1]** (タイトルなし)" in section
+    assert "- **[SOURCE 2]** Has Title" in section
+    assert "](" not in section, "URLなしでリンク記法を出してはいけない"
+    print("✅ URL/タイトル欠落ソースはリンク化せず安全に表示")
+
+
+def test_pipeline_appends_sources_to_report():
+    """run_future_search が保存レポートに参考ソース一覧を含めること。"""
+    saved = {}
+    monkey = {
+        "_RUN_COUNTER": _NoQuotaCounter(),
+        "_translate_to_english_query": lambda topic, llm_fn=None: "en",
+        "_search_topic": lambda q, max_results=10: SOURCES[:max_results],
+        "_load_user_context": lambda: "",
+        "_multi_lens_analysis": lambda t, s, c, d: "# 本文 [SOURCE 1]",
+        "_generate_happiness_advice": lambda t, r, c: "## 幸福",
+        "_save_to_obsidian": lambda t, r: (saved.update({"content": r}), "F")[1],
+        "_notify_discord": lambda t, r, f: None,
+    }
+    originals = _patch(monkey)
+    try:
+        fs.run_future_search("topic", depth="quick")
+    finally:
+        _restore(originals)
+    assert "## 参考ソース" in saved["content"], "保存レポートにソース一覧が無い"
+    assert "[Source 0](https://example.com/0)" in saved["content"]
+    print("✅ パイプライン出力に参考ソース一覧が付与される")
+
+
+class _NoQuotaCounter:
+    """日次実行カウンタのスタブ。テストが実クォータ (logs/future_search_daily.json)
+    を消費しないよう check_and_increment を no-op にする。"""
+    def check_and_increment(self):
+        pass
+
+
 def _patch(monkey: dict):
     """fs モジュールの関数を一時差し替えするコンテキスト用ヘルパー。"""
     originals = {name: getattr(fs, name) for name in monkey}
@@ -104,6 +158,7 @@ def test_run_pipeline_orchestration():
     progress = []
     calls = []
     monkey = {
+        "_RUN_COUNTER": _NoQuotaCounter(),
         "_translate_to_english_query": lambda topic, llm_fn=None: (calls.append("translate"), "en query")[1],
         "_search_topic": lambda q, max_results=10: (calls.append(("search", max_results)), SOURCES[:max_results])[1],
         "_load_user_context": lambda: (calls.append("context"), "ctx")[1],
@@ -133,6 +188,7 @@ def test_run_pipeline_orchestration():
 def test_run_pipeline_uncensored_and_no_callback():
     calls = []
     monkey = {
+        "_RUN_COUNTER": _NoQuotaCounter(),
         "_translate_to_english_query": lambda topic, llm_fn=None: "en",
         "_search_topic": lambda q, max_results=10: SOURCES[:max_results],
         "_load_user_context": lambda: "",
@@ -161,6 +217,7 @@ def test_empty_topic_rejected():
 
 def test_invalid_depth_falls_back():
     monkey = {
+        "_RUN_COUNTER": _NoQuotaCounter(),
         "_translate_to_english_query": lambda topic, llm_fn=None: "en",
         "_search_topic": lambda q, max_results=10: SOURCES[:max_results],
         "_load_user_context": lambda: "",
@@ -187,6 +244,9 @@ if __name__ == "__main__":
     test_build_multi_lens_prompt_contents()
     test_build_prompt_without_user_context()
     test_depth_source_counts()
+    test_format_sources_section()
+    test_format_sources_missing_url_and_title()
+    test_pipeline_appends_sources_to_report()
     test_run_pipeline_orchestration()
     test_run_pipeline_uncensored_and_no_callback()
     test_empty_topic_rejected()
