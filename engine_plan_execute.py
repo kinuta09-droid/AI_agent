@@ -468,7 +468,7 @@ def _resolve_tool_args(tool_name: str, args_hint: str, task: str,
                         context: list) -> dict:
     """Gemini を使ってツールの引数を具体化する。"""
     if not args_hint and tool_name in (
-        "tool_merge_weekly_reports", "tool_fetch_daily_news",
+        "tool_merge_weekly_reports", "tool_merge_all_weekly_reports", "tool_fetch_daily_news",
         "tool_scan_crypto_market", "tool_audit_predictions",
         "tool_curate_topics",
     ):

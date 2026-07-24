@@ -14,6 +14,38 @@ from lib.lib_shared import (
 )
 from lib.lib_obsidian_cli import run_obsidian_cli
 
+# 週次アーカイブ対象フォルダ設定（Vault相対パス -> 挙動）。
+# 30_Main は既存アーカイブ資産と後方互換のため「フラット + 無印サマリー名」を維持する。
+# それ以外の日次生成フォルダは出所を保持するため 50_Archive/{週}/{label}/ に隔離し、
+# サマリー名にも label 接頭辞を付けてフォルダ間衝突を避ける（[[vault-daily-folders-archiving]]）。
+WEEKLY_ARCHIVE_TARGETS = {
+    "30_Main":          {"archive_sub": False, "label": ""},            # 後方互換フラット
+    "02_News":          {"archive_sub": True,  "label": "02_News"},
+    "03_Crypto":        {"archive_sub": True,  "label": "03_Crypto"},
+    "40_Report/XTrend": {"archive_sub": True,  "label": "40_Report_XTrend"},
+}
+
+# ファイル名に埋まった日付（例 News_2026-07-24 / 2026-07-24_xtrend）を拾う。
+_DATE_IN_NAME = re.compile(r'(\d{4})-(\d{2})-(\d{2})')
+
+
+def _date_of_file(filename: str, file_path: str) -> datetime.datetime:
+    """ファイルの「所属日」を決める。ファイル名の日付を最優先し、無ければ mtime。
+
+    Google Drive 同期は再ダウンロード時に mtime を現在時刻へ書き換えることがあり、
+    mtime だけに頼ると全ファイルが「今週」に見えてアーカイブが空振りする。日次生成物は
+    ファイル名に生成日を持つ（`News_2026-07-24` 等）ため、これをパースする方が堅牢。
+    パース不能な例外ファイルのみ mtime にフォールバックする。
+    """
+    m = _DATE_IN_NAME.search(filename)
+    if m:
+        try:
+            return datetime.datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass  # 13月・32日など不正日付はフォールバックへ
+    return datetime.datetime.fromtimestamp(os.path.getmtime(file_path))
+
+
 def _keyword_hits(keywords: str, max_hits: int = 10) -> list:
     """キーワード検索のコア。Vault全件をスコアリングし上位 max_hits 件を返す。
 
@@ -258,23 +290,35 @@ def tool_update_note(filename: str, append_text: str) -> str:
     except Exception as e:
         return f"Error updating note: {e}"
 
-def tool_merge_weekly_reports() -> str:
-    """30_Main の「完了した過去週」のレポートを、各ファイル自身の週へ振り分けて
-    アーカイブする（週別サマリー生成 + 原本を 50_Archive/{週}/ へ移動）。
+def tool_merge_weekly_reports(source: str = "30_Main") -> str:
+    """1つの日次更新フォルダ (source) の「完了した過去週」のファイルを、各ファイル自身の
+    週へ振り分けてアーカイブする（週別サマリー生成 + 原本を 50_Archive/... へ移動）。
 
-    設計（2026-07-25 根本見直し）:
-    - 旧実装は `(today-mtime).days > 7` で7日超を恒久スキップしていたため、一度
-      取りこぼしたファイルが二度と回収されず 30_Main に滞留した。年齢上限を撤廃し、
-      各ファイルを mtime の ISO週へ振り分けることでバックログが自然にドレインする。
-    - 進行中の「今週」(current_week) のファイルは作業中とみなし 30_Main に残す。
+    引数:
+    - source: 対象フォルダの Vault 相対パス。既定 "30_Main"（後方互換: 引数なし呼び出し）。
+      WEEKLY_ARCHIVE_TARGETS に登録が無いパスも処理可能だが、その場合は 30_Main と同じ
+      フラット挙動（archive_sub=False, label="") にフォールバックする。
+
+    設計:
+    - 週振り分けは _date_of_file（ファイル名の日付優先 / mtime フォールバック）。Google Drive
+      同期が mtime を書き換えても正しい週へ落ちる（[[vault-daily-folders-archiving]]）。
+    - 年齢上限は設けない。取りこぼしても次回実行で自然にドレインする（[[obsidian-archive-backlog]]）。
+    - 進行中の「今週」(current_week) のファイルは作業中とみなし元フォルダに残す。
+    - os.listdir でトップレベルのみ走査（非再帰）。03_Crypto の Audit_Report / Weekly_Report
+      等のサブフォルダは対象外のまま温存される。
     - 既存の週サマリーは上書きせず追記（部分実行/catch-up 再実行で破壊しない）。
     - 移動先に同名が存在したらタイムスタンプ付きにフォールバック（Windows os.rename は
       dst 存在で失敗する。CLAUDE.md の既知パターンに準拠）。
     """
     from collections import defaultdict
 
-    print(f"[Tool] 🧹 Merging Weekly Reports...")
-    target_dir = os.path.join(WORK_DIR, '30_Main')
+    cfg = WEEKLY_ARCHIVE_TARGETS.get(source, {"archive_sub": False, "label": ""})
+    label = cfg["label"]
+    use_sub = cfg["archive_sub"]
+
+    print(f"[Tool] 🧹 Merging Weekly Reports: {source}")
+    # source は '/' 区切りのVault相対パスを含み得る（例 40_Report/XTrend）
+    target_dir = os.path.join(WORK_DIR, *source.split('/'))
     archive_dir = os.path.join(WORK_DIR, '50_Archive')
 
     today = datetime.datetime.now()
@@ -282,7 +326,7 @@ def tool_merge_weekly_reports() -> str:
     summary_dir = os.path.join(archive_dir, 'Summary')
 
     if not os.path.exists(target_dir):
-        return "Error: 30_Main directory not found."
+        return f"Error: source directory not found: {source}"
 
     try:
         os.makedirs(summary_dir, exist_ok=True)
@@ -290,40 +334,43 @@ def tool_merge_weekly_reports() -> str:
         files = [
             f for f in os.listdir(target_dir)
             if f.endswith('.md') and not f.endswith('_Weekly_Summary.md')
+            and os.path.isfile(os.path.join(target_dir, f))  # サブフォルダを除外（非再帰）
         ]
         if not files:
-            return "No files to merge."
+            return f"[{source}] No files to merge."
 
         # 各ファイルを自分の ISO週へ振り分け（今週=進行中は残置）
-        by_week = defaultdict(list)  # week_str -> [(filename, mtime, content), ...]
+        by_week = defaultdict(list)  # week_str -> [(filename, fdate, content), ...]
         for file in files:
             file_path = os.path.join(target_dir, file)
             try:
-                mtime = datetime.datetime.fromtimestamp(os.path.getmtime(file_path))
-                file_week = mtime.strftime('%Y-W%U')
+                fdate = _date_of_file(file, file_path)
+                file_week = fdate.strftime('%Y-W%U')
                 if file_week == current_week:
                     continue  # 進行中の今週は作業領域に残す
 
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
-                by_week[file_week].append((file, mtime, content))
+                by_week[file_week].append((file, fdate, content))
             except Exception as e:
                 print(f"Error reading {file}: {e}")
 
         if not by_week:
-            return f"No completed-week files to archive (current_week {current_week} は残置)."
+            return f"[{source}] No completed-week files to archive (current_week {current_week} は残置)."
 
         total_moved = 0
         weeks_done = []
         for week_str, entries in sorted(by_week.items()):
-            archive_sub_dir = os.path.join(archive_dir, week_str)
+            # 出所保持: 30_Main はフラット、他フォルダは {週}/{label}/ に隔離
+            archive_sub_dir = os.path.join(archive_dir, week_str, label) if use_sub \
+                else os.path.join(archive_dir, week_str)
             os.makedirs(archive_sub_dir, exist_ok=True)
 
             # 先に原本を移動し、実際に移動できたものだけをサマリーへ追記する。
-            # （サマリー追記→移動の順だと移動失敗時に原本が 30_Main に残り、次回
+            # （サマリー追記→移動の順だと移動失敗時に原本が元フォルダに残り、次回
             #  再読込で同じ内容がサマリーに二重追記される。移動を真実の源にする。）
             moved_entries = []
-            for file, mtime, content in entries:
+            for file, fdate, content in entries:
                 src = os.path.join(target_dir, file)
                 dst = os.path.join(archive_sub_dir, file)
                 if os.path.exists(dst):
@@ -332,7 +379,7 @@ def tool_merge_weekly_reports() -> str:
                 try:
                     os.rename(src, dst)
                     total_moved += 1
-                    moved_entries.append((file, mtime, content))
+                    moved_entries.append((file, fdate, content))
                 except Exception as e:
                     print(f"Error moving {file}: {e}")
 
@@ -340,14 +387,18 @@ def tool_merge_weekly_reports() -> str:
                 continue  # この週は1件も移動できなかった → 空サマリーを書かない
 
             # 既存サマリーには追記、無ければヘッダ付きで新規作成
-            summary_path = os.path.join(summary_dir, f"{week_str}_Weekly_Summary.md")
+            # label 接頭辞でフォルダ別サマリーを分離（30_Main は無印で従来ファイル名を維持）
+            summary_name = f"{week_str}_{label}_Weekly_Summary.md" if label \
+                else f"{week_str}_Weekly_Summary.md"
+            summary_path = os.path.join(summary_dir, summary_name)
             block = ""
             if not os.path.exists(summary_path):
-                block += f"# Weekly Summary: {week_str}\n\n"
+                header_label = f" ({source})" if label else ""
+                block += f"# Weekly Summary: {week_str}{header_label}\n\n"
             block += f"<!-- Appended: {today.strftime('%Y-%m-%d %H:%M:%S')} -->\n\n"
-            for file, mtime, content in moved_entries:
+            for file, fdate, content in moved_entries:
                 block += (
-                    f"## Source: [[{file}]] ({mtime.strftime('%Y-%m-%d')})\n\n"
+                    f"## Source: [[{file}]] ({fdate.strftime('%Y-%m-%d')})\n\n"
                     f"{content}\n\n---\n\n"
                 )
             with open(summary_path, 'a', encoding='utf-8') as f:
@@ -356,12 +407,28 @@ def tool_merge_weekly_reports() -> str:
             weeks_done.append(week_str)
 
         return (
-            f"Success: archived {total_moved} files into {len(weeks_done)} week(s): "
-            f"{', '.join(weeks_done)}. current_week {current_week} は 30_Main に残置。"
+            f"[{source}] Success: archived {total_moved} files into {len(weeks_done)} week(s): "
+            f"{', '.join(weeks_done)}. current_week {current_week} は残置。"
         )
 
     except Exception as e:
-        return f"Error merging reports: {e}"
+        return f"[{source}] Error merging reports: {e}"
+
+
+def tool_merge_all_weekly_reports() -> str:
+    """WEEKLY_ARCHIVE_TARGETS の全日次フォルダを順にアーカイブするアグリゲータ。
+
+    スケジューラの週次ジョブ本体。1フォルダで例外が出ても残りを止めず、各結果を集約して返す。
+    ReAct からは引数なしで呼び出せる（engine_plan_execute の no-arg 許可セットに登録）。
+    """
+    print(f"[Tool] 🧹 Merging ALL weekly report folders ({len(WEEKLY_ARCHIVE_TARGETS)})...")
+    lines = []
+    for source in WEEKLY_ARCHIVE_TARGETS:
+        try:
+            lines.append(tool_merge_weekly_reports(source))
+        except Exception as e:
+            lines.append(f"[{source}] Error: {e}")
+    return "\n".join(lines)
 
 def tool_fetch_context(filenames_comma_separated: str) -> str:
     """複数のファイル名をカンマ区切りで指定し、それらの内容をまとめて取得する（AIのコンテキスト用）"""
