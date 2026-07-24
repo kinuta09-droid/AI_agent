@@ -259,65 +259,106 @@ def tool_update_note(filename: str, append_text: str) -> str:
         return f"Error updating note: {e}"
 
 def tool_merge_weekly_reports() -> str:
-    """30_Main内の7日以内のレポートを週次レポートにまとめる"""
+    """30_Main の「完了した過去週」のレポートを、各ファイル自身の週へ振り分けて
+    アーカイブする（週別サマリー生成 + 原本を 50_Archive/{週}/ へ移動）。
+
+    設計（2026-07-25 根本見直し）:
+    - 旧実装は `(today-mtime).days > 7` で7日超を恒久スキップしていたため、一度
+      取りこぼしたファイルが二度と回収されず 30_Main に滞留した。年齢上限を撤廃し、
+      各ファイルを mtime の ISO週へ振り分けることでバックログが自然にドレインする。
+    - 進行中の「今週」(current_week) のファイルは作業中とみなし 30_Main に残す。
+    - 既存の週サマリーは上書きせず追記（部分実行/catch-up 再実行で破壊しない）。
+    - 移動先に同名が存在したらタイムスタンプ付きにフォールバック（Windows os.rename は
+      dst 存在で失敗する。CLAUDE.md の既知パターンに準拠）。
+    """
+    from collections import defaultdict
+
     print(f"[Tool] 🧹 Merging Weekly Reports...")
     target_dir = os.path.join(WORK_DIR, '30_Main')
     archive_dir = os.path.join(WORK_DIR, '50_Archive')
 
     today = datetime.datetime.now()
-    week_str = today.strftime('%Y-W%U') 
-    
-    summary_filename = f"{week_str}_Weekly_Summary.md"
+    current_week = today.strftime('%Y-W%U')
     summary_dir = os.path.join(archive_dir, 'Summary')
-    os.makedirs(summary_dir, exist_ok=True)
-    summary_path = os.path.join(summary_dir, summary_filename)
-    archive_sub_dir = os.path.join(archive_dir, week_str)
 
     if not os.path.exists(target_dir):
         return "Error: 30_Main directory not found."
 
-    merged_content = f"# Weekly Summary: {week_str}\n\nGenerated: {today.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-    files_processed = []
-
     try:
-        os.makedirs(archive_sub_dir, exist_ok=True)
-        files = [f for f in os.listdir(target_dir) if f.endswith('.md')]
-        if summary_filename in files:
-            files.remove(summary_filename)
+        os.makedirs(summary_dir, exist_ok=True)
 
+        files = [
+            f for f in os.listdir(target_dir)
+            if f.endswith('.md') and not f.endswith('_Weekly_Summary.md')
+        ]
         if not files:
             return "No files to merge."
 
+        # 各ファイルを自分の ISO週へ振り分け（今週=進行中は残置）
+        by_week = defaultdict(list)  # week_str -> [(filename, mtime, content), ...]
         for file in files:
             file_path = os.path.join(target_dir, file)
             try:
                 mtime = datetime.datetime.fromtimestamp(os.path.getmtime(file_path))
-                if (today - mtime).days > 7:
-                    continue
+                file_week = mtime.strftime('%Y-W%U')
+                if file_week == current_week:
+                    continue  # 進行中の今週は作業領域に残す
 
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
-
-                merged_content += f"## Source: [[{file}]] ({mtime.strftime('%Y-%m-%d')})\n\n{content}\n\n---\n\n"
-                files_processed.append(file)
+                by_week[file_week].append((file, mtime, content))
             except Exception as e:
                 print(f"Error reading {file}: {e}")
 
-        if not files_processed:
-            return "No recent files found to merge."
+        if not by_week:
+            return f"No completed-week files to archive (current_week {current_week} は残置)."
 
-        with open(summary_path, 'w', encoding='utf-8') as f:
-            f.write(merged_content)
+        total_moved = 0
+        weeks_done = []
+        for week_str, entries in sorted(by_week.items()):
+            archive_sub_dir = os.path.join(archive_dir, week_str)
+            os.makedirs(archive_sub_dir, exist_ok=True)
 
-        for file in files_processed:
-            src = os.path.join(target_dir, file)
-            dst = os.path.join(archive_sub_dir, file)
-            try:
-                os.rename(src, dst)
-            except Exception as e:
-                print(f"Error moving {file}: {e}")
+            # 先に原本を移動し、実際に移動できたものだけをサマリーへ追記する。
+            # （サマリー追記→移動の順だと移動失敗時に原本が 30_Main に残り、次回
+            #  再読込で同じ内容がサマリーに二重追記される。移動を真実の源にする。）
+            moved_entries = []
+            for file, mtime, content in entries:
+                src = os.path.join(target_dir, file)
+                dst = os.path.join(archive_sub_dir, file)
+                if os.path.exists(dst):
+                    base, ext = os.path.splitext(file)
+                    dst = os.path.join(archive_sub_dir, f"{base}_{int(time.time())}{ext}")
+                try:
+                    os.rename(src, dst)
+                    total_moved += 1
+                    moved_entries.append((file, mtime, content))
+                except Exception as e:
+                    print(f"Error moving {file}: {e}")
 
-        return f"Success: Created 50_Archive/Summary/{summary_filename}. Merged {len(files_processed)} files. Originals moved to 50_Archive/{week_str}."
+            if not moved_entries:
+                continue  # この週は1件も移動できなかった → 空サマリーを書かない
+
+            # 既存サマリーには追記、無ければヘッダ付きで新規作成
+            summary_path = os.path.join(summary_dir, f"{week_str}_Weekly_Summary.md")
+            block = ""
+            if not os.path.exists(summary_path):
+                block += f"# Weekly Summary: {week_str}\n\n"
+            block += f"<!-- Appended: {today.strftime('%Y-%m-%d %H:%M:%S')} -->\n\n"
+            for file, mtime, content in moved_entries:
+                block += (
+                    f"## Source: [[{file}]] ({mtime.strftime('%Y-%m-%d')})\n\n"
+                    f"{content}\n\n---\n\n"
+                )
+            with open(summary_path, 'a', encoding='utf-8') as f:
+                f.write(block)
+
+            weeks_done.append(week_str)
+
+        return (
+            f"Success: archived {total_moved} files into {len(weeks_done)} week(s): "
+            f"{', '.join(weeks_done)}. current_week {current_week} は 30_Main に残置。"
+        )
 
     except Exception as e:
         return f"Error merging reports: {e}"

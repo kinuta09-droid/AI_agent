@@ -9,6 +9,7 @@ import time
 import datetime
 import sys
 import os
+import json
 import requests
 import logging
 import threading
@@ -35,6 +36,17 @@ PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_sched
 # 更新停止 = プロセスの機能停止。main.py のスーパーバイザが強制再起動する。
 HEARTBEAT_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "logs", "agent_scheduler.hb")
+
+# Catch-up 状態ファイル: catch_up=True のジョブの「最終成功時刻」を記録する。
+# 起動時に「直近の予定発火を過ぎているのに未実行」の週次ジョブを1回だけ追いかける
+# 判定基準になる (日曜深夜にPCオフで週次アーカイブ/レポートが空振りする問題への対策)。
+# logs/ は gitignore/.claudeignore 済みなのでコミット対象外。
+JOB_STATE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "logs", "scheduler_job_state.json")
+
+# state ファイルの read-modify-write は worker スレッドと catch-up スレッドの
+# 双方から呼ばれ得るため、プロセス内で直列化する。
+_JOB_STATE_LOCK = threading.Lock()
 
 # agent_hello.py と同じディレクトリなので直接 import
 # ツールを直接インポート
@@ -304,6 +316,7 @@ SCHEDULE = [
         "name": "Weekly Crypto Report",
         "func": tool_weekly_crypto_report,
         "weekday": 6,  # 日曜のみ
+        "catch_up": True,  # 起動時に取りこぼしを追いかけ実行
     },
     # Crypto Event Watcher (Phase 2): 15分毎の無料監視。閾値超過時のみ
     # フル分析+Discord通知を自前で行うため silent (15分毎の定型通知はスパム)
@@ -336,12 +349,56 @@ SCHEDULE = [
         "name": "Weekly Archive (30_Main → 50_Archive)",
         "func": tool_merge_weekly_reports,
         "weekday": 6,  # 日曜日のみ (0=月, 6=日)
+        "catch_up": True,  # 起動時に取りこぼしを追いかけ実行
     },
 ]
 
 # ---------------------------------------------------------
 # Main Logic
 # ---------------------------------------------------------
+
+def _load_job_state() -> dict:
+    """catch-up 状態 (ジョブ名 -> 最終成功ISO時刻) を読み込む。
+
+    ファイル無し/JSON破損はスケジューラを止めず {} にフォールバックする。
+    """
+    if not os.path.exists(JOB_STATE_FILE):
+        return {}
+    try:
+        with open(JOB_STATE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.warning(f"Job state 読み込み失敗 ({e}) — 空状態で続行")
+        return {}
+
+
+def _record_job_run(name: str, dt: datetime.datetime) -> None:
+    """ジョブ name の成功時刻を state に記録する (lock 下で read-modify-write)。"""
+    with _JOB_STATE_LOCK:
+        state = _load_job_state()
+        state[name] = dt.isoformat()
+        try:
+            os.makedirs(os.path.dirname(JOB_STATE_FILE), exist_ok=True)
+            with open(JOB_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"Job state 書き込み失敗 ({e}) — catch-up 判定に影響し得る")
+
+
+def _last_scheduled_occurrence(
+    now: datetime.datetime, weekday: int, hh: int, mm: int
+) -> datetime.datetime:
+    """now 以前で最も近い「その曜日・その時刻」の日時を返す純関数。
+
+    例: now=月10:00, weekday=6(日), 23:30 -> 直前の日曜 23:30
+    """
+    target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    candidate = target - datetime.timedelta(days=(now.weekday() - weekday) % 7)
+    if candidate > now:
+        candidate -= datetime.timedelta(days=7)
+    return candidate
+
 
 def _execute_task(task):
     """1タスクを実行する（ワーカースレッド内で完結: 例外処理・通知含む）。
@@ -372,6 +429,11 @@ def _execute_task(task):
                 short_result = result if result else "Done (No output)"
 
             logger.info(f"✅ Completed {task_name}")
+            # catch-up 対象ジョブは成功時刻を記録し、次回起動時の未実行判定の基準にする。
+            # 例外/予算超過時は記録しない = 未実行扱いのまま残し、次回 catch-up で拾える。
+            if task.get("catch_up"):
+                _record_job_run(task_name, datetime.datetime.now())
+
             if not silent:
                 send_discord_notification(f"✅ **Task Completed**: {task_name}\n>>> {short_result}")
 
@@ -391,6 +453,55 @@ def _execute_task(task):
         task["_lock"].release()
 
 
+def _run_catch_up():
+    """起動時、未実行の週次ジョブ (catch_up=True) を1回だけ追いかけ実行する。
+
+    「直近の予定発火時刻」より最終成功が古ければ未実行とみなして発火。
+    初回ブート (記録なし) は「取りこぼした」判断ができないので、状態を now で
+    シードするだけで発火はしない (想定外の一斉実行を回避)。
+    複数週の取りこぼしも 1回に集約する (履歴のリプレイではなく現状への追いつき)。
+    """
+    now = datetime.datetime.now()
+    state = _load_job_state()
+
+    for task in SCHEDULE:
+        if not task.get("catch_up"):
+            continue
+        # catch_up は日次 HH:MM + weekday の週次ジョブを対象にする
+        when = task.get("time")
+        weekday = task.get("weekday")
+        if when is None or weekday is None:
+            logger.warning(
+                f"catch_up 指定だが time/weekday が無い: {task['name']} — スキップ")
+            continue
+        name = task["name"]
+        hh, mm = (int(x) for x in when.split(":"))
+        occurrence = _last_scheduled_occurrence(now, weekday, hh, mm)
+
+        last_run_iso = state.get(name)
+        if not last_run_iso:
+            # 初回ブート: 履歴が無いので発火せず now でシードのみ
+            _record_job_run(name, now)
+            logger.info(f"🌱 catch-up seed: {name} (履歴なし — 今回は発火しない)")
+            continue
+
+        try:
+            last_run = datetime.datetime.fromisoformat(last_run_iso)
+        except ValueError:
+            _record_job_run(name, now)
+            logger.warning(f"🌱 catch-up seed: {name} (last_run 解析不能 — 再シード)")
+            continue
+
+        if last_run < occurrence:
+            logger.info(
+                f"⏰ catch-up 発火: {name} "
+                f"(予定 {occurrence:%Y-%m-%d %H:%M} > 前回 {last_run:%Y-%m-%d %H:%M})")
+            threading.Thread(
+                target=_execute_task, args=(task,), daemon=True).start()
+        else:
+            logger.info(f"✔️ catch-up 不要: {name} (前回 {last_run:%Y-%m-%d %H:%M} は最新)")
+
+
 def run_scheduler():
     if not _acquire_pid_lock(PID_FILE):
         print(f"[Scheduler] ⚠️ Another scheduler instance is already running "
@@ -404,6 +515,15 @@ def run_scheduler():
             task["_lock"] = threading.Lock()
             when = task.get("time") or f"every {task['every_minutes']}min"
             logger.info(f" - {when}: {task['name']}")
+
+        # 起動時キャッチアップ: 未実行の週次ジョブを1回だけ追いかける
+        # (日曜深夜PCオフで空振りした週次アーカイブ/レポートの取りこぼし対策)。
+        # catch-up は補助機能。ここで失敗してもスケジューラ本体(メインループ/
+        # heartbeat)は必ず起動させる。例外を飲まないと watchdog 再起動ループに陥る。
+        try:
+            _run_catch_up()
+        except Exception as e:
+            logger.error(f"catch-up 実行失敗 (本体は継続): {e}\n{traceback.format_exc()}")
 
         # 最後に実行した分を記録（重複実行防止用）
         last_run_minute = ""
