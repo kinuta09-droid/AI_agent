@@ -96,10 +96,12 @@ def _summarize_gemini(text: str, original_name: str) -> str:
 
     # Tier2-b: 独自clientはコストガード適用外になるため、日次上限ラップ済みの
     # 共有clientへ切替 (遅延import: このツールはGemini不使用の経路もあるため)
-    from lib.lib_shared import client
-    
-    # モデルの候補（安定性とクォータを考慮し、最新の 2.5-flash を最優先にする）
-    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash"]
+    # 施策③ Phase 4a: 主モデルを直書き(2.5-flash)から MODEL_NAME_HEAVY(.envで世代交代可) 起点へ。
+    # 2.0-flash はクォータ超過時の別系統フォールバックとして意図的に据え置き。
+    from lib.lib_shared import client, MODEL_NAME_HEAVY
+
+    # モデルの候補（HEAVY を最優先。429 等でダメなら別系統へフォールバック）
+    models_to_try = [MODEL_NAME_HEAVY, "gemini-2.0-flash"]
     
     prompt = f"""
     ファイル名: {original_name}

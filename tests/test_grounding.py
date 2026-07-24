@@ -1,21 +1,18 @@
 import os
 import sys
-from dotenv import load_dotenv
-from google import genai
 from google.genai import types
 
 # Windowsコンソールでの文字化け防止
 sys.stdout.reconfigure(encoding='utf-8')
 
-load_dotenv('C:\\AI_agent\\.env')
-api_key = os.getenv("GOOGLE_API_KEY")
+# ルートを sys.path に追加して lib を import 可能にする
+root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 
-if not api_key:
-    print("Error: GOOGLE_API_KEY not found.")
-    sys.exit(1)
-
-client = genai.Client(api_key=api_key, http_options=types.HttpOptions(api_version="v1beta"))
-MODEL_NAME = 'gemini-3.1-flash-lite-preview'
+# 施策③ Phase 4a: 独自 client + MODEL_NAME 直書き(3.1-preview)を廃し、共有 client /
+# MODEL_NAME(LIGHT・.envで世代交代可) 経由へ。grounding をライブと同一モデル・clientで検証。
+from lib.lib_shared import client, MODEL_NAME
 
 print(f"Testing Grounding with {MODEL_NAME}...")
 
