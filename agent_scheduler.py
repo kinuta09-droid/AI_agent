@@ -55,7 +55,7 @@ from tools.tool_crypto import tool_scan_crypto_market, tool_analyze_crypto, tool
 from tools.tool_crypto_watcher import tool_crypto_watch
 from tools.tool_crypto_stats import tool_weekly_crypto_report
 from engine_plan_execute import generate_performance_dashboard
-from tools.tool_obsidian import tool_merge_weekly_reports
+from tools.tool_obsidian import tool_merge_all_weekly_reports
 
 # Vault Semantic Index (optional — import失敗でスケジューラ全体を壊さない)
 try:
@@ -346,8 +346,8 @@ SCHEDULE = [
     },
     {
         "time": "23:30",
-        "name": "Weekly Archive (30_Main → 50_Archive)",
-        "func": tool_merge_weekly_reports,
+        "name": "Weekly Archive (daily folders → 50_Archive)",
+        "func": tool_merge_all_weekly_reports,  # 30_Main + 02_News + 03_Crypto + 40_Report/XTrend
         "weekday": 6,  # 日曜日のみ (0=月, 6=日)
         "catch_up": True,  # 起動時に取りこぼしを追いかけ実行
     },
