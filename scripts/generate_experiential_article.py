@@ -20,18 +20,18 @@ if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+
+# 施策③ Phase 4a: 独自 genai.Client + 独自 env MODEL_NAME(既定3.1-preview) を廃止し、
+# 共有 client / MODEL_NAME(LIGHT・.envで世代交代可) 経由に統一。
+# 効果: Tier2-b 日次コストガード網羅 + モデル切替を .env 1行で追従（直書き排除）。
+from lib.lib_shared import client, MODEL_NAME
 
 load_dotenv(os.path.join(root_dir, '.env'))
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-3.1-flash-lite-preview")
 
 if not GOOGLE_API_KEY:
     print("Error: GOOGLE_API_KEY not found in .env")
     sys.exit(1)
-
-client = genai.Client(api_key=GOOGLE_API_KEY)
 
 def extract_points_and_questions(draft_text: str) -> list:
     """下書きから深掘りすべき要点とユーザーへの質問を生成する"""
