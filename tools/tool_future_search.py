@@ -384,6 +384,27 @@ def _multi_lens_analysis(topic: str, sources: list, user_context: str,
     return (response.text or "").strip()
 
 
+def _format_sources_section(sources: list) -> str:
+    """本文の [SOURCE N] 参照に対応する参考ソース一覧を生成する (純粋関数, I/Oなし)。
+
+    LLM に一覧生成を任せると URL 捏造やソース番号ズレのリスクがあるため、
+    Tavily が返した実データ (title/url) からコード側で機械的に組み立てる。
+    番号は _build_multi_lens_prompt と同じ「enumerate + 1」で完全に一致させる。
+    URL が欠落しているソースはリンク化せずタイトルのみ表示する。
+    """
+    if not sources:
+        return ""
+    lines = ["## 参考ソース"]
+    for i, s in enumerate(sources):
+        title = (s.get("title") or "").strip() or "(タイトルなし)"
+        url = (s.get("url") or "").strip()
+        if url:
+            lines.append(f"- **[SOURCE {i + 1}]** [{title}]({url})")
+        else:
+            lines.append(f"- **[SOURCE {i + 1}]** {title}")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------
 # Step 4.5: Load user context (Profile + Interests)
 # ---------------------------------------------------------
@@ -754,6 +775,13 @@ def run_future_search(topic: str = "", depth: str = DEFAULT_DEPTH,
     # Step 4: Gemini 10視点マルチレンズ推論
     _progress(f"🧠 {len(AGENT_PERSONAS)}視点で多角的に分析中...")
     report = _multi_lens_analysis(topic, sources, user_context, depth)
+
+    # Step 4.5: 本文の [SOURCE N] 参照に対応する参考ソース一覧をコード側で付与。
+    # URL は Tavily の実データから機械生成するため捏造ゼロ。これにより
+    # 従来「[SOURCE N] だけでリンク先が辿れない」空参照問題を解消する。
+    sources_section = _format_sources_section(sources)
+    if sources_section:
+        report = report + "\n\n" + sources_section
 
     # Step 5: 幸福最大化アドバイス (個人化)
     _progress("💛 幸福最大化アドバイスを生成中...")
