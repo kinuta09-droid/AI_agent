@@ -11,6 +11,7 @@ import re
 import io
 import asyncio
 from lib.lib_obsidian_utils import get_obsidian_uri, get_obsidian_uri_from_link
+from lib.engagement_log import log_event
 from lib.pid_guard import acquire as _acquire_pid_lock, release as _release_pid_lock, read_owner as _read_pid_owner
 from lib import watchdog as _watchdog
 import datetime
@@ -418,8 +419,26 @@ class VoiceSession:
 # Helpers
 # ---------------------------------------------------------
 
-def _log_to_daily_note(log_type: str, user_input: str, ai_output: str = ""):
-    """Obsidian 50_Archive/Chatlog に Discord ログを保存する。"""
+def _log_to_daily_note(log_type: str, user_input: str, ai_output: str = "",
+                       log_engagement: bool = True):
+    """Obsidian 50_Archive/Chatlog に Discord ログを保存する。
+
+    log_engagement=True のとき、同じ入力を engagement.jsonl にも query として
+    記録する（Phase 1: 自由入力＝最も強い顕示選好シグナル）。Chatlog と同じ
+    文字列を使うので、過去分のバックフィルとライブ記録が完全に同形式になる。
+    既に click 等で記録済みの呼び出し元だけが False を渡す。
+    """
+    if log_engagement and log_type in ("chat", "command"):
+        command, _, arg = user_input.partition(" ")
+        log_event(
+            "query", user_input, "discord",
+            meta={
+                "log_type": log_type,
+                "command": command if command.startswith("/") else "",
+                "has_arg": bool(arg.strip()) if command.startswith("/") else True,
+            },
+        )
+
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     time_str = datetime.datetime.now().strftime("%H:%M")
     # Save to 50_Archive/Chatlog

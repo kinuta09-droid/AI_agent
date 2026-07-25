@@ -13,6 +13,9 @@ from tools.tool_curator import (
     fetch_external_trends,
 )
 
+# エンゲージメント計測 (Phase 1: 収集のみ)。提案ロジックには一切影響しない。
+from lib.engagement_log import log_event, log_impressions
+
 # ---------------------------------------------------------
 # Constants & Helpers (Originally from bot_discord.py)
 # ---------------------------------------------------------
@@ -96,6 +99,15 @@ class CurateView(discord.ui.View):
         self.topics = suggestions.get("topics", [])
         self.ab_question = suggestions.get("ab_question", {})
 
+        # 提示した候補を impression として記録する（Phase 1）。
+        # View 生成は「初回提案」と「再提案」の2経路あるが、どちらも __init__ を
+        # 通るためここ1箇所で両方カバーできる。返り値の group_id を click/reject に
+        # 引き継ぐことで「3件見せて1件選んだ」= CTR が後から復元できる。
+        self.group_id = log_impressions(
+            self.topics[:3], "curate",
+            meta={"reject_count": reject_count},
+        )
+
         # トピックボタン（Row 0）
         for i, topic in enumerate(self.topics[:3]):
             branch = topic.get("branch", "")
@@ -173,6 +185,19 @@ class CurateView(discord.ui.View):
 
             branch = topic.get("branch", "")
             icon = _BRANCH_ICON.get(branch, "🔍")
+
+            # クリック = 正例。同 group_id なので未選択の2件は自動的に負例になる。
+            log_event(
+                "click", topic["title"], "curate",
+                group_id=self.group_id,
+                meta={
+                    "branch": branch,
+                    "index": index,
+                    "source_note": topic.get("source_note", ""),
+                    "reject_count": self.reject_count,
+                },
+            )
+
             await interaction.followup.send(
                 f"{icon} **{topic['title']}** を調査中..."
             )
@@ -185,8 +210,11 @@ class CurateView(discord.ui.View):
                 topic.get("reasoning", ""),
             )
             if _log_to_daily_note:
+                # log_engagement=False: このクリックは既に click として記録済みで、
+                # query として二重計上するとユーザーの自由入力と混ざる。
                 await asyncio.to_thread(
-                    _log_to_daily_note, "command", f"/curate -> {topic['title']}", result
+                    _log_to_daily_note, "command", f"/curate -> {topic['title']}", result,
+                    False,
                 )
             
             view = _create_obsidian_view(result) if _create_obsidian_view else None
@@ -212,6 +240,15 @@ class CurateView(discord.ui.View):
             question = self.ab_question.get("question", "?")
 
             await interaction.response.defer(ephemeral=True)
+            log_event(
+                "ab_answer", answer, "curate",
+                group_id=self.group_id,
+                meta={
+                    "question": question,
+                    "option": option_key,
+                    "type": self.ab_question.get("type", "normal"),
+                },
+            )
             await asyncio.to_thread(update_user_profile, question, answer)
             await interaction.followup.send(
                 f"✅ 好みを記録しました: {answer}", ephemeral=True
@@ -238,6 +275,15 @@ class CurateView(discord.ui.View):
         for t in self.topics:
             new_rejected.append(t.get("title", ""))
         new_reject_count = self.reject_count + 1
+
+        # 明示的な拒否は impression(-1) より強い負例なので別イベントで残す。
+        # これまで CurateView のメモリ上にしか無く timeout=300秒で消えていた情報。
+        for t in self.topics[:3]:
+            log_event(
+                "reject", t.get("title", ""), "curate",
+                group_id=self.group_id,
+                meta={"branch": t.get("branch", ""), "reject_count": self.reject_count},
+            )
 
         for item in self.children:
             item.disabled = True
