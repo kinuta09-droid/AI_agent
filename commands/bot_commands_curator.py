@@ -343,6 +343,12 @@ class SetupView(discord.ui.View):
         self.user_id = user_id
         self.topics = suggestions.get("topics", [])
 
+        # CurateView と同じく、提示した選択肢を impression として記録する。
+        # ドロップダウンは最大25件しか出せないので、実際に見せた分だけ残す。
+        self.group_id = log_impressions(
+            self.topics[:25], "setup", meta={"mode": "setup"},
+        )
+
         options = []
         for i, topic in enumerate(self.topics[:25]):
             options.append(discord.SelectOption(
@@ -371,6 +377,16 @@ class SetupView(discord.ui.View):
         selected_topics = [
             self.topics[i] for i in selected_indices if i < len(self.topics)
         ]
+
+        # 選ばれた分が click、選ばれなかった分は impression のまま負例になる
+        for i in selected_indices:
+            if i < len(self.topics):
+                topic = self.topics[i]
+                log_event(
+                    "click", topic.get("title", ""), "setup",
+                    group_id=self.group_id,
+                    meta={"branch": topic.get("branch", ""), "index": i},
+                )
 
         await interaction.response.defer()
 
@@ -402,6 +418,42 @@ class SetupView(discord.ui.View):
                 _log_to_daily_note, "command", f"/setup -> {names}", summary
             )
         
+async def cmd_setup(interaction: discord.Interaction):
+    """初回セットアップ: トピック10〜15件を提案し、ドロップダウンで一括選択させる。
+
+    2026-02-28 の commands/ 分割時に bot_discord.py 側の実装が失われていたため、
+    初期実装 (7b6b96f) と同じ挙動でこちらに復元した。
+    """
+    await interaction.response.defer()
+
+    try:
+        context = await asyncio.to_thread(read_main_context)
+        suggestions = await asyncio.to_thread(
+            get_curation_suggestions, context, "setup"
+        )
+
+        topics = suggestions.get("topics", [])
+        if not topics:
+            await interaction.followup.send("トピック提案の生成に失敗しました。")
+            return
+
+        embed = discord.Embed(
+            title="🚀 Antigravity Setup -- ナレッジベース初期構築",
+            description=(
+                f"あなたの興味に基づいて **{len(topics)}件** のトピックを生成しました。\n"
+                "下のドロップダウンから気になるトピックを選んでください（最大10件）。\n"
+                "選択したトピックについてAIが調査し、ナレッジノートを自動作成します。"
+            ),
+            color=0x2ECC71,
+        )
+
+        view = SetupView(suggestions, interaction.user.id)
+        await interaction.followup.send(embed=embed, view=view)
+
+    except Exception as e:
+        await interaction.followup.send(f"Error: {e}")
+
+
 async def cmd_topic(interaction: discord.Interaction, query: str):
     """特定のトピックについて調査しノートを作成する"""
     await interaction.response.defer()
