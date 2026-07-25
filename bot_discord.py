@@ -517,8 +517,12 @@ async def _dispatch_curate(interaction: discord.Interaction, query: str):
         if not topics:
             await interaction.followup.send("トピック提案の生成に失敗しました。")
             return
-        embed = _build_curate_embed(suggestions)
-        view = CurateView(suggestions, interaction.user.id, context=context)
+        # commands/ 分割時にこの2つは bot_commands_curator へ移動したが、
+        # ここの参照が残されて NameError になっていた (2026-07-25 修正)。
+        embed = bot_commands_curator._build_curate_embed(suggestions)
+        view = bot_commands_curator.CurateView(
+            suggestions, interaction.user.id, context=context
+        )
         await interaction.followup.send(embed=embed, view=view)
     except Exception as e:
         await interaction.followup.send(f"Error: {e}")
