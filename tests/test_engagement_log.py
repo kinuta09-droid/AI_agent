@@ -18,6 +18,7 @@ if _PROJECT_ROOT not in sys.path:
 from lib.engagement_log import (
     log_event, log_impressions, read_events, summarize,
     snapshot_open_files, diff_open_files, make_src_id, existing_src_ids,
+    parse_command_meta,
 )
 
 _PASS = []
@@ -345,6 +346,120 @@ def test_backfill():
 
         check("Chatlog ディレクトリ不在でも落ちない",
               collect_chatlog_events(os.path.join(tmp, "nope")) == [])
+
+        # ライブ記録が始まった後の Chatlog は取り込まない (discord と二重計上になる)
+        live_log = os.path.join(tmp, "live.jsonl")
+        live_state = os.path.join(tmp, "live_state.json")
+        log_event("query", "/agent 介護業界のDXについて教えて", "discord",
+                  ts="2026-07-24T00:44:10", log_path=live_log)
+        backfill(vault, live_log, live_state)
+        chatlog_queries = [e for e in read_events(log_path=live_log)
+                           if e["event"] == "query" and e["source"] == "chatlog"]
+        items = {e["item"] for e in chatlog_queries}
+        check("ライブ開始以降の Chatlog は取り込まない",
+              "/agent 介護業界のDXについて教えて" not in items, str(items))
+        check("ライブ開始以降の3件が全て除外される",
+              len(chatlog_queries) == 0, str(items))
+
+        # ライブ記録が無ければ全期間が対象 (初回バックフィル)
+        fresh_log = os.path.join(tmp, "fresh.jsonl")
+        backfill(vault, fresh_log, os.path.join(tmp, "fresh_state.json"))
+        fresh_queries = [e for e in read_events(log_path=fresh_log)
+                         if e["event"] == "query"]
+        check("ライブ記録が無ければ全期間を取り込む",
+              len(fresh_queries) == 3, str(len(fresh_queries)))
+
+        # 実測 open が入った後にバックフィルを再実行しても seed し直さない
+        # (src_id を持たない実測イベントとは突合できず二重計上になるため)
+        _write_workspace(vault, ["新しく開いたノート.md", "01_Daily/x.md"])
+        snapshot_open_files(vault, log_path, state_path)
+        before = len(read_events(log_path=log_path))
+        backfill(vault, log_path, state_path)
+        check("実測 open がある状態では seed し直さない",
+              len(read_events(log_path=log_path)) == before,
+              f"{len(read_events(log_path=log_path))} vs {before}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------
+# 8. /grill 指摘の回帰テスト
+# ---------------------------------------------------------
+
+def test_grill_regressions():
+    print("\n[8] /grill 指摘の回帰")
+
+    # (1) parse_command_meta: ライブとバックフィルで meta を共有する
+    m = parse_command_meta("/crypto BTC/USDT", "command")
+    check("スラッシュコマンドを分離", m["command"] == "/crypto", str(m))
+    check("引数ありを検出", m["has_arg"] is True, str(m))
+    m = parse_command_meta("/news", "command")
+    check("引数なしを検出", m["has_arg"] is False, str(m))
+    m = parse_command_meta("今日のニュース教えて", "chat")
+    check("自由文は command 空・has_arg True",
+          m["command"] == "" and m["has_arg"] is True, str(m))
+    m = parse_command_meta("/curate   ", "command")
+    check("空白のみの引数は引数なし", m["has_arg"] is False, str(m))
+
+    tmp = tempfile.mkdtemp()
+    try:
+        # (2) 追記に失敗したら状態ファイルを進めない (open の取りこぼし防止)
+        vault = os.path.join(tmp, "vault")
+        _write_workspace(vault, ["a.md", "b.md"])
+        state_path = os.path.join(tmp, "state.json")
+        blocker = os.path.join(tmp, "blocker")
+        with open(blocker, "w", encoding="utf-8") as f:
+            f.write("x")
+        bad_log = os.path.join(blocker, "logs", "engagement.jsonl")
+
+        msg = snapshot_open_files(vault, bad_log, state_path)
+        check("追記失敗を戻り値で報告", "失敗" in msg, msg)
+        check("失敗時は状態ファイルを作らない", not os.path.exists(state_path))
+
+        # 復旧後に同じ差分を取りこぼさず記録できる
+        good_log = os.path.join(tmp, "engagement.jsonl")
+        snapshot_open_files(vault, good_log, state_path)
+        check("復旧後に差分を再検出する",
+              len(read_events(log_path=good_log)) == 2,
+              str(len(read_events(log_path=good_log))))
+
+        # (3) lastOpenFiles に文字列以外が混ざっても落ちない
+        vault2 = os.path.join(tmp, "vault2")
+        os.makedirs(os.path.join(vault2, ".obsidian"))
+        with open(os.path.join(vault2, ".obsidian", "workspace.json"),
+                  "w", encoding="utf-8") as f:
+            f.write('{"lastOpenFiles": ["ok.md", 123, null]}')
+        log2 = os.path.join(tmp, "e2.jsonl")
+        try:
+            snapshot_open_files(vault2, log2, os.path.join(tmp, "s2.json"))
+            check("型崩れした lastOpenFiles でも例外を出さない", True)
+        except Exception as e:
+            check("型崩れした lastOpenFiles でも例外を出さない", False,
+                  f"{type(e).__name__}: {e}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_backfill_meta_parity():
+    print("\n[9] ライブとバックフィルの meta 一致")
+    from scripts.backfill_engagement import collect_chatlog_events
+
+    tmp = tempfile.mkdtemp()
+    try:
+        chatlog_dir = os.path.join(tmp, "Chatlog")
+        os.makedirs(chatlog_dir)
+        with open(os.path.join(chatlog_dir, "2026-07-24.md"), "w", encoding="utf-8") as f:
+            f.write(CHATLOG_SAMPLE)
+
+        entries = collect_chatlog_events(chatlog_dir)
+        by_item = {e["item"]: e["meta"] for e in entries}
+
+        for text, log_type in [("/agent 介護業界のDXについて教えて", "command"),
+                               ("/crypto BTC/USDT", "command"),
+                               ("今日のニュースまとめて", "chat")]:
+            check(f"meta 一致: {text[:20]}",
+                  by_item.get(text) == parse_command_meta(text, log_type),
+                  f"{by_item.get(text)} != {parse_command_meta(text, log_type)}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -358,6 +473,8 @@ if __name__ == "__main__":
     test_summarize()
     test_days_filter_and_src_id()
     test_backfill()
+    test_grill_regressions()
+    test_backfill_meta_parity()
 
     print(f"\n=== 結果: {len(_PASS)} passed / {len(_FAIL)} failed ===")
     if _FAIL:

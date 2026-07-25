@@ -11,7 +11,7 @@ import re
 import io
 import asyncio
 from lib.lib_obsidian_utils import get_obsidian_uri, get_obsidian_uri_from_link
-from lib.engagement_log import log_event
+from lib.engagement_log import log_event, parse_command_meta
 from lib.pid_guard import acquire as _acquire_pid_lock, release as _release_pid_lock, read_owner as _read_pid_owner
 from lib import watchdog as _watchdog
 import datetime
@@ -429,14 +429,9 @@ def _log_to_daily_note(log_type: str, user_input: str, ai_output: str = "",
     既に click 等で記録済みの呼び出し元だけが False を渡す。
     """
     if log_engagement and log_type in ("chat", "command"):
-        command, _, arg = user_input.partition(" ")
         log_event(
             "query", user_input, "discord",
-            meta={
-                "log_type": log_type,
-                "command": command if command.startswith("/") else "",
-                "has_arg": bool(arg.strip()) if command.startswith("/") else True,
-            },
+            meta=parse_command_meta(user_input, log_type),
         )
 
     today = datetime.datetime.now().strftime("%Y-%m-%d")

@@ -414,8 +414,11 @@ class SetupView(discord.ui.View):
 
         summary = "\n".join(results)
         if _log_to_daily_note:
+            # /curate と同じ理由で log_engagement=False: 選択は既に click として
+            # 記録済みで、query として二重計上するとユーザーの自由入力と混ざる。
             await asyncio.to_thread(
-                _log_to_daily_note, "command", f"/setup -> {names}", summary
+                _log_to_daily_note, "command", f"/setup -> {names}", summary,
+                False,
             )
         
 async def cmd_setup(interaction: discord.Interaction):

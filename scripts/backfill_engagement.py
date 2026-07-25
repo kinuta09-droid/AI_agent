@@ -29,7 +29,7 @@ if _PROJECT_ROOT not in sys.path:
 from lib.engagement_log import (
     LOG_PATH, OPEN_STATE_PATH,
     build_entry, log_events, make_src_id, existing_src_ids,
-    snapshot_open_files,
+    parse_command_meta, read_events, snapshot_open_files,
 )
 
 # 「## 🤖 Discord Command (00:44)」「## 💬 Discord Chat (01:12)」から時刻を拾う
@@ -51,8 +51,14 @@ NOTE_TARGETS = [
 # 1. Chatlog → query
 # ---------------------------------------------------------
 
-def collect_chatlog_events(chatlog_dir: str) -> list:
-    """Chatlog の Command / User 行を query イベントに変換する。"""
+def collect_chatlog_events(chatlog_dir: str, cutoff_ts: str = "") -> list:
+    """Chatlog の Command / User 行を query イベントに変換する。
+
+    cutoff_ts 以降のエントリは除外する。ライブ記録 (source=discord) が
+    始まった後の Chatlog を取り込むと、同じ操作が discord と chatlog の
+    2件になるため。ライブ側は src_id を持たず突合できないので、
+    「ライブが始まった時刻より前」だけをバックフィルの担当範囲とする。
+    """
     entries = []
     if not os.path.isdir(chatlog_dir):
         return entries
@@ -92,16 +98,13 @@ def collect_chatlog_events(chatlog_dir: str) -> list:
                 continue
 
             log_type = "command" if cm else "chat"
-            command, _, arg = text.partition(" ")
-            is_slash = command.startswith("/")
             ts = f"{date_str}T{current_time}:00"
+            if cutoff_ts and ts >= cutoff_ts:  # ISO 文字列は辞書順=時系列順
+                continue
             entries.append(build_entry(
                 "query", text, "chatlog",
-                meta={
-                    "log_type": log_type,
-                    "command": command if is_slash else "",
-                    "has_arg": bool(arg.strip()) if is_slash else True,
-                },
+                # ライブ記録と同じ関数で meta を作る (二重実装を避ける)
+                meta=parse_command_meta(text, log_type),
                 backfill=True,
                 ts=ts,
                 src_id=make_src_id("chatlog", text, ts),
@@ -168,11 +171,18 @@ def collect_note_events(vault_root: str) -> list:
 # 3. lastOpenFiles → open (seed)
 # ---------------------------------------------------------
 
-def collect_open_seed(vault_root: str) -> list:
+def collect_open_seed(vault_root: str, log_path: str = LOG_PATH) -> list:
     """現在の lastOpenFiles(46件ローリング) を初回 open として取り込む。
 
     実際に開かれた時刻は残っていないため ts は現在時刻・approx_ts=true を付ける。
+
+    既に open イベントがある場合は何もしない: 2回目以降のシードは、
+    スケジューラが実測で記録した open と同じファイルを approx_ts で
+    二重計上してしまう (src_id が無い実測イベントとは突合できないため)。
     """
+    if any(e.get("event") == "open" for e in read_events(log_path=log_path)):
+        return []
+
     ws_path = os.path.join(vault_root, ".obsidian", "workspace.json")
     try:
         with open(ws_path, encoding="utf-8") as f:
@@ -198,18 +208,33 @@ def collect_open_seed(vault_root: str) -> list:
 # Runner
 # ---------------------------------------------------------
 
+def _live_query_cutoff(log_path: str) -> str:
+    """ライブ記録 (source=discord) の最初の query の時刻を分単位で返す。
+
+    まだライブ記録が無ければ空文字 (= Chatlog を全期間バックフィルしてよい)。
+    """
+    live = [e["ts"] for e in read_events(log_path=log_path)
+            if e.get("event") == "query" and e.get("source") == "discord"]
+    if not live:
+        return ""
+    return min(live)[:16] + ":00"  # 分単位に丸める (Chatlog の解像度に合わせる)
+
+
 def backfill(vault_root: str, log_path: str = LOG_PATH,
              state_path: str = OPEN_STATE_PATH, dry_run: bool = False) -> str:
     chatlog_dir = os.path.join(vault_root, "50_Archive", "Chatlog")
+    cutoff = _live_query_cutoff(log_path)
 
     groups = [
-        ("query (Chatlog)", collect_chatlog_events(chatlog_dir)),
+        ("query (Chatlog)", collect_chatlog_events(chatlog_dir, cutoff)),
         ("note_created (Vault)", collect_note_events(vault_root)),
-        ("open (lastOpenFiles seed)", collect_open_seed(vault_root)),
+        ("open (lastOpenFiles seed)", collect_open_seed(vault_root, log_path)),
     ]
 
     known = existing_src_ids(log_path=log_path)
     lines = ["## Backfill" + (" (dry-run)" if dry_run else "")]
+    if cutoff:
+        lines.append(f"- ライブ記録開始 {cutoff} 以降の Chatlog は対象外 (二重計上防止)")
     to_write = []
 
     for label, entries in groups:

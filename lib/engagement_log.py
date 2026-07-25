@@ -108,7 +108,9 @@ def _append_lines(entries: list, log_path: str) -> bool:
     if not entries:
         return True
     try:
-        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        directory = os.path.dirname(log_path)
+        if directory:  # 相対ファイル名だけ渡された場合 makedirs("") は失敗する
+            os.makedirs(directory, exist_ok=True)
         payload = "".join(
             json.dumps(e, ensure_ascii=False) + "\n" for e in entries
         )
@@ -125,6 +127,24 @@ def _append_lines(entries: list, log_path: str) -> bool:
         return True
     except Exception:
         return False  # ログ失敗で呼び出し元を止めない
+
+
+def parse_command_meta(text: str, log_type: str = "command") -> dict:
+    """Discord の入力文字列から query イベントの meta を組み立てる。
+
+    ライブ記録 (bot_discord._log_to_daily_note) とバックフィル
+    (scripts/backfill_engagement) の両方から呼ぶこと。ここが二重実装だと
+    「同じ入力なのに meta が違う」データが混ざり、Phase 2 の学習が壊れる。
+    """
+    command, _, arg = text.partition(" ")
+    is_slash = command.startswith("/")
+    return {
+        "log_type": log_type,
+        "command": command if is_slash else "",
+        # スラッシュコマンドは引数の有無で嗜好シグナルの強さが変わる
+        # (/crypto BTC は具体的、/news は定型)。自由文は常に引数ありとみなす。
+        "has_arg": bool(arg.strip()) if is_slash else True,
+    }
 
 
 def log_events(entries: list, log_path: str = LOG_PATH) -> bool:
@@ -244,6 +264,7 @@ def snapshot_open_files(vault_root: str = None, log_path: str = LOG_PATH,
     if not isinstance(current, list):
         return "Engagement Snapshot: skipped (lastOpenFiles が不正な形式)"
 
+    current = [str(p) for p in current]  # workspace.json 側の型崩れで落ちないように
     previous = _load_open_state(state_path)
     opened = [] if seed_only else diff_open_files(current, previous)
 
@@ -251,7 +272,11 @@ def snapshot_open_files(vault_root: str = None, log_path: str = LOG_PATH,
         build_entry("open", p, "obsidian", meta={"ext": os.path.splitext(p)[1]})
         for p in opened
     ]
-    _append_lines(entries, log_path)
+    if not _append_lines(entries, log_path):
+        # 追記に失敗した状態で状態ファイルを進めると、この差分は永久に
+        # 再検出されず取りこぼす。状態は据え置き、次回に再試行させる。
+        return f"Engagement Snapshot: 追記に失敗 ({len(opened)}件) — 状態を更新せず次回再試行"
+
     _save_open_state(state_path, current)
 
     if seed_only:
