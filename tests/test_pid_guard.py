@@ -15,6 +15,7 @@ import sys
 import shutil
 import tempfile
 import threading
+import time
 
 sys.stdout.reconfigure(encoding='utf-8')
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -22,10 +23,16 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from lib import pid_guard
-from lib.pid_guard import acquire, release, read_owner
+from lib.pid_guard import (
+    acquire, release, read_owner, read_record, boot_id, is_previous_boot,
+)
 
 _ALWAYS_ALIVE = lambda pid: True
 _ALWAYS_DEAD = lambda pid: False
+
+# ブート ID を固定してテストする (実測値に依存させない)。
+_BOOT_NOW = 1_000_000.0
+_BOOT_PREV = _BOOT_NOW - 86_400   # 1日前に起動していた前ブート
 
 
 class _TempLock:
@@ -118,6 +125,112 @@ def test_release_allows_next_acquire():
 
 
 # ---------------------------------------------------------
+# 再起動またぎ (PC 再起動後に Bot が上がらない障害の回帰テスト)
+# ---------------------------------------------------------
+
+def test_boot_id_is_stable_within_a_boot():
+    """同一ブート中の boot_id は (実測でも) ほぼ一定であること。"""
+    first = boot_id()
+    assert first is not None, "Windows/Linux では取得できるはず"
+    time.sleep(0.05)
+    assert abs(boot_id() - first) < 1.0, "同一ブート中に大きく揺れてはならない"
+    print("✅ pid_guard: boot_id は同一ブート中で安定")
+
+
+def test_is_previous_boot_needs_both_values():
+    """片方でも不明ならブート判定はしない (旧フォーマット互換の安全側)。"""
+    assert is_previous_boot(None, _BOOT_NOW) is False
+    assert is_previous_boot(_BOOT_PREV, None) is False
+    assert is_previous_boot(_BOOT_NOW, _BOOT_NOW) is False, "同一ブートは前ブートでない"
+    assert is_previous_boot(_BOOT_PREV, _BOOT_NOW) is True
+    assert is_previous_boot(_BOOT_NOW - 30, _BOOT_NOW) is False, \
+        "NTP 補正程度のずれを別ブートとみなしてはならない"
+    print("✅ pid_guard: ブート判定は両値が揃ったときだけ / 許容幅内は同一ブート")
+
+
+def test_acquire_records_boot_id():
+    """取得時に PID と一緒にブート ID が記録される。"""
+    with _TempLock() as lock:
+        assert acquire(lock.path, pid=4242, is_alive=_ALWAYS_ALIVE,
+                       boot=_BOOT_NOW) is True
+        pid, boot = read_record(lock.path)
+        assert pid == 4242 and boot == _BOOT_NOW
+        assert read_owner(lock.path) == 4242, "旧 API も PID を返し続けること"
+    print("✅ pid_guard: PID とブート ID を記録 (read_owner 互換維持)")
+
+
+def test_previous_boot_lock_is_stale_even_if_pid_looks_alive():
+    """本命: 電源断で残ったロックは、PID が再利用されていても引き継げること。
+
+    再起動後は PID が別プロセスに割り当てられ、is_process_alive は安全側に
+    倒れて「生存」と答える。その PID を信じると acquire が永久に False を返し、
+    Bot が無言で起動しなくなる (PC 起動時に Bot が上がらない障害の正体)。
+    """
+    with _TempLock() as lock:
+        # 前ブートの残骸: release されずに残った PID ファイル
+        with open(lock.path, 'w', encoding='utf-8') as f:
+            f.write(f"1234\n{_BOOT_PREV!r}")
+        assert acquire(lock.path, pid=5678, is_alive=_ALWAYS_ALIVE,
+                       boot=_BOOT_NOW) is True, \
+            "前ブートのロックは PID の生死を問わず引き継げなければならない"
+        assert read_record(lock.path) == (5678, _BOOT_NOW)
+    print("✅ pid_guard: 前ブートの残骸ロックを引き継ぐ (PID 再利用の誤検知を回避)")
+
+
+def test_same_boot_alive_owner_still_blocks():
+    """ブート判定は重複起動ガードを緩めない: 同一ブートの生存所有者は勝ち続ける。"""
+    with _TempLock() as lock:
+        assert acquire(lock.path, pid=1111, is_alive=_ALWAYS_ALIVE,
+                       boot=_BOOT_NOW) is True
+        assert acquire(lock.path, pid=2222, is_alive=_ALWAYS_ALIVE,
+                       boot=_BOOT_NOW) is False, \
+            "同一ブートで所有者が生存中なら従来どおり取得を拒否"
+        assert read_owner(lock.path) == 1111
+    print("✅ pid_guard: 同一ブート・所有者生存時は従来どおり拒否 (ガードは緩まない)")
+
+
+def test_same_pid_from_previous_boot_is_not_reentrant():
+    """自分と同じ PID でも前ブートの記録なら「再入」ではなく stale。
+
+    再起動後に同じ PID を引く可能性は十分あり、再入と誤認すると
+    ロックを持たないまま True を返してしまう。
+    """
+    with _TempLock() as lock:
+        with open(lock.path, 'w', encoding='utf-8') as f:
+            f.write(f"4242\n{_BOOT_PREV!r}")
+        assert acquire(lock.path, pid=4242, is_alive=_ALWAYS_ALIVE,
+                       boot=_BOOT_NOW) is True
+        pid, boot = read_record(lock.path)
+        assert boot == _BOOT_NOW, "ブート ID が現在のものに更新されること"
+    print("✅ pid_guard: 同一 PID でも前ブートの記録なら再入扱いしない")
+
+
+def test_legacy_pid_file_without_boot_id_keeps_old_behavior():
+    """ブート ID を持たない旧フォーマットは従来の生死判定にフォールバックする。"""
+    with _TempLock() as lock:
+        with open(lock.path, 'w', encoding='utf-8') as f:
+            f.write("1234")  # 旧フォーマット (PID のみ)
+        assert read_record(lock.path) == (1234, None)
+        assert acquire(lock.path, pid=5678, is_alive=_ALWAYS_ALIVE,
+                       boot=_BOOT_NOW) is False, "生存なら従来どおり拒否"
+        assert acquire(lock.path, pid=5678, is_alive=_ALWAYS_DEAD,
+                       boot=_BOOT_NOW) is True, "死亡なら従来どおり引き継ぐ"
+    print("✅ pid_guard: 旧フォーマット (PID のみ) と後方互換")
+
+
+def test_corrupt_boot_id_falls_back_to_liveness():
+    """ブート ID が壊れていても PID 判定は生き続ける (ロックを失わない)。"""
+    with _TempLock() as lock:
+        with open(lock.path, 'w', encoding='utf-8') as f:
+            f.write("1234\nこれは数値ではない")
+        assert read_record(lock.path) == (1234, None)
+        assert acquire(lock.path, pid=5678, is_alive=_ALWAYS_ALIVE,
+                       boot=_BOOT_NOW) is False, \
+            "ブート ID 破損を理由に生存所有者のロックを奪ってはならない"
+    print("✅ pid_guard: ブート ID 破損時は PID の生死判定にフォールバック")
+
+
+# ---------------------------------------------------------
 # 本命: 並行取得で勝者が1つであること (旧実装の TOCTOU 回帰テスト)
 # ---------------------------------------------------------
 
@@ -155,7 +268,16 @@ def test_concurrent_acquire_has_exactly_one_winner():
 
 
 def test_concurrent_acquire_over_stale_lock_has_one_winner():
-    """stale 引き継ぎの競合 — 「削除 → 作成」の隙で二重取得しないこと。"""
+    """stale 引き継ぎの競合 — 「削除 → 作成」の隙で二重取得しないこと。
+
+    この不変条件は「開いているファイルは削除できない」という Windows の
+    セマンティクスに依存する (pid_guard の docstring 参照)。POSIX は所有者が
+    fd を開いたままでも remove が成功するため、この競合では複数が勝ちうる。
+    本番環境は Windows なので、判定は Windows でのみ行う。
+    """
+    if os.name != 'nt':
+        print("⏭️ pid_guard: stale 競合テストは Windows 専用のためスキップ")
+        return
     dead_pid = 999999
     pids = list(range(9101, 9109))
     with _TempLock() as lock:

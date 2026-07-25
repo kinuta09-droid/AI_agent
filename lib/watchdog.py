@@ -35,6 +35,58 @@ STALE_THRESHOLD = 300
 # beat 送出側 (bot / scheduler) の推奨間隔。
 BEAT_INTERVAL = 30
 
+# --- 起動失敗 (crash loop) の検知 ---
+# heartbeat が見るのは「上がったプロセスが止まったか」だけで、「そもそも上がって
+# こない」は守備範囲外だった。実体が即 exit する場合、スーパーバイザの poll() が
+# 5秒毎に再起動を繰り返すだけで、heartbeat 監視には永久に到達しない (stale 判定の
+# 前に死亡検知で continue する)。結果、Bot が一度も起動しないまま無言でループする。
+# そこで「起動直後の終了」を失敗として数え、間隔を空けつつ通知する。
+
+# 起動からこの秒数未満で終了したら「起動失敗」とみなす。
+# watchdog kill による終了は stale 判定 (300秒) を経ているので必ずこれより長く、
+# 正常稼働からの kill を起動失敗と数えてしまうことはない。
+FAST_EXIT_SECONDS = 60
+
+# 再起動待ちの基準秒 / 上限秒 (連続失敗ごとに倍化)。
+RESTART_DELAY = 5
+MAX_RESTART_DELAY = 300
+
+# 連続失敗がこの回数に達したら通知する (以降は再通知間隔ごとに繰り返す)。
+ALERT_AFTER_FAILURES = 3
+_ALERT_REPEAT_EVERY = 10
+
+
+def is_fast_exit(uptime, threshold=FAST_EXIT_SECONDS):
+    """起動から threshold 秒未満での終了か (= 起動失敗の疑い)。"""
+    return uptime < threshold
+
+
+def restart_delay(consecutive_failures,
+                  base=RESTART_DELAY, cap=MAX_RESTART_DELAY):
+    """連続失敗回数に応じた再起動待ち秒数 (指数バックオフ)。
+
+    失敗が続く原因はたいてい待てば直らないもの (トークン失効・依存の破損) か、
+    待てば直るもの (ブート直後でネットワーク未接続) のどちらか。前者で5秒毎に
+    再起動を撃ち続けても API を叩き続けるだけなので、間隔を広げて上限で頭打ちに
+    する。上限を無限にしないのは、後者が回復したとき自力で復帰させるため。
+    """
+    if consecutive_failures <= 1:
+        return base
+    return min(base * (2 ** (consecutive_failures - 1)), cap)
+
+
+def should_alert(consecutive_failures, after=ALERT_AFTER_FAILURES,
+                 repeat_every=_ALERT_REPEAT_EVERY):
+    """この失敗回数で通知すべきか。
+
+    1〜2回はブート直後のネットワーク未接続などで珍しくないため黙って再試行し、
+    「明らかに自力で復帰していない」回数から通知する。以降は repeat_every 回
+    ごとにだけ再通知して、復旧するまで鳴り続けるのを防ぐ。
+    """
+    if consecutive_failures < after:
+        return False
+    return (consecutive_failures - after) % repeat_every == 0
+
 
 def beat(hb_file):
     """heartbeat を更新する。判定は mtime なので内容は診断用。

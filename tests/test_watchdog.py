@@ -19,7 +19,11 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from lib.watchdog import beat, age_seconds, is_stale, kill_process, STALE_THRESHOLD
+from lib.watchdog import (
+    beat, age_seconds, is_stale, kill_process, STALE_THRESHOLD,
+    is_fast_exit, restart_delay, should_alert,
+    FAST_EXIT_SECONDS, RESTART_DELAY, MAX_RESTART_DELAY, ALERT_AFTER_FAILURES,
+)
 
 
 class _TempHb:
@@ -139,6 +143,44 @@ def test_beat_failure_is_swallowed():
     finally:
         shutil.rmtree(base, ignore_errors=True)
     print("✅ watchdog: beat の書き込み失敗は握り潰される")
+
+
+# ---------------------------------------------------------
+# 起動失敗 (crash loop) の検知 — heartbeat の守備範囲外だった領域
+# ---------------------------------------------------------
+
+def test_fast_exit_classification():
+    """起動直後の終了だけを「起動失敗」と数える。"""
+    assert is_fast_exit(0) is True, "即 exit は起動失敗"
+    assert is_fast_exit(FAST_EXIT_SECONDS - 1) is True
+    assert is_fast_exit(FAST_EXIT_SECONDS) is False, "閾値ちょうどは失敗ではない"
+    # watchdog kill は stale 判定 (300秒) を経るので必ず猶予より長く生きている
+    assert is_fast_exit(STALE_THRESHOLD) is False, \
+        "ハング kill による終了を起動失敗と数えてはならない"
+    print("✅ watchdog: 起動直後の終了だけを起動失敗として分類")
+
+
+def test_restart_delay_backs_off_and_caps():
+    """連続失敗で待ち時間が倍化し、上限で頭打ちになる。"""
+    assert restart_delay(0) == RESTART_DELAY, "正常稼働後の再起動は基準値のまま"
+    assert restart_delay(1) == RESTART_DELAY, "1回目は即座に再試行 (一時障害の想定)"
+    assert restart_delay(2) == RESTART_DELAY * 2
+    assert restart_delay(3) == RESTART_DELAY * 4
+    assert restart_delay(99) == MAX_RESTART_DELAY, "上限で頭打ち"
+    # 上限が有限であること = 回復可能な原因 (ブート直後のネット未接続) から
+    # 自力で復帰できること
+    assert MAX_RESTART_DELAY < float('inf')
+    print("✅ watchdog: 再起動間隔は指数バックオフし上限で頭打ち")
+
+
+def test_should_alert_is_quiet_then_periodic():
+    """1〜2回は黙って再試行し、閾値到達で通知、以降は間引いて再通知。"""
+    for n in range(ALERT_AFTER_FAILURES):
+        assert should_alert(n) is False, f"{n}回目で通知してはならない"
+    assert should_alert(ALERT_AFTER_FAILURES) is True, "閾値到達で通知"
+    assert should_alert(ALERT_AFTER_FAILURES + 1) is False, "毎回鳴らさない"
+    assert should_alert(ALERT_AFTER_FAILURES + 10) is True, "一定間隔で再通知"
+    print("✅ watchdog: 起動失敗の通知は閾値到達時と一定間隔のみ")
 
 
 if __name__ == "__main__":
