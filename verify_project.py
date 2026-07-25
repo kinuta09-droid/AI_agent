@@ -37,6 +37,53 @@ def check_syntax(file_path):
     except subprocess.CalledProcessError as e:
         return False, e.stderr.decode('utf-8', errors='replace')
 
+def check_undefined_names(file_path):
+    """定義もインポートもされていない名前への参照を検出する。
+
+    構文チェックでは捕まらない NameError 予備軍を静的に洗い出す。
+    2026-02-28 の commands/ 分割リファクタで bot_discord.py の
+    _dispatch_curate が移動済みシンボル (CurateView 等) を参照したまま残り、
+    /curate が5ヶ月間壊れていたのを検出できなかった反省から追加 (2026-07-25)。
+
+    返り値: [(スコープ名, 未定義名), ...]
+    """
+    import builtins
+    import symtable
+    import warnings
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            src = f.read()
+        # symtable はコンパイルを伴うため SyntaxWarning が出ることがある。
+        # 構文の問題は check_syntax の担当なのでここでは黙らせる。
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            top = symtable.symtable(src, str(file_path), "exec")
+    except Exception:
+        return []  # 構文エラーは check_syntax の担当
+
+    module_names = {s.get_name() for s in top.get_symbols()}
+    findings = []
+
+    def walk(table, scope):
+        for sym in table.get_symbols():
+            name = sym.get_name()
+            # ローカル/引数/クロージャ変数は対象外。モジュール定義済み・組込みも除外
+            if not sym.is_referenced():
+                continue
+            if sym.is_local() or sym.is_parameter() or sym.is_free():
+                continue
+            if name in module_names or hasattr(builtins, name):
+                continue
+            if (scope, name) not in findings:
+                findings.append((scope, name))
+        for child in table.get_children():
+            walk(child, f"{scope}.{child.get_name()}")
+
+    walk(top, "<module>")
+    return findings
+
+
 def check_import(module_name):
     """モジュールが正常にインポート可能か確認する"""
     try:
@@ -97,8 +144,13 @@ def run_verification():
             errors.append(f"Syntax Error: {rel_path}\n{err_msg}")
             print(f"  ❌ {rel_path} (Syntax Error)")
         
+        # 未定義名 (NameError 予備軍) — ファイル分割リファクタの取り残し検出
+        for scope, name in check_undefined_names(py_file):
+            errors.append(f"Undefined Name: {rel_path} — {scope} が '{name}' を参照")
+            print(f"  ❌ {rel_path} ({scope}: '{name}' が未定義)")
+
         count += 1
-    
+
     print(f"  - Total {count} source files scanned.")
 
     # 3. 重要モジュールのインポート整合性

@@ -13,6 +13,9 @@ from tools.tool_curator import (
     fetch_external_trends,
 )
 
+# エンゲージメント計測 (Phase 1: 収集のみ)。提案ロジックには一切影響しない。
+from lib.engagement_log import log_event, log_impressions
+
 # ---------------------------------------------------------
 # Constants & Helpers (Originally from bot_discord.py)
 # ---------------------------------------------------------
@@ -96,6 +99,15 @@ class CurateView(discord.ui.View):
         self.topics = suggestions.get("topics", [])
         self.ab_question = suggestions.get("ab_question", {})
 
+        # 提示した候補を impression として記録する（Phase 1）。
+        # View 生成は「初回提案」と「再提案」の2経路あるが、どちらも __init__ を
+        # 通るためここ1箇所で両方カバーできる。返り値の group_id を click/reject に
+        # 引き継ぐことで「3件見せて1件選んだ」= CTR が後から復元できる。
+        self.group_id = log_impressions(
+            self.topics[:3], "curate",
+            meta={"reject_count": reject_count},
+        )
+
         # トピックボタン（Row 0）
         for i, topic in enumerate(self.topics[:3]):
             branch = topic.get("branch", "")
@@ -173,6 +185,19 @@ class CurateView(discord.ui.View):
 
             branch = topic.get("branch", "")
             icon = _BRANCH_ICON.get(branch, "🔍")
+
+            # クリック = 正例。同 group_id なので未選択の2件は自動的に負例になる。
+            log_event(
+                "click", topic["title"], "curate",
+                group_id=self.group_id,
+                meta={
+                    "branch": branch,
+                    "index": index,
+                    "source_note": topic.get("source_note", ""),
+                    "reject_count": self.reject_count,
+                },
+            )
+
             await interaction.followup.send(
                 f"{icon} **{topic['title']}** を調査中..."
             )
@@ -185,8 +210,11 @@ class CurateView(discord.ui.View):
                 topic.get("reasoning", ""),
             )
             if _log_to_daily_note:
+                # log_engagement=False: このクリックは既に click として記録済みで、
+                # query として二重計上するとユーザーの自由入力と混ざる。
                 await asyncio.to_thread(
-                    _log_to_daily_note, "command", f"/curate -> {topic['title']}", result
+                    _log_to_daily_note, "command", f"/curate -> {topic['title']}", result,
+                    False,
                 )
             
             view = _create_obsidian_view(result) if _create_obsidian_view else None
@@ -212,6 +240,15 @@ class CurateView(discord.ui.View):
             question = self.ab_question.get("question", "?")
 
             await interaction.response.defer(ephemeral=True)
+            log_event(
+                "ab_answer", answer, "curate",
+                group_id=self.group_id,
+                meta={
+                    "question": question,
+                    "option": option_key,
+                    "type": self.ab_question.get("type", "normal"),
+                },
+            )
             await asyncio.to_thread(update_user_profile, question, answer)
             await interaction.followup.send(
                 f"✅ 好みを記録しました: {answer}", ephemeral=True
@@ -238,6 +275,15 @@ class CurateView(discord.ui.View):
         for t in self.topics:
             new_rejected.append(t.get("title", ""))
         new_reject_count = self.reject_count + 1
+
+        # 明示的な拒否は impression(-1) より強い負例なので別イベントで残す。
+        # これまで CurateView のメモリ上にしか無く timeout=300秒で消えていた情報。
+        for t in self.topics[:3]:
+            log_event(
+                "reject", t.get("title", ""), "curate",
+                group_id=self.group_id,
+                meta={"branch": t.get("branch", ""), "reject_count": self.reject_count},
+            )
 
         for item in self.children:
             item.disabled = True
@@ -297,6 +343,12 @@ class SetupView(discord.ui.View):
         self.user_id = user_id
         self.topics = suggestions.get("topics", [])
 
+        # CurateView と同じく、提示した選択肢を impression として記録する。
+        # ドロップダウンは最大25件しか出せないので、実際に見せた分だけ残す。
+        self.group_id = log_impressions(
+            self.topics[:25], "setup", meta={"mode": "setup"},
+        )
+
         options = []
         for i, topic in enumerate(self.topics[:25]):
             options.append(discord.SelectOption(
@@ -326,6 +378,16 @@ class SetupView(discord.ui.View):
             self.topics[i] for i in selected_indices if i < len(self.topics)
         ]
 
+        # 選ばれた分が click、選ばれなかった分は impression のまま負例になる
+        for i in selected_indices:
+            if i < len(self.topics):
+                topic = self.topics[i]
+                log_event(
+                    "click", topic.get("title", ""), "setup",
+                    group_id=self.group_id,
+                    meta={"branch": topic.get("branch", ""), "index": i},
+                )
+
         await interaction.response.defer()
 
         for item in self.children:
@@ -352,10 +414,49 @@ class SetupView(discord.ui.View):
 
         summary = "\n".join(results)
         if _log_to_daily_note:
+            # /curate と同じ理由で log_engagement=False: 選択は既に click として
+            # 記録済みで、query として二重計上するとユーザーの自由入力と混ざる。
             await asyncio.to_thread(
-                _log_to_daily_note, "command", f"/setup -> {names}", summary
+                _log_to_daily_note, "command", f"/setup -> {names}", summary,
+                False,
             )
         
+async def cmd_setup(interaction: discord.Interaction):
+    """初回セットアップ: トピック10〜15件を提案し、ドロップダウンで一括選択させる。
+
+    2026-02-28 の commands/ 分割時に bot_discord.py 側の実装が失われていたため、
+    初期実装 (7b6b96f) と同じ挙動でこちらに復元した。
+    """
+    await interaction.response.defer()
+
+    try:
+        context = await asyncio.to_thread(read_main_context)
+        suggestions = await asyncio.to_thread(
+            get_curation_suggestions, context, "setup"
+        )
+
+        topics = suggestions.get("topics", [])
+        if not topics:
+            await interaction.followup.send("トピック提案の生成に失敗しました。")
+            return
+
+        embed = discord.Embed(
+            title="🚀 Antigravity Setup -- ナレッジベース初期構築",
+            description=(
+                f"あなたの興味に基づいて **{len(topics)}件** のトピックを生成しました。\n"
+                "下のドロップダウンから気になるトピックを選んでください（最大10件）。\n"
+                "選択したトピックについてAIが調査し、ナレッジノートを自動作成します。"
+            ),
+            color=0x2ECC71,
+        )
+
+        view = SetupView(suggestions, interaction.user.id)
+        await interaction.followup.send(embed=embed, view=view)
+
+    except Exception as e:
+        await interaction.followup.send(f"Error: {e}")
+
+
 async def cmd_topic(interaction: discord.Interaction, query: str):
     """特定のトピックについて調査しノートを作成する"""
     await interaction.response.defer()

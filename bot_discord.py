@@ -11,6 +11,7 @@ import re
 import io
 import asyncio
 from lib.lib_obsidian_utils import get_obsidian_uri, get_obsidian_uri_from_link
+from lib.engagement_log import log_event, parse_command_meta
 from lib.pid_guard import acquire as _acquire_pid_lock, release as _release_pid_lock, read_owner as _read_pid_owner
 from lib import watchdog as _watchdog
 import datetime
@@ -418,8 +419,21 @@ class VoiceSession:
 # Helpers
 # ---------------------------------------------------------
 
-def _log_to_daily_note(log_type: str, user_input: str, ai_output: str = ""):
-    """Obsidian 50_Archive/Chatlog に Discord ログを保存する。"""
+def _log_to_daily_note(log_type: str, user_input: str, ai_output: str = "",
+                       log_engagement: bool = True):
+    """Obsidian 50_Archive/Chatlog に Discord ログを保存する。
+
+    log_engagement=True のとき、同じ入力を engagement.jsonl にも query として
+    記録する（Phase 1: 自由入力＝最も強い顕示選好シグナル）。Chatlog と同じ
+    文字列を使うので、過去分のバックフィルとライブ記録が完全に同形式になる。
+    既に click 等で記録済みの呼び出し元だけが False を渡す。
+    """
+    if log_engagement and log_type in ("chat", "command"):
+        log_event(
+            "query", user_input, "discord",
+            meta=parse_command_meta(user_input, log_type),
+        )
+
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     time_str = datetime.datetime.now().strftime("%H:%M")
     # Save to 50_Archive/Chatlog
@@ -498,8 +512,12 @@ async def _dispatch_curate(interaction: discord.Interaction, query: str):
         if not topics:
             await interaction.followup.send("トピック提案の生成に失敗しました。")
             return
-        embed = _build_curate_embed(suggestions)
-        view = CurateView(suggestions, interaction.user.id, context=context)
+        # commands/ 分割時にこの2つは bot_commands_curator へ移動したが、
+        # ここの参照が残されて NameError になっていた (2026-07-25 修正)。
+        embed = bot_commands_curator._build_curate_embed(suggestions)
+        view = bot_commands_curator.CurateView(
+            suggestions, interaction.user.id, context=context
+        )
         await interaction.followup.send(embed=embed, view=view)
     except Exception as e:
         await interaction.followup.send(f"Error: {e}")
@@ -994,6 +1012,70 @@ async def cmd_browse(interaction: discord.Interaction, url: str, task: str = "�
 async def cmd_future(interaction: discord.Interaction, topic: str,
                      depth: str = "standard", uncensored: bool = False):
     await bot_commands_tools.cmd_future(interaction, topic, depth, uncensored)
+
+
+# 2026-02-28 の commands/ 分割リファクタで登録が漏れていた (ハンドラ側は無傷)。
+# 本体は _dispatch_curate に一本化し、/chat curate と同一経路にしてある。
+@tree.command(name="curate", description="AIがあなたの興味に基づいてトピックを提案します")
+async def cmd_curate(interaction: discord.Interaction):
+    await interaction.response.defer()
+    await _dispatch_curate(interaction, "")
+    await asyncio.to_thread(
+        _log_to_daily_note, "command", "/curate", "Suggestions presented"
+    )
+
+
+@tree.command(
+    name="setup",
+    description="初回セットアップ: 興味のあるトピックを一括選択してナレッジベースを構築",
+)
+async def cmd_setup(interaction: discord.Interaction):
+    await bot_commands_curator.cmd_setup(interaction)
+
+
+@tree.command(name="topic", description="興味のあるトピックを直接指定して調査・記録します")
+@app_commands.describe(query="調べたいキーワード（例: 古代ローマの建築技術）")
+async def cmd_topic(interaction: discord.Interaction, query: str):
+    await bot_commands_curator.cmd_topic(interaction, query)
+
+
+# ---------------------------------------------------------
+# Calendar / Task Commands
+# ---------------------------------------------------------
+# これらも 2026-02-28 のリファクタで登録が失われていた。
+# 実装は commands/bot_commands_calendar.py に残っていたため委譲するだけでよい。
+
+@tree.command(name="calendar", description="Google Calendarから予定を取得します")
+@app_commands.describe(date="日付（today, tomorrow, 2026-02-15 など）")
+async def cmd_calendar(interaction: discord.Interaction, date: str = "today"):
+    await bot_commands_calendar.cmd_calendar(interaction, date)
+
+
+@tree.command(name="add-event", description="Google Calendarに予定を追加します")
+@app_commands.describe(
+    title="予定のタイトル",
+    start_time="開始時刻（例: 明日 14:00, 2026-02-15 10:00）",
+    end_time="終了時刻（省略時は1時間後）",
+)
+async def cmd_add_event(interaction: discord.Interaction,
+                        title: str, start_time: str, end_time: str = ""):
+    await bot_commands_calendar.cmd_add_event(interaction, title, start_time, end_time)
+
+
+@tree.command(name="tasks", description="Todoistのタスク一覧を表示します")
+@app_commands.describe(filter="フィルター（today, overdue, week, all）")
+async def cmd_tasks(interaction: discord.Interaction, filter: str = "today"):
+    await bot_commands_calendar.cmd_tasks(interaction, filter)
+
+
+@tree.command(name="remind", description="Todoistにリマインダー（タスク）を追加します")
+@app_commands.describe(
+    content="リマインド内容",
+    due_date="期限（例: 明日, 2026-02-15, 毎日 21:00）",
+)
+async def cmd_remind(interaction: discord.Interaction,
+                     content: str, due_date: str = ""):
+    await bot_commands_calendar.cmd_remind(interaction, content, due_date)
 
 
 @tree.command(name="agent", description="AIエージェントに自律的なタスクを依頼（検索・ファイル操作など）")

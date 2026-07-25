@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 from lib.pid_guard import acquire as _acquire_pid_lock, release as _release_pid_lock, read_owner as _read_pid_owner
 from lib import watchdog as _watchdog
 from lib.cost_guard import GeminiBudgetExceeded
+from lib.engagement_log import snapshot_open_files
 
 PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_scheduler.pid")
 
@@ -324,6 +325,15 @@ SCHEDULE = [
         "every_minutes": 15,
         "name": "Crypto Event Watcher",
         "func": tool_crypto_watch,
+        "silent": True,
+    },
+    # Engagement Snapshot (Phase 1): .obsidian/workspace.json の lastOpenFiles は
+    # 46件ローリングなので、間隔が長いと「開いた」を取りこぼす。ローカルJSONの
+    # 読み取りのみで API 課金ゼロ。定型通知はスパムになるため silent。
+    {
+        "every_minutes": 15,
+        "name": "Engagement Snapshot (opened notes)",
+        "func": snapshot_open_files,
         "silent": True,
     },
     {
