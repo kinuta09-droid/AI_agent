@@ -1015,6 +1015,17 @@ async def cmd_future(interaction: discord.Interaction, topic: str,
     await bot_commands_tools.cmd_future(interaction, topic, depth, uncensored)
 
 
+# 2026-02-28 の commands/ 分割リファクタで登録が漏れていた (ハンドラ側は無傷)。
+# 本体は _dispatch_curate に一本化し、/chat curate と同一経路にしてある。
+@tree.command(name="curate", description="AIがあなたの興味に基づいてトピックを提案します")
+async def cmd_curate(interaction: discord.Interaction):
+    await interaction.response.defer()
+    await _dispatch_curate(interaction, "")
+    await asyncio.to_thread(
+        _log_to_daily_note, "command", "/curate", "Suggestions presented"
+    )
+
+
 @tree.command(name="agent", description="AIエージェントに自律的なタスクを依頼（検索・ファイル操作など）")
 @app_commands.describe(goal="エージェントへの指示（例: 〇〇について調べてまとめて）")
 async def cmd_agent(interaction: discord.Interaction, goal: str):
