@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 from lib.pid_guard import acquire as _acquire_pid_lock, release as _release_pid_lock, read_owner as _read_pid_owner
 from lib import watchdog as _watchdog
 from lib.cost_guard import GeminiBudgetExceeded
+from lib.bot_errors import is_failure_result
 from lib.engagement_log import snapshot_open_files
 
 PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_scheduler.pid")
@@ -438,14 +439,31 @@ def _execute_task(task):
             else:
                 short_result = result if result else "Done (No output)"
 
-            logger.info(f"✅ Completed {task_name}")
+            # ツール層は例外を投げずに "Error: ..." を返す規約なので、
+            # 「例外が出なかった = 成功」と決めつけると失敗が ✅ で通知される。
+            # 定時ジョブは誰も見ていないところで動くため、ここで嘘をつくと
+            # 「毎朝 ✅ が届いている = 健全」と誤認したまま壊れ続ける。
+            failed = is_failure_result(result)
+
+            if failed:
+                logger.error(f"❌ {task_name} returned a failure result: {short_result[:200]}")
+            else:
+                logger.info(f"✅ Completed {task_name}")
+
             # catch-up 対象ジョブは成功時刻を記録し、次回起動時の未実行判定の基準にする。
-            # 例外/予算超過時は記録しない = 未実行扱いのまま残し、次回 catch-up で拾える。
-            if task.get("catch_up"):
+            # 例外/予算超過/失敗文字列のときは記録しない = 未実行扱いのまま残し、
+            # 次回 catch-up で拾えるようにする。
+            if task.get("catch_up") and not failed:
                 _record_job_run(task_name, datetime.datetime.now())
 
             if not silent:
-                send_discord_notification(f"✅ **Task Completed**: {task_name}\n>>> {short_result}")
+                if failed:
+                    send_discord_notification(
+                        f"❌ **Task Failed**: {task_name}\n>>> {short_result}",
+                        components=_button_row([("📋 ログ表示", SCHEDULER_LOG_CUSTOM_ID)]),
+                    )
+                else:
+                    send_discord_notification(f"✅ **Task Completed**: {task_name}\n>>> {short_result}")
 
         except GeminiBudgetExceeded as e:
             # 日次予算超過: 初回到達時に cost_guard がログチャンネルへ通知済み。

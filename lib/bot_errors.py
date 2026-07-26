@@ -23,6 +23,30 @@ import traceback
 # 流すと本題が読めなくなるため。
 MAX_USER_MESSAGE = 500
 
+# 「文字列で失敗を返す」規約の接頭辞。判定を各コマンドで手書きすると必ず割れる
+# (log_command_error() の戻り値を "Error (型名): ..." に変えたとき、"Error:" 固定で
+#  書かれていた /agent の判定だけが取り残されかけた)。追加する側が
+#  ここを見に来られるよう、判定の起点は必ずこの定数にする。
+#   - "Error:"  … tools/ の `return f"Error: {e}"` および engine 層の戻り値契約
+#   - "Error (" … log_command_error() が型名を挟む形式
+# "Error" と緩めないのは、「Errorハンドリングの調査結果」のような正常な本文が
+# Error で始まり得るため。これらは前方一致で使うので tuple のまま公開する。
+FAILURE_PREFIXES = ("Error:", "Error (")
+
+
+def is_failure_result(result, extra_prefixes: tuple = ()) -> bool:
+    """ツール/エンジンが文字列で返した結果が失敗かどうかを判定する。
+
+    成功と失敗を同じ ✅ で表示してしまう事故 (2026-07-26) を防ぐための単一窓口。
+
+    Args:
+        result: 判定対象。str 以外は「失敗ではない」とみなす。
+        extra_prefixes: 呼び出し側固有の失敗接頭辞 (例: "タスク失敗:")。
+    """
+    if not isinstance(result, str):
+        return False
+    return result.startswith(FAILURE_PREFIXES + tuple(extra_prefixes))
+
 
 def log_command_error(where: str, exc: BaseException,
                       user_prefix: str = "Error") -> str:

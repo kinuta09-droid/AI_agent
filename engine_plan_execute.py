@@ -22,6 +22,7 @@ from lib.lib_shared import (
 )
 from lib.tool_registry import get_tools_config
 from lib.cost_guard import GeminiBudgetExceeded
+from lib.bot_errors import is_failure_result
 
 # スキル観測は任意機能: 不在・破損でもツール実行を止めない
 try:
@@ -597,11 +598,19 @@ def _generate_rich_content(task: str, filename: str, context: list) -> str:
 
 
 def _summarize_results(results: list) -> str:
-    """実行結果リストから最終サマリーを生成する。"""
+    """実行結果リストから最終サマリーを生成する (Gemini 生成が失敗したときの代替)。
+
+    従来は「Success: / ✅ で始まらない observation」を一律 "完了" と書いていたため、
+    失敗ステップが完了として報告され、しかもエラー本文が捨てられていた。
+    step_result["success"] は例外を捕まえたときだけ False になる (ツールが
+    "Error: ..." を *返した* 場合は True のまま) ので、文字列側も併せて見る。
+    """
     parts = []
     for r in results:
         obs = str(r.get("observation", ""))
-        if obs.startswith("Success:") or obs.startswith("✅"):
+        if not r.get("success", True) or is_failure_result(obs):
+            parts.append(f"- Step {r['step']} ({r['task']}): ❌ 失敗 — {obs[:200]}")
+        elif obs.startswith("Success:") or obs.startswith("✅"):
             parts.append(f"- Step {r['step']}: {obs[:200]}")
         else:
             parts.append(f"- Step {r['step']} ({r['task']}): 完了")

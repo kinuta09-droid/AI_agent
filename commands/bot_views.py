@@ -18,7 +18,7 @@ import asyncio
 import discord
 
 from lib.lib_shared import WORK_DIR
-from lib.bot_errors import log_command_error
+from lib.bot_errors import log_command_error, is_failure_result
 
 # ---------------------------------------------------------
 # 認可付き基底 View
@@ -79,6 +79,23 @@ def _load_top_features(top_n: int = 3, max_age_days: int = 2) -> list[dict]:
     return data.get("features", [])[:top_n]
 
 
+def _dive_result_header(topic: str, result: str, raised: bool = False) -> str:
+    """深掘り結果の見出しを決める。
+
+    run_future_search() は例外を投げずに "Error: Tavily検索でソースが取得できません
+    でした" 等を返すことがあるため、旧実装のように "✅ 深掘り完了" を無条件で
+    前置すると失敗がそのまま成功として表示される (2026-07-26 修正)。
+
+    Args:
+        raised: 例外を捕捉した経路かどうか。log_command_error() の戻り値は
+            呼び出し側指定の user_prefix ("❌ …") で始まり接頭辞判定に載らないため、
+            文字列を見ずに済むよう呼び出し側から明示的に渡す。
+    """
+    if raised or is_failure_result(result):
+        return f"❌ 深掘り失敗: **{topic}**"
+    return f"✅ 深掘り完了: **{topic}**"
+
+
 class BriefingDeepDiveView(AllowedUserView):
     """朝ブリーフィング TOP3 の深掘りリサーチを起動する永続ボタン群。
 
@@ -131,12 +148,14 @@ class BriefingDeepDiveView(AllowedUserView):
             )
 
             _dive_running.add(topic)
+            raised = False
             try:
                 from tools.tool_future_search import run_future_search
                 result = await asyncio.to_thread(
                     run_future_search, topic, "standard", False
                 )
             except Exception as e:
+                raised = True
                 result = log_command_error(
                     f"深掘りリサーチ ({topic})", e,
                     "❌ 深掘りリサーチでエラーが発生しました",
@@ -147,13 +166,14 @@ class BriefingDeepDiveView(AllowedUserView):
             channel = interaction.channel
             if channel is None:
                 return
+            header = _dive_result_header(topic, result, raised)
             if len(result) > 1900:
                 file_obj = discord.File(
                     io.BytesIO(result.encode("utf-8")), filename=f"deepdive_{topic[:30]}.md"
                 )
-                await channel.send(content=f"✅ 深掘り完了: **{topic}**", file=file_obj)
+                await channel.send(content=header, file=file_obj)
             else:
-                await channel.send(content=f"✅ 深掘り完了: **{topic}**\n\n{result}")
+                await channel.send(content=f"{header}\n\n{result}")
 
         return callback
 

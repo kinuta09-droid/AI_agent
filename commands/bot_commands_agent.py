@@ -13,7 +13,7 @@ from engine_plan_execute import (
     generate_performance_dashboard,
 )
 
-from lib.bot_errors import log_command_error
+from lib.bot_errors import log_command_error, FAILURE_PREFIXES
 
 # bot_discord から注入されるヘルパー
 _log_to_daily_note = None
@@ -40,18 +40,26 @@ _WIKILINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
 
 _sessions = {}  # channel_id -> {"goal": str, "summary": str, "files": list, "ts": float}
 
-# run_plan_and_execute が返す失敗文字列の接頭辞 (これらはセッションに保存しない)
-_FAILURE_PREFIXES = (
-    # log_command_error() は例外の型名を挟んで "Error (RuntimeError): ..." を返す。
-    # "Error:" だけだと前方一致が外れ、失敗結果を成功扱いして次回 /agent の
-    # セッション文脈に混ぜてしまうため両方を挙げる ("Error" と緩めないのは、
-    # 「Errorハンドリングの調査」等で正常結果が Error で始まり得るため)。
-    "Error:",
-    "Error (",
+# run_plan_and_execute が返す失敗文字列の接頭辞。
+# 汎用分 ("Error:" / "Error (") は lib.bot_errors に集約し、ここには
+# Plan-Execute エンジン固有の文言だけを足す (判定が二重管理になると必ず割れる)。
+# この判定は「セッションに保存しない」と「見出しを ❌ にする」の両方で使う。
+_FAILURE_PREFIXES = FAILURE_PREFIXES + (
     "計画生成に失敗しました",
     "計画を生成できませんでした",
     "タスク失敗:",
 )
+
+
+def mission_header(result: str) -> str:
+    """Plan-Execute の結果見出し。失敗を "✅ Mission Complete" で出さないための単一箇所。
+
+    /agent (このモジュール) と /chat agent (bot_discord.py) は同じエンジンの
+    戻り値を表示するため、両方からここを呼ぶ (public にしているのはそのため)。
+    """
+    if result.startswith(_FAILURE_PREFIXES):
+        return "❌ **Mission Failed**"
+    return "✅ **Mission Complete**"
 
 
 def _get_session_context(channel_id) -> str:
@@ -150,13 +158,15 @@ async def cmd_agent(interaction: discord.Interaction, goal: str):
     if not result.startswith(_FAILURE_PREFIXES):
         _update_session(interaction.channel_id, goal, result)
 
+    header = mission_header(result)
+
     if _log_to_daily_note:
         await asyncio.to_thread(_log_to_daily_note, "command", f"/agent {goal}", result)
-    
+
     if _send_with_fallback:
-        await _send_with_fallback(interaction, f"✅ **Mission Complete**\n\n{result}", title="Agent Execution", emoji="🤖")
+        await _send_with_fallback(interaction, f"{header}\n\n{result}", title="Agent Execution", emoji="🤖")
     else:
-        await interaction.followup.send(f"✅ **Mission Complete**\n\n{result[:1900]}")
+        await interaction.followup.send(f"{header}\n\n{result[:1900]}")
 
 async def cmd_agent_stats(interaction: discord.Interaction):
     """AIエージェントの実行統計と学習状況を表示"""
