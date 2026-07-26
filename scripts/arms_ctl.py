@@ -105,8 +105,11 @@ def cmd_stop():
             print("  ✅ 全プロセスが停止しました")
             return 0
         time.sleep(_POLL_INTERVAL)
+    # status の戻り値 (0) をそのまま返すと「停止成功」と誤って伝わり、
+    # cmd_restart が残存プロセスの上から起動を重ねてしまう。
     print("  ⚠️ 一部のプロセスが残っています:")
-    return cmd_status()
+    cmd_status()
+    return 1
 
 
 def cmd_restart():

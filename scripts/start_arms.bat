@@ -18,6 +18,9 @@ rem 前回ブートのログを1世代だけ退避する (無限に肥大させ�
 if exist "logs\launcher.log" move /y "logs\launcher.log" "logs\launcher.prev.log" >nul
 
 echo [%date% %time%] launcher start (cwd=%CD%) > "logs\launcher.log"
-py main.py >> "logs\launcher.log" 2>&1
+rem -u (バッファなし): stdout をファイルへリダイレクトすると Python は既定で
+rem ブロックバッファリングし、[Monitor] / [Watchdog] の行が 8KB 貯まるまで
+rem ログに現れない。障害時に真っ先に読むログなので必ず即時反映させる。
+py -u main.py >> "logs\launcher.log" 2>&1
 echo [%date% %time%] launcher exited (code %errorlevel%) >> "logs\launcher.log"
 endlocal

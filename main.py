@@ -98,7 +98,11 @@ def run_and_monitor():
     def start_process(name, script):
         print(f"  [Launcher] Starting {name}...")
         # 絶対パスで起動 (cwd が C:\AI_agent 以外でもスーパーバイザが機能するように)
-        return subprocess.Popen([python_exe, os.path.join(_ROOT, script)])
+        # -u (バッファなし): 子の stdout は logs\launcher.log にリダイレクトされる
+        # ため既定ではブロックバッファリングされ、print() が 8KB 貯まるまで
+        # ファイルに現れない。起動失敗の調査で真っ先に読むログから
+        # 「[Discord] ⚠️ Another bot instance...」等が消えてしまうので明示的に外す。
+        return subprocess.Popen([python_exe, "-u", os.path.join(_ROOT, script)])
 
     processes = {
         name: {
