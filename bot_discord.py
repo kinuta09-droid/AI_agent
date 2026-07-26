@@ -572,17 +572,21 @@ async def _dispatch_agent(interaction: discord.Interaction, goal: str):
 
     await asyncio.to_thread(_log_to_daily_note, "command", f"/chat agent {goal}", result)
 
+    # /agent (commands/bot_commands_agent.py) と同じエンジン・同じ戻り値契約なので
+    # 見出しの出し分けも同じ関数に寄せる。入口ごとに書くと片方だけ ✅ のまま残る。
+    header = bot_commands_agent.mission_header(result)
+
     try:
-        await _send_long_message(interaction, f"✅ **Mission Complete**\n\n{result}", title="Agent Result")
+        await _send_long_message(interaction, f"{header}\n\n{result}", title="Agent Result")
     except discord.NotFound:
         try:
             if len(result) > 1900:
                 file = _make_discord_file(result, "Agent_Result.md")
                 await interaction.channel.send(
-                    content=f"{interaction.user.mention} ✅ **Mission Complete**", file=file
+                    content=f"{interaction.user.mention} {header}", file=file
                 )
             else:
-                await interaction.channel.send(f"{interaction.user.mention} ✅ **Mission Complete**\n\n{result}")
+                await interaction.channel.send(f"{interaction.user.mention} {header}\n\n{result}")
         except Exception as e:
             print(f"[Discord] Failed to send fallback: {e}")
 
