@@ -3,7 +3,7 @@ import os
 import shutil
 sys.path.insert(0, r'C:\AI_agent')
 
-from tool_curator import search_and_save_topic
+from tools.tool_curator import search_and_save_topic
 
 def test_curate_integration():
     print("=== TEST START: Curate Integration ===")
