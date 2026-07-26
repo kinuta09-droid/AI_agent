@@ -14,6 +14,7 @@ tools/tool_crypto.py (ライブ分析) と scripts/backtest_crypto.py (バック
   before/after バックテスト比較が必須
 """
 import os
+import re
 import datetime
 
 import pandas as pd
@@ -98,6 +99,124 @@ def _check_divergence(df, rsi_col: str = 'rsi', window: int = 20) -> bool:
         return False
 
     return (current_low <= float(prev_low)) and (float(current_rsi) > float(prev_rsi) + 3)
+
+
+# ---------------------------------------------------------
+# ニュースリスク分類
+# ---------------------------------------------------------
+# SYSTEMIC_RISK は _decide_signal の最優先分岐でテクニカルを完全無効化する
+# (signal="STAY AWAY", confidence=0)。しかも呼び出し側はニュース検索を
+# 「24h変動が3%以上のとき」だけ走らせる = BUYが出る局面に限って起動する。
+# つまりこの分類の誤爆は「BUYが二度と出ない」に直結する。
+#
+# 旧実装は `any(w in content for w in ["hack","sec","ban","war",...])` の
+# 部分文字列一致だった:
+#   "sec"  -> seconds / security / sector / securities   (ほぼ全ての英文記事)
+#   "war"  -> warning / toward / warrant
+#   "ban"  -> banks / abandon / urban
+# 実測 (2026-03〜07 のフル分析34件) では、ニュース検索が走った9件のうち
+# 7件(78%)が誤爆で STAY AWAY になり、trade_log が5ヶ月間ゼロ件だった。
+# -> 単語境界マッチ + 「その記事が暗号資産の話か」の関連性ゲートで是正する。
+
+# 大文字小文字を無視して判定する深刻語
+_RISK_PATTERNS_CI = [
+    r"\bhack(s|ed|ing|er|ers)?\b",
+    r"\bexploit(s|ed|ing)?\b",
+    r"\bbankrupt(cy)?\b",
+    r"\bfraud(ulent)?\b",
+    r"\bban(s|ned|ning)?\b",
+    r"\bwar\b",
+    r"\bcollapse[sd]?\b",
+    r"\brug[- ]?pull\b",
+    r"\bdelist(s|ed|ing)?\b",
+    r"\bshut[- ]?down[s]?\b",
+    r"\bsec (lawsuit|charges|sues|suing|probe|investigation)\b",
+]
+# 原文の大文字表記でのみ判定する語 (小文字の "sec" は seconds/section と
+# 区別できないため、規制当局を指す "SEC" は大文字でしか拾わない)
+_RISK_PATTERNS_CS = [
+    r"\bSEC\b",
+]
+# 一時的な弱材料 (単独では STAY AWAY にならない軽い減点)
+_FUD_PATTERNS_CI = [
+    r"\brumou?rs?\b",
+    r"\bcorrection\b",
+    r"\bprofit[- ]taking\b",
+    r"\bliquidation(s)?\b",
+    r"\bsell[- ]?off\b",
+    r"\bpullback\b",
+    r"\bfear\b",
+]
+# 記事が暗号資産市場の話であることを示す語。銘柄名 (BTC/INJ 等) と併せて
+# 判定し、どちらも無い記事は採点対象外にする (実害例: 金・銀相場の記事と
+# ミームコインのプレセール記事で INJ が STAY AWAY になった 2026-07-26)
+_CRYPTO_TERMS = (
+    "crypto", "bitcoin", "btc", "ethereum", "eth", "altcoin", "token",
+    "blockchain", "exchange", "defi", "stablecoin", "web3", "coin",
+)
+
+_RISK_RE_CI = [re.compile(p, re.IGNORECASE) for p in _RISK_PATTERNS_CI]
+_RISK_RE_CS = [re.compile(p) for p in _RISK_PATTERNS_CS]
+_FUD_RE_CI = [re.compile(p, re.IGNORECASE) for p in _FUD_PATTERNS_CI]
+
+SYSTEMIC_RISK_THRESHOLD = -2.0
+
+
+def _is_crypto_related(text_lower: str, coin_name: str) -> bool:
+    """記事が対象銘柄または暗号資産市場の話かどうか。"""
+    if coin_name and re.search(rf"\b{re.escape(coin_name.lower())}\b", text_lower):
+        return True
+    return any(term in text_lower for term in _CRYPTO_TERMS)
+
+
+def classify_news_risk(articles: list, coin_name: str = "") -> tuple:
+    """ニュース検索結果から市場リスクを分類する (純関数)。
+
+    articles: [{"title","url","content"}] (Tavily の results 形式)
+    Returns: (summary_lines, risk_level)
+      summary_lines: Obsidianレポート用の markdown 行リスト。
+                     採点に効いた記事には理由を併記する (誤爆を可視化するため。
+                     旧実装は判定根拠を一切残さず、5ヶ月間気付けなかった)
+      risk_level: "SYSTEMIC_RISK" | "NORMAL_CORRECTION" | "NEUTRAL"
+    """
+    summary_lines = []
+    score = 0.0
+
+    for art in articles:
+        title = art.get("title") or "No title"
+        url = art.get("url") or ""
+        raw = f"{title}\n{art.get('content') or ''}"
+        lowered = raw.lower()
+
+        if not _is_crypto_related(lowered, coin_name):
+            summary_lines.append(f"- [{title}]({url}) ⏭️ 対象外(暗号資産の記事ではない)")
+            continue
+
+        hit = next((r.pattern for r in _RISK_RE_CI if r.search(raw)), None)
+        if hit is None:
+            hit = next((r.pattern for r in _RISK_RE_CS if r.search(raw)), None)
+        if hit:
+            score -= 2
+            summary_lines.append(f"- [{title}]({url}) ⚠️ 深刻語ヒット: `{hit}`")
+            continue
+
+        fud = next((r.pattern for r in _FUD_RE_CI if r.search(raw)), None)
+        if fud:
+            score -= 0.5
+            summary_lines.append(f"- [{title}]({url}) 🟡 弱材料ヒット: `{fud}`")
+        else:
+            summary_lines.append(f"- [{title}]({url})")
+
+    if not summary_lines:
+        return [], "NEUTRAL"
+
+    if score <= SYSTEMIC_RISK_THRESHOLD:
+        risk_level = "SYSTEMIC_RISK"
+    elif score < 0:
+        risk_level = "NORMAL_CORRECTION"
+    else:
+        risk_level = "NEUTRAL"
+    return summary_lines, risk_level
 
 
 def _decide_signal(news_risk: str, is_falling_knife: bool, has_divergence: bool,

@@ -25,7 +25,7 @@ from lib.file_lock import FileLock
 from lib.quant_core import (
     _calculate_kelly, _detect_regime, _detect_liquidity_sweep,
     _check_divergence, _decide_signal, _compute_levels, get_float_env,
-    _daily_trend, _apply_daily_gate, _compute_indicators,
+    _daily_trend, _apply_daily_gate, _compute_indicators, classify_news_risk,
 )
 
 
@@ -54,34 +54,13 @@ def _analyze_market_drivers(symbol: str, change_pct_24h: float) -> tuple:
         print(f"  ⚠️ Market driver search failed: {e}")
         return f"ニュース検索に失敗しました: {e}", "NEUTRAL"
 
-    summary_lines = []
-    sentiment_score = 0
-
-    risk_keywords = ["hack", "sec", "ban", "bankruptcy", "fraud", "war", "collapse",
-                     "exploit", "rug pull", "delisting", "shutdown"]
-    fud_keywords = ["rumor", "correction", "profit taking", "liquidations",
-                    "sell-off", "pullback", "fear"]
-
-    for res in response.get("results", []):
-        content = res.get('content', '').lower()
-        title = res.get('title', 'No title')
-        url = res.get('url', '')
-        summary_lines.append(f"- [{title}]({url})")
-
-        if any(w in content for w in risk_keywords):
-            sentiment_score -= 2
-        elif any(w in content for w in fud_keywords):
-            sentiment_score -= 0.5
+    # 判定は lib/quant_core.classify_news_risk に委譲 (純関数・テスト可能)。
+    # ここは Tavily 取得と整形だけを担当する
+    summary_lines, risk_level = classify_news_risk(
+        response.get("results", []), coin_name)
 
     if not summary_lines:
         return "関連ニュースが見つかりませんでした。", "NEUTRAL"
-
-    if sentiment_score <= -2:
-        risk_level = "SYSTEMIC_RISK"
-    elif sentiment_score < 0:
-        risk_level = "NORMAL_CORRECTION"
-    else:
-        risk_level = "NEUTRAL"
 
     return "\n".join(summary_lines), risk_level
 
