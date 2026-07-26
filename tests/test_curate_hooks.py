@@ -290,6 +290,26 @@ def test_commands_registered():
           callable(bcc.cmd_setup) and callable(bcc.cmd_topic))
 
 
+# ---------------------------------------------------------
+# 7. 結果アイコンの出し分け (成功と失敗を同じ ✅ で出さない)
+# ---------------------------------------------------------
+
+def test_result_icon():
+    print("\n[7] 結果アイコンの出し分け")
+    # search_and_save_topic の戻り値5種。2026-07-26 以前は全て "✅" だったため、
+    # Tavily / Gemini のエラー文が成功として表示されていた。
+    cases = [
+        ("Success: Created [[30_Main/Knowledge_Base/x.md]] (Path: D:\\x)", "✅"),
+        ("Error: 'X' の検索結果が見つかりませんでした。", "❌"),
+        ("Error searching for topic: timeout", "❌"),
+        ("Error generating summary: quota exceeded", "❌"),
+        ("既にノートが存在します: 2026-07-26_X.md", "⚠️"),
+    ]
+    for result, expected in cases:
+        got = bcc._result_icon(result)
+        check(f"{result[:28]}… → {expected}", got == expected, f"got {got}")
+
+
 if __name__ == "__main__":
     print("=== test_curate_hooks ===")
     test_impression_and_click()
@@ -298,6 +318,7 @@ if __name__ == "__main__":
     test_other_user_not_logged()
     test_setup_view()
     test_commands_registered()
+    test_result_icon()
 
     print(f"\n=== 結果: {len(_PASS)} passed / {len(_FAIL)} failed ===")
     if _FAIL:

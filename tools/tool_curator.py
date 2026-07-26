@@ -31,6 +31,7 @@ from tools.tool_obsidian import (
     _extract_and_integrate_sections,
     _determine_parent_moc,
 )
+from lib.lib_obsidian_cli import run_obsidian_cli
 
 # ---------------------------------------------------------
 # CONFIGURATION
@@ -490,7 +491,24 @@ def search_and_save_topic(topic: str, search_query: str = "",
         f.write(final_content)
 
     print(f"[Curator] ✅ Saved: {save_path}")
-    return f"Success: Created [[{KB_DIR_NAME}/{filename}]] (Path: {save_path})"
+
+    # Vault ルートからの相対パス。Obsidian CLI と [[wikilink]] の両方で使う。
+    # KB_DIR は 30_Main/Knowledge_Base なので、この 30_Main/ を省くと Obsidian が
+    # リンクを解決できず「未解決リンク = クリックすると新規作成」になる (2026-07-26 修正)。
+    vault_rel_path = os.path.relpath(save_path, VAULT_ROOT).replace('\\', '/')
+
+    # Google ドライブ上の Vault では、外部プロセスの書き込みが Obsidian のファイル監視に
+    # 載らない。インデックスされないため検索にも出ず、同期にも乗らない = 「作成したと
+    # 表示されたのにファイルが無い」の正体。tool_obsidian.tool_create_note と同じく
+    # CLI の open で掴ませる。
+    # 例外は握りつぶす: ここで送出すると @retry が3回走り、2周目以降は
+    # 「既にノートが存在します」を返すため、成功した書き込みが失敗として報告される。
+    try:
+        run_obsidian_cli(["open", vault_rel_path])
+    except Exception as e:
+        print(f"[Curator] ⚠️ Failed to trigger Obsidian CLI open: {e}")
+
+    return f"Success: Created [[{vault_rel_path}]] (Path: {save_path})"
 
 
 # ---------------------------------------------------------

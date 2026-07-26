@@ -3,7 +3,7 @@ import os
 import shutil
 sys.path.insert(0, r'C:\AI_agent')
 
-from tool_curator import search_and_save_topic
+from tools.tool_curator import search_and_save_topic
 
 def test_curate_integration():
     print("=== TEST START: Curate Integration ===")
@@ -27,11 +27,14 @@ def test_curate_integration():
         print(f"Result: {result}")
         
         # Check the file
-        # Result string is like "Success: Created [[Knowledge_Base/yyyy-mm-dd_Test_Agent_Integration.md]]"
+        # Result string is like
+        #   "Success: Created [[30_Main/Knowledge_Base/yyyy-mm-dd_Test_Agent_Integration.md]] (Path: ...)"
+        # 2026-07-26 以前は [[Knowledge_Base/...]] と Vault ルート基準になっておらず、
+        # Obsidian 上で未解決リンクになっていた。リンクは Vault ルート相対に統一済み。
         match = result.split("[[")[1].split("]]")[0]
-        # match is like "Knowledge_Base/2026-02-09_Test_Agent_Integration.md"
-        
-        filepath = os.path.join(r'D:\マイドライブ\Obsidian\30_Main', match)
+        # match is like "30_Main/Knowledge_Base/2026-02-09_Test_Agent_Integration.md"
+
+        filepath = os.path.join(r'D:\マイドライブ\Obsidian', *match.split("/"))
         
         if os.path.exists(filepath):
             with open(filepath, 'r', encoding='utf-8') as f:
