@@ -245,11 +245,53 @@ def test_scheduler_registration():
     src = open(os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "agent_scheduler.py"), encoding="utf-8").read()
     check("tool_crypto_sweep を import", "tool_crypto_sweep" in src)
-    # UTC 0/4/8/12/16/20 の確定直後 = JST 09/13/17/21/01/05。
-    # 09:05 は既存の 09:00 Market Scan が兼ねるため登録しない
-    for t in ("01:05", "05:05", "13:05", "17:05", "21:05"):
+    # UTC 0/4/8/12/16/20 の確定直後 = JST 09/13/17/21/01/05 の6枠すべて。
+    # 09:00 の Market Scan は読み物で記録しないため 09:05 も必要
+    for t in ("01:05", "05:05", "09:05", "13:05", "17:05", "21:05"):
         check(f"{t} に登録", f'"{t}"' in src)
-    check("09:05 は重複登録しない", '"09:05"' not in src)
+
+
+def test_scan_has_no_side_effects():
+    print("[Test] /scan は記録もフル分析起動もしない (手動実行の副作用を断つ)")
+    src = open(tc.__file__, encoding="utf-8").read()
+    body = src[src.index("def tool_scan_crypto_market"):
+               src.index("def tool_audit_predictions")]
+    check("スキャン本体から _record_scan_results を呼ばない",
+          "_record_scan_results(" not in body)
+    check("スキャン本体から tool_analyze_crypto を呼ばない",
+          "tool_analyze_crypto(" not in body)
+    sweep = src[src.index("def tool_crypto_sweep"):
+                src.index("def tool_scan_crypto_market")]
+    check("記録経路は sweep 側にある", "_record_scan_results(" in sweep)
+
+
+def test_sweep_reports_failure():
+    print("[Test] フル分析の失敗が成功サマリに埋もれない")
+    with TempLog():
+        orig_analyze, orig_counter = tc.tool_analyze_crypto, tc.SWEEP_COUNTER
+        tc.SWEEP_COUNTER = FakeCounter()
+        try:
+            # ツール層は例外を投げずに "Error: ..." を返す規約
+            tc.tool_analyze_crypto = lambda s: "Error: ccxt timeout"
+            rec = tc._record_scan_results([
+                {"symbol": "BTC/USDT", "signal": "BUY", "signal_type": "smc_sweep",
+                 "confidence": 0.65, "price": 100.0, "atr_value": 2.0, "reasons": []},
+            ])
+            check("文字列で返された失敗を検出", rec["failed"] == ["BTC/USDT"])
+            check("成功扱いしない", rec["triggered"] == [])
+
+            tc.tool_analyze_crypto = _raise
+            rec2 = tc._record_scan_results([
+                {"symbol": "ETH/USDT", "signal": "BUY", "signal_type": "smc_sweep",
+                 "confidence": 0.65, "price": 50.0, "atr_value": 1.0, "reasons": []},
+            ])
+            check("例外も failed に載る", rec2["failed"] == ["ETH/USDT"])
+        finally:
+            tc.tool_analyze_crypto, tc.SWEEP_COUNTER = orig_analyze, orig_counter
+
+
+def _raise(_symbol):
+    raise RuntimeError("boom")
 
 
 if __name__ == "__main__":
@@ -263,6 +305,8 @@ if __name__ == "__main__":
     test_budget_exhaustion()
     test_resolve_levels()
     test_scheduler_registration()
+    test_scan_has_no_side_effects()
+    test_sweep_reports_failure()
     print("=" * 60)
     print(f"PASS: {PASS} / FAIL: {FAIL}")
     sys.exit(1 if FAIL else 0)

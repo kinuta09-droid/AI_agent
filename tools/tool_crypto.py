@@ -21,6 +21,7 @@ from lib.lib_shared import (
 )
 from lib.file_lock import FileLock
 from lib.cost_guard import SWEEP_COUNTER, GeminiBudgetExceeded
+from lib.bot_errors import is_failure_result
 # 純関数群は lib/quant_core.py に分離 (バックテスターと共有)。
 # ここで再輸入することで既存の呼び出し・テスト (tc._decide_signal 等) は不変
 from lib.quant_core import (
@@ -155,16 +156,19 @@ def _get_signal_stats(logs: list = None) -> dict:
     return stats
 
 
-def _resolve_win_rate(signal_type: str, default_confidence: float) -> tuple:
+def _resolve_win_rate(signal_type: str, default_confidence: float,
+                      logs: list = None) -> tuple:
     """
     Kellyに渡す勝率を決定する。
     判定済みサンプルが MIN_AUDIT_SAMPLES 以上ある種別は実測勝率
     （EMPIRICAL_WIN_RATE_CAP でクランプ）、それ未満は既定confidence。
+    logs 省略時は trade_log を読み直す。銘柄ループから呼ぶときは読み込み済みの
+    ログを渡すこと (20銘柄×毎回ファイル読み = N+1 になる)。
     Returns: (win_rate, basis, sample_count)  basis: "実測" | "既定値"
     """
     if not signal_type:
         return default_confidence, "既定値", 0
-    stats = _get_signal_stats().get(signal_type)
+    stats = _get_signal_stats(logs).get(signal_type)
     if not stats:
         return default_confidence, "既定値", 0
     n = stats["wins"] + stats["losses"]
@@ -686,7 +690,7 @@ def _record_scan_results(results: list) -> dict:
     (どうせ記録されないものに Gemini/Tavily を払わない)。
     """
     logs = _load_trade_log()
-    triggered, observed, skipped = [], [], []
+    triggered, observed, skipped, failed = [], [], [], []
     budget_hit = False
 
     for r in results:
@@ -704,17 +708,24 @@ def _record_scan_results(results: list) -> dict:
                 continue
             print(f"  🔎 BUY候補: {symbol} — フル分析を起動")
             try:
-                tool_analyze_crypto(symbol)
-                triggered.append(symbol)
+                result = tool_analyze_crypto(symbol)
+                # ツール層は例外を投げずに "Error: ..." を返す規約なので、
+                # 例外が出なかった＝成功と決めつけない
+                if is_failure_result(result):
+                    failed.append(symbol)
+                    print(f"  ❌ {symbol} フル分析が失敗を返した: {str(result)[:120]}")
+                else:
+                    triggered.append(symbol)
             except Exception as e:
-                print(f"  ⚠️ {symbol} フル分析失敗: {e}")
+                failed.append(symbol)
+                print(f"  ❌ {symbol} フル分析で例外: {e}")
 
         elif signal == "WATCH LIST" and r.get("signal_type"):
             if _has_open_record(logs, symbol, RECORD_KIND_OBSERVATION):
                 continue
             lv = _resolve_levels(r["price"], r["atr_value"])
             win_rate, _basis, _n = _resolve_win_rate(r["signal_type"],
-                                                    r["confidence"])
+                                                    r["confidence"], logs)
             extra = {"levels_mode": lv["mode"]}
             if lv["levels"] is not None:
                 extra.update({
@@ -733,8 +744,8 @@ def _record_scan_results(results: list) -> dict:
             except Exception as e:
                 print(f"  ⚠️ {symbol} 観測記録失敗: {e}")
 
-    return {"triggered": triggered, "observed": observed,
-            "skipped": skipped, "budget_hit": budget_hit}
+    return {"triggered": triggered, "observed": observed, "skipped": skipped,
+            "failed": failed, "budget_hit": budget_hit}
 
 
 def tool_crypto_sweep() -> str:
@@ -757,14 +768,18 @@ def tool_crypto_sweep() -> str:
         return "Error: Could not fetch any crypto data."
 
     rec = _record_scan_results(results)
-    parts = [f"Sweep: {len(results)}銘柄を評価",
+    parts = [f"{len(results)}銘柄を評価",
              f"フル分析起動 {len(rec['triggered'])}件",
              f"観測記録 {len(rec['observed'])}件"]
     if rec["skipped"]:
         parts.append(f"OPEN重複スキップ {len(rec['skipped'])}件")
     if rec["budget_hit"]:
         parts.append("⚠️ 分析予算上限に到達")
-    return "Success: " + " | ".join(parts)
+    # 失敗を成功サマリに埋もれさせない (ツール層の "Error:" 規約に合わせる)
+    if rec["failed"]:
+        return (f"Error: Sweep: {', '.join(rec['failed'])} のフル分析に失敗 | "
+                + " | ".join(parts))
+    return "Success: Sweep: " + " | ".join(parts)
 
 
 def tool_scan_crypto_market() -> str:
@@ -785,8 +800,10 @@ def tool_scan_crypto_market() -> str:
     if not results:
         return "Error: Could not fetch any crypto data."
 
-    # スキャン結果を trade_log に反映する (記録はここでも sweep でも同じ関数)
-    _record_scan_results(results)
+    # ここでは記録もフル分析の起動もしない。/scan は Discord から手動で叩く
+    # 読み物であり、副作用として Gemini/Tavily を走らせると応答が数分単位に
+    # 伸びる上に日次予算を食う。記録は tool_crypto_sweep の単一経路に寄せる
+    # (09:05 の sweep が同じ4h足クローズを拾う)。
 
     # スコア降順 → RSI昇順でソート
     results.sort(key=lambda x: (-x['score'], x['rsi']))
@@ -918,6 +935,20 @@ def _search_loss_reason(symbol: str, entry_time: datetime.datetime) -> str:
     return "; ".join(news_items) if news_items else "関連ニュース見つからず"
 
 
+def _to_utc_naive(local_dt: datetime.datetime) -> datetime.datetime:
+    """ローカル時刻の naive datetime を UTC の naive datetime に変換する。
+
+    trade_log の timestamp は `datetime.now().isoformat()` = ローカル(JST)naive、
+    ccxt の足は epoch ms → `pd.to_datetime(unit='ms')` = UTC naive。
+    この2つをそのまま比較すると JST 分(9時間)ずれ、_resolve_trade が
+    「エントリー直後9時間の足」を entry より前とみなして捨てる
+    (= その間にSL/TPへ到達したトレードを取りこぼす)。
+    バックテスターは全て UTC naive で閉じているため、ライブ側を UTC に寄せる。
+    """
+    return datetime.datetime.fromtimestamp(
+        local_dt.timestamp(), datetime.timezone.utc).replace(tzinfo=None)
+
+
 def _fetch_audit_candles(exchange, symbol: str, since_dt: datetime.datetime):
     """監査用1h足を「その銘柄の最古エントリー以降」でまとめて1回取得する。
 
@@ -947,7 +978,10 @@ def tool_audit_predictions() -> str:
     print("[Tool] 🕵️ Auditing past predictions...")
 
     logs = _load_trade_log()
-    open_trades = [t for t in logs if t["status"] == "OPEN"]
+    # 破損レコード1件で毎晩の監査が丸ごと落ちないよう .get で読む
+    open_trades = [t for t in logs
+                   if isinstance(t, dict) and t.get("status") == "OPEN"
+                   and t.get("symbol")]
 
     if not open_trades:
         return "評価待ちの予測（OPEN）はありません。"
@@ -979,11 +1013,12 @@ def tool_audit_predictions() -> str:
         for t in trades:
             try:
                 entry_times[t["id"]] = datetime.datetime.fromisoformat(t["timestamp"])
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, KeyError):
                 report += f"- ⚠️ {symbol} (ID: {t.get('id')}): timestamp破損のためスキップ\n"
         if not entry_times:
             continue
 
+        # fetch は epoch 変換なのでローカル naive のまま渡す (.timestamp() が正しく効く)
         oldest = min(entry_times.values())
         print(f"  📊 Fetching {symbol} 1h since {oldest:%Y-%m-%d} "
               f"({len(entry_times)}件)...")
@@ -1000,9 +1035,11 @@ def tool_audit_predictions() -> str:
         current_close = float(df['close'].iloc[-1])
 
         for trade in trades:
-            entry_time = entry_times.get(trade["id"])
+            entry_time = entry_times.get(trade.get("id"))
             if entry_time is None:
                 continue
+            # 足は UTC naive なので、比較用に entry も UTC へ揃える
+            entry_utc = _to_utc_naive(entry_time)
             kind = trade.get("record_kind", RECORD_KIND_SIGNAL)
 
             # 決着判定は lib/quant_core._resolve_trade に統一。
@@ -1012,7 +1049,7 @@ def tool_audit_predictions() -> str:
             # 過去レコードがゼロの今が互換性を気にせず揃えられる唯一の機会。
             new_status, exit_time, note = _resolve_trade(
                 trade["entry_price"], trade["stop_loss"], trade["target_price"],
-                df, entry_time, expiry_days=AUDIT_EXPIRY_DAYS)
+                df, entry_utc, expiry_days=AUDIT_EXPIRY_DAYS)
 
             # データ端まで未決着でも実時間で期限を過ぎていれば期限切れにする
             # (取得窓が足りずEXPIREDバーが無いケース)

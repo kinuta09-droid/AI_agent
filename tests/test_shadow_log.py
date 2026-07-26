@@ -207,6 +207,38 @@ def test_audit_resolution_shared():
     check("EXPIRY は21日で共有", tc.AUDIT_EXPIRY_DAYS == 21)
 
 
+def test_entry_time_timezone():
+    print("[Test] エントリー時刻のタイムゾーン整合 (JST naive → UTC naive)")
+    # trade_log の timestamp は datetime.now().isoformat() = ローカル(JST)naive、
+    # ccxt の足は epoch ms → pd.to_datetime(unit='ms') = UTC naive。
+    # そのまま比較すると9時間ずれ、_resolve_trade がエントリー直後9時間の足を
+    # 「entry より前」として捨てる = その間の SL/TP 到達を取りこぼす
+    # 実足は時刻境界に整列しているので、秒精度で組む
+    # (int(now.timestamp()*1000) はマイクロ秒を捨てるため、そのまま比較すると
+    #  足が entry の1ミリ秒未満だけ前になり、本筋と無関係に落ちる)
+    epoch_s = int(datetime.datetime.now().timestamp())
+    local = datetime.datetime.fromtimestamp(epoch_s)
+    utc = tc._to_utc_naive(local)
+    check("変換後は tz-naive のまま", utc.tzinfo is None)
+    check("同一エポックを指す",
+          abs(utc.replace(tzinfo=datetime.timezone.utc).timestamp()
+              - local.timestamp()) < 1e-6)
+
+    # エントリー直後の足で TP に到達するケースを、両方の時刻系で解いて比較
+    epoch_ms = epoch_s * 1000
+    candles = pd.DataFrame({
+        "timestamp": pd.to_datetime(
+            [epoch_ms + i * 3600_000 for i in range(4)], unit='ms'),
+        "high": [125.0, 100.0, 100.0, 100.0],   # 1本目でTP到達
+        "low": [99.0, 99.0, 99.0, 99.0],
+    })
+    good, _e, _n = _resolve_trade(100.0, 90.0, 120.0, candles, utc)
+    check("UTCに揃えればエントリー直後の足を評価できる (WIN)", good == "WIN")
+
+    bad, _e2, _n2 = _resolve_trade(100.0, 90.0, 120.0, candles, local)
+    check("ローカル時刻のまま渡すと取りこぼす (回帰の再現)", bad != "WIN")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("記録層 (record_kind / 重複抑止 / 監査統一) テスト")
@@ -217,6 +249,7 @@ if __name__ == "__main__":
     test_observation_excluded_from_kelly()
     test_split_by_kind()
     test_audit_resolution_shared()
+    test_entry_time_timezone()
     print("=" * 60)
     print(f"PASS: {PASS} / FAIL: {FAIL}")
     sys.exit(1 if FAIL else 0)

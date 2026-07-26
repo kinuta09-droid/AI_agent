@@ -148,6 +148,19 @@ def test_relevance_gate():
     check("銘柄名一致なら関連ありと判定 → SYSTEMIC_RISK",
           risk_of(named, "INJ") == "SYSTEMIC_RISK")
 
+    # 関連性ゲート自体も単語境界で判定する。部分文字列にすると "eth" が
+    # whether/together/method に、"coin" が coincidence に当たって素通しになり、
+    # 深刻語側で潰したのと同じ罠をゲート側で作り直すことになる
+    traps = {
+        "whether/eth": "Oil traders debated whether the war would escalate.",
+        "together/eth": "Officials met together as the war dragged on.",
+        "method/eth": "A new method of banking was proposed amid the war.",
+        "coincidence/coin": "By coincidence the war news hit the same day.",
+    }
+    for name, text in traps.items():
+        check(f"関連性ゲートが '{name}' で素通ししない",
+              risk_of([art(text, text)], "INJ") == "NEUTRAL")
+
 
 def test_scoring_levels():
     print("[Test] スコア段階 (閾値は旧実装から据え置き)")

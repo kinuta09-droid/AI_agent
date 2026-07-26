@@ -149,11 +149,13 @@ _FUD_PATTERNS_CI = [
 ]
 # 記事が暗号資産市場の話であることを示す語。銘柄名 (BTC/INJ 等) と併せて
 # 判定し、どちらも無い記事は採点対象外にする (実害例: 金・銀相場の記事と
-# ミームコインのプレセール記事で INJ が STAY AWAY になった 2026-07-26)
-_CRYPTO_TERMS = (
-    "crypto", "bitcoin", "btc", "ethereum", "eth", "altcoin", "token",
-    "blockchain", "exchange", "defi", "stablecoin", "web3", "coin",
-)
+# ミームコインのプレセール記事で INJ が STAY AWAY になった 2026-07-26)。
+# ここも単語境界で判定する — 部分文字列にすると "eth" が whether/together/method に、
+# "btc" 以外でも "coin" が coincidence に当たり、関連性ゲートが素通しになる
+# (深刻語側で潰したのと同じ罠を、ゲート側で作り直すことになる)
+_CRYPTO_TERM_RE = re.compile(
+    r"\b(crypto\w*|bitcoin|btc|ethereum|eth|altcoins?|tokens?|blockchain|"
+    r"exchanges?|defi|stablecoins?|web3|coins?)\b", re.IGNORECASE)
 
 _RISK_RE_CI = [re.compile(p, re.IGNORECASE) for p in _RISK_PATTERNS_CI]
 _RISK_RE_CS = [re.compile(p) for p in _RISK_PATTERNS_CS]
@@ -166,7 +168,7 @@ def _is_crypto_related(text_lower: str, coin_name: str) -> bool:
     """記事が対象銘柄または暗号資産市場の話かどうか。"""
     if coin_name and re.search(rf"\b{re.escape(coin_name.lower())}\b", text_lower):
         return True
-    return any(term in text_lower for term in _CRYPTO_TERMS)
+    return bool(_CRYPTO_TERM_RE.search(text_lower))
 
 
 def classify_news_risk(articles: list, coin_name: str = "") -> tuple:
