@@ -17,6 +17,7 @@ commands/bot_commands_admin.py — 常駐スタックの状態確認と再起動
   ALLOWED_USER_IDS で全スラッシュコマンドを一括ガードしており、自動的に乗る。
 """
 import asyncio
+import os
 import time
 
 import discord
@@ -58,6 +59,57 @@ async def cmd_status(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 
+async def announce_restart_complete(bot_client):
+    """再起動の書き置きがあれば「完了しました」を報告する (on_ready から呼ぶ)。
+
+    Bot は自分を閉じて別プロセスとして上がり直すので、再起動を要求した
+    interaction はプロセスごと消えている。完了を伝えられるのは
+    「次に起動した自分」だけなので、報告先をファイルに書き置いて引き継ぐ。
+
+    通知の失敗で on_ready を壊さない (Bot 本体の起動が最優先)。
+    """
+    try:
+        notice = await asyncio.to_thread(service_control.pop_restart_notice)
+        if not notice:
+            return
+        channel = bot_client.get_channel(notice["channel_id"])
+        if channel is None:
+            # 起動直後でキャッシュが埋まっていないことがあるので API で取り直す
+            channel = await bot_client.fetch_channel(notice["channel_id"])
+        await channel.send(
+            f"✅ **問題なく再起動しました** "
+            f"(停止 {notice['elapsed']:.1f} 秒 / PID {os.getpid()})"
+        )
+    except Exception as e:
+        print(f"[Admin] 再起動完了の通知に失敗: {e}")
+
+
+async def _watch_service_recovery(interaction: discord.Interaction, name: str,
+                                  label: str, timeout: float = 90.0):
+    """kill した子が復帰したかを見届けて報告する。
+
+    request_restart が返すのは「停止させた」ところまで。実際に上がってきたかは
+    スーパーバイザ任せなので、heartbeat が動き出すまで見てから完了を伝える。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        await asyncio.sleep(3)
+        st = await asyncio.to_thread(service_control.status, name)
+        if st["state"] == "running":
+            try:
+                await interaction.followup.send(
+                    f"✅ **{label} は問題なく再起動しました** (PID {st['pid']})")
+            except discord.HTTPException:
+                pass
+            return
+    try:
+        await interaction.followup.send(
+            f"⚠️ {label} の復帰を {int(timeout)} 秒待ちましたが確認できませんでした。"
+            f"`/status` と `logs\\launcher.log` を確認してください。")
+    except discord.HTTPException:
+        pass
+
+
 async def _close_after(delay: float):
     """応答が Discord に届く猶予を置いてから自分を閉じる。
 
@@ -87,15 +139,21 @@ async def cmd_restart(interaction: discord.Interaction, target: str = "bot"):
         return
 
     messages = []
+    watch_scheduler = False
     if target in ("scheduler", "both"):
-        _ok, msg = await asyncio.to_thread(service_control.request_restart, "scheduler")
+        ok, msg = await asyncio.to_thread(service_control.request_restart, "scheduler")
         messages.append(msg)
+        watch_scheduler = ok
 
     restart_self = target in ("bot", "both")
     if restart_self:
         # 自分は kill せず、フラグだけ立てて自主的に閉じる。スーパーバイザが
         # 「意図的な再起動」と読んで失敗カウントを増やさない。
         await asyncio.to_thread(service_control.set_restart_flag, "discord_bot")
+        # 完了報告の宛先を書き置く。この直後にプロセスが消えるので、
+        # 「問題なく再起動しました」を投稿できるのは次に起動した自分だけ。
+        await asyncio.to_thread(
+            service_control.write_restart_notice, interaction.channel_id, target)
         messages.append("♻️ Discord Bot: 応答後に自分を閉じます。約5秒後に新しいコードで復帰します。")
 
     if not messages:
@@ -108,3 +166,8 @@ async def cmd_restart(interaction: discord.Interaction, target: str = "bot"):
     if restart_self:
         # followup の送信完了を待ってから閉じる (途中で切ると応答が消える)
         asyncio.create_task(_close_after(1.5))
+        return   # 自分が落ちるので、これ以降の見届けタスクは走れない
+
+    if watch_scheduler:
+        asyncio.create_task(
+            _watch_service_recovery(interaction, "scheduler", "Scheduler"))

@@ -1284,6 +1284,10 @@ async def on_ready():
         print(f"[Discord] ❌ Failed to sync commands: {e}")
     print("[Discord] 🚀 Bot is ready!")
 
+    # /restart で自分を閉じていた場合、その報告先へ完了を伝える。
+    # (要求時の interaction はプロセスごと消えているのでファイル経由で引き継ぐ)
+    await bot_commands_admin.announce_restart_complete(bot)
+
 
 # ---------------------------------------------------------
 # Main

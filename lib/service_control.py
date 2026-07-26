@@ -192,6 +192,65 @@ def consume_restart_flag(name):
         return False
 
 
+# 再起動を要求した側 (Discord) が「どこへ完了を報告すべきか」を書き置くファイル。
+# Bot は自分を閉じて別プロセスとして上がり直すため、メモリ上の interaction は
+# 引き継げない。次の起動時にこれを読んで完了メッセージを投稿する。
+RESTART_NOTICE_FILE = os.path.join(LOG_DIR, "restart_notice.json")
+
+# 書き置きの有効期限。PC 電源断などで何時間も後に起動した場合、
+# 「再起動が完了しました」を今さら投稿しても混乱するだけなので捨てる。
+NOTICE_MAX_AGE = 600
+
+
+def write_restart_notice(channel_id, target, requested_at=None):
+    """再起動完了の報告先を書き置く。成功で True。"""
+    import json
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        payload = {
+            "channel_id": int(channel_id),
+            "target": target,
+            "requested_at": time.time() if requested_at is None else requested_at,
+        }
+        with open(RESTART_NOTICE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(payload, f)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def pop_restart_notice(max_age=NOTICE_MAX_AGE, now=None):
+    """書き置きを読んで削除する。無い/古い/壊れている場合は None。
+
+    読んだら必ず消すのは、再接続で on_ready が再発火するたびに
+    「再起動が完了しました」を投稿してしまわないため。
+    """
+    import json
+    try:
+        with open(RESTART_NOTICE_FILE, encoding='utf-8') as f:
+            payload = json.load(f)
+    except (OSError, ValueError):
+        return None
+    finally:
+        try:
+            os.remove(RESTART_NOTICE_FILE)
+        except OSError:
+            pass
+
+    try:
+        requested_at = float(payload["requested_at"])
+        channel_id = int(payload["channel_id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    elapsed = (time.time() if now is None else now) - requested_at
+    if elapsed < 0 or elapsed > max_age:
+        return None
+    payload["elapsed"] = elapsed
+    payload["channel_id"] = channel_id
+    return payload
+
+
 def request_restart(name):
     """サービスの再起動を要求する。戻り値: (成功したか, 人間向けメッセージ)。
 

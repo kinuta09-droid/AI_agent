@@ -36,7 +36,7 @@ class _Sandbox:
         self.logs = os.path.join(self.dir, "logs")
         os.makedirs(self.logs, exist_ok=True)
         self._orig = (sc.SERVICES, sc.LAUNCHER_PID_FILE, sc.LOG_DIR,
-                      watchdog.kill_process)
+                      watchdog.kill_process, sc.RESTART_NOTICE_FILE)
         sc.SERVICES = {
             "discord_bot": {
                 "label": "Discord Bot",
@@ -48,11 +48,13 @@ class _Sandbox:
         }
         sc.LAUNCHER_PID_FILE = os.path.join(self.dir, "arms_launcher.pid")
         sc.LOG_DIR = self.logs
+        sc.RESTART_NOTICE_FILE = os.path.join(self.logs, "restart_notice.json")
         self.killed = []
         return self
 
     def __exit__(self, *exc):
-        sc.SERVICES, sc.LAUNCHER_PID_FILE, sc.LOG_DIR, watchdog.kill_process = self._orig
+        (sc.SERVICES, sc.LAUNCHER_PID_FILE, sc.LOG_DIR, watchdog.kill_process,
+         sc.RESTART_NOTICE_FILE) = self._orig
         shutil.rmtree(self.dir, ignore_errors=True)
         return False
 
@@ -83,6 +85,9 @@ class _Sandbox:
 
     def flag_exists(self):
         return os.path.exists(sc.SERVICES["discord_bot"]["restart_flag"])
+
+    def notice_exists(self):
+        return os.path.exists(sc.RESTART_NOTICE_FILE)
 
 
 def test_resolve_aliases():
@@ -175,6 +180,45 @@ def test_request_restart_when_already_stopped():
         assert ok is True and box.killed == [], msg
         assert not box.flag_exists(), "停止済みならフラグ不要 (次の死亡を誤読させない)"
     print("✅ request_restart: 既に停止済みなら kill もフラグも行わない")
+
+
+def test_restart_notice_round_trip_and_single_consumption():
+    """完了報告の宛先は1回だけ読める。
+
+    on_ready は再接続のたびに発火するので、消さずに読むと
+    「問題なく再起動しました」が何度も投稿されてしまう。
+    """
+    with _Sandbox() as box:
+        assert sc.pop_restart_notice() is None, "書き置きが無ければ None"
+        assert sc.write_restart_notice(123456789, "bot") is True
+        assert box.notice_exists()
+
+        notice = sc.pop_restart_notice()
+        assert notice is not None
+        assert notice["channel_id"] == 123456789 and notice["target"] == "bot"
+        assert 0 <= notice["elapsed"] < 5, notice["elapsed"]
+        assert not box.notice_exists(), "読んだら消えていること"
+        assert sc.pop_restart_notice() is None, "2回目は None (多重投稿を防ぐ)"
+    print("✅ restart notice: 書いて読んで消える (消費は1回だけ)")
+
+
+def test_restart_notice_expires():
+    """電源断などで何時間も後に起動したら、今さら完了報告はしない。"""
+    with _Sandbox() as box:
+        sc.write_restart_notice(1, "bot",
+                                requested_at=time.time() - sc.NOTICE_MAX_AGE - 60)
+        assert sc.pop_restart_notice() is None, "期限切れは None"
+        assert not box.notice_exists(), "期限切れでもファイルは片付ける"
+    print("✅ restart notice: 期限切れは投稿せず片付ける")
+
+
+def test_restart_notice_broken_file_is_discarded():
+    with _Sandbox() as box:
+        with open(sc.RESTART_NOTICE_FILE, 'w', encoding='utf-8') as f:
+            f.write("{ not json")
+        assert sc.pop_restart_notice() is None
+        assert not box.notice_exists(), "壊れた書き置きを残すと毎回読み直してしまう"
+    print("✅ restart notice: 壊れた書き置きは捨てる")
 
 
 def test_format_status_lines_warns_when_launcher_down():
