@@ -28,6 +28,7 @@
 ## Commands
 ```bash
 py verify_project.py           # Pre-flight check (MANDATORY before release)
+scripts\arms.bat               # ワンクリック制御 (引数なし=メニュー / start|stop|restart|status|logs)
 py main.py                     # Universal launcher
 py bot_discord.py              # Start Discord bot
 py agent_scheduler.py          # Start scheduler
@@ -48,6 +49,12 @@ py agent_trigger.py            # Trigger webhook
 - heartbeat が守るのは「上がったプロセスが止まったか」だけ。「そもそも上がってこない」は守備範囲外 -> `lib/watchdog.is_fast_exit` / `restart_delay` / `should_alert` で crash loop を検知・通知する。PC 起動時に立ち上がらないときの確認順は `scripts/AUTOSTART.md`
 - 2026-07-25 朝、PC再起動後にBotが無言で起動しない事象が発生 -> 実機で `Get-ScheduledTask` を確認したところ `ARMS Launcher` タスク自体が未登録だった。`scripts/AUTOSTART.md` の `schtasks /create` は手動一回限りの手順で git 管理外のため、コード側をどれだけ直しても `main.py` が一度も走らなければ無意味。新しいマシン/ユーザーでセットアップする際は必ず `schtasks /query /tn "ARMS Launcher"` で登録有無を先に確認する
 - Windows `os.kill(pid, SIGTERM)` throws `OSError [WinError 87]` for dead PIDs -> catch `OSError`
+- `os.kill` は CPython 内部で `OpenProcess(PROCESS_ALL_ACCESS)` を要求する。タスクスケジューラが `/rl highest` で起動した高整合性プロセスを非管理者プロセス (`scripts/arms_ctl.py` 等) から終了させようとすると `PermissionError [WinError 5]` になる。**「殺せない」のではなく要求権限が過剰なだけ**で、終了に必要なのは `PROCESS_TERMINATE` のみ (同一ユーザーなら整合性レベルをまたいでも DACL で許可される) -> `lib/watchdog._terminate_via_handle` にフォールバックする
+- 子プロセスの stdout をファイルへリダイレクトすると Python は既定でブロックバッファリングし、`print()` が 8KB 貯まるまでログに現れない。`logs/launcher.log` は起動失敗時に真っ先に読むログなので、**ランチャー (`scripts/start_arms.bat` の `py -u main.py`) と子 (`main.py` の `Popen([python, "-u", script])`) の両方**に `-u` が要る (片方だけだと `[Monitor]` 行か `[Discord]` 行のどちらかが消える)
+- Windows PowerShell 5.1 は `.ps1` を **BOM が無いと ANSI (cp932)** として読む -> 日本語コメント入りの `.ps1` を BOM なし UTF-8 で保存すると全体が構文エラーになる。`open(p, 'w', encoding='utf-8-sig')` で保存すること。文字列内の環境変数も `"$env:X\..."` ではなく `"$($env:X)\..."` と部分式で囲む
+- **タスクスケジューラから .bat を直接実行すると可視のコンソールウィンドウが残る**。その × を押すと `CTRL_CLOSE_EVENT` が飛んで `main.py`・Bot・Scheduler が一斉に死ぬ (タスクの Last Result が `-1073741510` = `0xC000013A` = STATUS_CONTROL_C_EXIT なら必ずこれ)。デスクトップに「スタック全滅ボタン」を置くのと同じ -> `scripts/start_arms.bat` は `wscript //B scripts/arms_hidden.vbs` 経由で非表示起動し、実処理は `scripts/arms_core.bat` に置く (2026-07-26 実障害)
+- **`.bat` は ASCII のみで書く**。cmd.exe は `.bat` を UTF-8 ではなく OEM コードページ (cp932) で読むため、UTF-8 の日本語コメントが化ける。特に `。` (E3 80 82) は末尾バイト 0x82 が cp932 の先行バイトになり **行末の CR を食べる** -> 直後の実行行がコメント行と連結してコマンドとして実行される (`'<化けた文字>py' は、内部コマンドまたは...` + 終了コード 9009)。日本語の説明は `.md` 側に書く。`.vbs` も同様 (WSH は ANSI 読み) に ASCII のみ
+- **実行中の .bat を編集しない**。cmd.exe はバッチをバイトオフセットで逐次読み直すため、実行中に行を挿入すると次のコマンド読み込み位置がずれ、同じ行を再実行したりする (2026-07-26: `start_arms.bat` 編集中に `py main.py` 行が二度走り、停止したはずのスタックが独りでに復活した)
 - `OpenProcess` failing does **not** mean the process is dead: `ERROR_ACCESS_DENIED(5)` = alive but not queryable. Treating it as dead re-opens the duplicate-startup hole -> fall back to "alive" when in doubt (see `lib/pid_guard.is_process_alive`)
 - WMI `CommandLine LIKE '%foo%'` matches **your own query process** -> filter on `Name = 'python.exe'` before believing a stray process exists
 

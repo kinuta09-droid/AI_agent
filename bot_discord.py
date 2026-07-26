@@ -129,6 +129,7 @@ from commands import bot_commands_calendar
 from commands import bot_commands_tools
 from commands import bot_commands_agent
 from commands import bot_commands_client
+from commands import bot_commands_admin
 from commands import bot_views
 
 # 長期記憶 (optional — import失敗でチャットを壊さない)
@@ -935,6 +936,22 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
             print(f"[Discord] ❌ Failed to send fallback message in cmd_chat: {e}")
 
 
+@tree.command(name="status", description="常駐スタック（Bot / Scheduler / Launcher）の稼働状況")
+async def cmd_status(interaction: discord.Interaction):
+    await bot_commands_admin.cmd_status(interaction)
+
+
+@tree.command(name="restart", description="Bot / Scheduler を再起動する（新しいコードで上がり直す）")
+@app_commands.describe(target="再起動する対象")
+@app_commands.choices(target=[
+    app_commands.Choice(name="Discord Bot", value="bot"),
+    app_commands.Choice(name="Scheduler", value="scheduler"),
+    app_commands.Choice(name="両方", value="both"),
+])
+async def cmd_restart(interaction: discord.Interaction, target: str = "bot"):
+    await bot_commands_admin.cmd_restart(interaction, target)
+
+
 @tree.command(name="news", description="今日のニュースを収集・保存")
 async def cmd_news(interaction: discord.Interaction):
     await bot_commands_tools.cmd_news(interaction)
@@ -1248,6 +1265,10 @@ async def on_ready():
     bot_commands_agent.init_helpers(
         _log_to_daily_note, _send_long_message, _send_with_fallback
     )
+    # /restart が自分自身を閉じられるよう Client を渡す。
+    # 認可リストの設定有無も渡す: 管理系コマンドは fail-open にできない
+    # (未設定だと全ユーザーがサービスを停止できてしまう)
+    bot_commands_admin.init_helpers(bot, lambda: bool(ALLOWED_USER_IDS))
     # 永続 View: 認可判定関数を注入し、bot 再起動をまたいで動作するよう登録
     bot_views.init_views(_is_allowed_user)
     bot.add_view(bot_views.BriefingDeepDiveView())
@@ -1264,6 +1285,10 @@ async def on_ready():
     except Exception as e:
         print(f"[Discord] ❌ Failed to sync commands: {e}")
     print("[Discord] 🚀 Bot is ready!")
+
+    # /restart で自分を閉じていた場合、その報告先へ完了を伝える。
+    # (要求時の interaction はプロセスごと消えているのでファイル経由で引き継ぐ)
+    await bot_commands_admin.announce_restart_complete(bot)
 
 
 # ---------------------------------------------------------

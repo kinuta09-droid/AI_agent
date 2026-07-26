@@ -116,6 +116,32 @@ def test_kill_process_dead_pid_returns_false():
     print("✅ watchdog: 死PID/無効PID への kill は False (OSError 捕捉)")
 
 
+def test_kill_process_falls_back_on_permission_error():
+    """os.kill が WinError 5 で失敗しても PROCESS_TERMINATE で開き直す。
+
+    CPython の os.kill は OpenProcess(PROCESS_ALL_ACCESS) を要求するため、
+    タスクスケジューラが /rl highest で起動したスタックを非管理者の
+    scripts/arms_ctl.py から停止しようとすると権限エラーになる。
+    終了に必要なのは PROCESS_TERMINATE だけなので、そちらで再挑戦する。
+    """
+    import lib.watchdog as wd
+    orig_kill, orig_fallback = os.kill, wd._terminate_via_handle
+    calls = []
+    try:
+        def _denied(pid, sig):
+            raise PermissionError(5, "アクセスが拒否されました。")
+        os.kill = _denied
+        wd._terminate_via_handle = lambda pid: (calls.append(pid), True)[1]
+        assert wd.kill_process(4321) is True
+        assert calls == [4321], calls
+
+        wd._terminate_via_handle = lambda pid: False
+        assert wd.kill_process(4321) is False, "代替経路も失敗したら False"
+    finally:
+        os.kill, wd._terminate_via_handle = orig_kill, orig_fallback
+    print("✅ watchdog: 権限エラー時は PROCESS_TERMINATE で終了し直す")
+
+
 def test_beat_creates_missing_parent_dir():
     """logs/ が無い環境でも beat が親ディレクトリごと作成する。
 

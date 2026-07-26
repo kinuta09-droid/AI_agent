@@ -128,11 +128,42 @@ def is_stale(hb_file, started_at, threshold=STALE_THRESHOLD, now=None):
     return age_seconds(hb_file, started_at, now=now) > threshold
 
 
+def _terminate_via_handle(pid):
+    """PROCESS_TERMINATE だけを要求して強制終了する (Windows)。成功で True。
+
+    os.kill が権限で失敗したときの代替。CPython の os.kill は内部で
+    OpenProcess(PROCESS_ALL_ACCESS) を要求するため、タスクスケジューラが
+    /rl highest で起動した高整合性プロセスを非管理者プロセスから終了させようと
+    すると PROCESS_VM_WRITE 等が UIPI に阻まれ WinError 5 になる。
+    終了に必要な権限は PROCESS_TERMINATE だけで、これは同一ユーザーであれば
+    整合性レベルをまたいでも DACL で許可される。
+    """
+    if os.name != 'nt':
+        return False
+    try:
+        import ctypes
+        PROCESS_TERMINATE = 0x0001
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        handle = kernel32.OpenProcess(PROCESS_TERMINATE, False, int(pid))
+        if not handle:
+            return False
+        try:
+            return bool(kernel32.TerminateProcess(handle, 1))
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return False
+
+
 def kill_process(pid):
     """実体プロセスを終了させる。成功で True。
 
     Windows の os.kill(pid, SIGTERM) は TerminateProcess 相当 (強制終了)。
     死亡済み PID には OSError [WinError 87] が飛ぶ (既知バグパターン) ので捕捉する。
+    権限エラー (WinError 5) は「終了できない」ではなく「os.kill の要求権限が
+    過剰」なだけのことがあるため、PROCESS_TERMINATE のみで開き直して再挑戦する
+    (詳細は _terminate_via_handle)。これが無いと、タスクスケジューラ起動の
+    スタックを scripts/arms_ctl.py から停止できない。
     強制終了では finally が走らず PID ファイルが残るが、pid_guard は
     「所有者死亡 = OS がハンドルを閉じる = 削除可能」で stale を回収できる設計
     なので、次回 acquire() が正しく引き継ぐ。
@@ -142,6 +173,8 @@ def kill_process(pid):
     try:
         os.kill(int(pid), signal.SIGTERM)
         return True
+    except PermissionError:
+        return _terminate_via_handle(pid)
     except OSError:
         return False
 
