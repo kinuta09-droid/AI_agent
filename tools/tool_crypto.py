@@ -20,6 +20,7 @@ from lib.lib_shared import (
     fetch_fear_greed_index, load_json, save_json,
 )
 from lib.file_lock import FileLock
+from lib.cost_guard import SWEEP_COUNTER, GeminiBudgetExceeded
 # 純関数群は lib/quant_core.py に分離 (バックテスターと共有)。
 # ここで再輸入することで既存の呼び出し・テスト (tc._decide_signal 等) は不変
 from lib.quant_core import (
@@ -241,6 +242,42 @@ def _save_prediction(symbol: str, signal: str, entry_price: float,
     return record["id"]
 
 
+def _resolve_levels(price: float, atr_value: float) -> dict:
+    """DCA/SL 水準を .env 設定に従って算出する (フル分析とスイープで共用)。
+
+    Phase3: ATR倍数ベースの動的水準 (旧固定-5/-10/-15%はEXPIRED濫発のため廃止。
+    バックテスト730日×3銘柄: EXPIRED 45→10件, 平均保有335h→138h)。
+    CRYPTO_ATR_LEVELS=0 で旧固定%へ即時復帰可能 (再起動不要のキルスイッチ)。
+
+    Returns: {dca_entry1..3, dca_stop, levels(生の_compute_levels結果 or None), mode}
+    """
+    if get_float_env("CRYPTO_ATR_LEVELS", 1.0) != 0.0:
+        levels = _compute_levels(
+            price, atr_value,
+            sl_mult=get_float_env("CRYPTO_ATR_SL_MULT", 2.5),
+            dca_mults=(get_float_env("CRYPTO_ATR_DCA1_MULT", 1.5),
+                       get_float_env("CRYPTO_ATR_DCA2_MULT", 3.0),
+                       get_float_env("CRYPTO_ATR_DCA3_MULT", 4.5)),
+            atr_floor_pct=get_float_env("CRYPTO_ATR_FLOOR_PCT", 1.0),
+            atr_cap_pct=get_float_env("CRYPTO_ATR_CAP_PCT", 4.0))
+        return {
+            "dca_entry1": levels["dca_entry1"],
+            "dca_entry2": levels["dca_entry2"],
+            "dca_entry3": levels["dca_entry3"],
+            "dca_stop": levels["dca_stop"],
+            "levels": levels,
+            "mode": "atr",
+        }
+    return {
+        "dca_entry1": price * 0.95,
+        "dca_entry2": price * 0.90,
+        "dca_entry3": price * 0.85,
+        "dca_stop": price * 0.88,
+        "levels": None,
+        "mode": "fixed",
+    }
+
+
 # ---------------------------------------------------------
 # Main Analysis Tool
 # ---------------------------------------------------------
@@ -351,32 +388,14 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
         kelly_pct *= 0.5
         reasons.append(f"高ボラティリティ環境のためポジション半減 (ATR%: {atr_pct:.2f}%)")
 
-    # 6b. DCA計画（分割エントリー水準）
-    # Phase3: ATR倍数ベースの動的水準 (旧固定-5/-10/-15%はEXPIRED濫発のため廃止。
-    # バックテスト730日×3銘柄: EXPIRED 45→10件, 平均保有335h→138h)。
-    # CRYPTO_ATR_LEVELS=0 で旧固定%へ即時復帰可能 (再起動不要のキルスイッチ)
-    atr_levels_on = get_float_env("CRYPTO_ATR_LEVELS", 1.0) != 0.0
-    if atr_levels_on:
-        levels = _compute_levels(
-            current_price, atr_value,
-            sl_mult=get_float_env("CRYPTO_ATR_SL_MULT", 2.5),
-            dca_mults=(get_float_env("CRYPTO_ATR_DCA1_MULT", 1.5),
-                       get_float_env("CRYPTO_ATR_DCA2_MULT", 3.0),
-                       get_float_env("CRYPTO_ATR_DCA3_MULT", 4.5)),
-            atr_floor_pct=get_float_env("CRYPTO_ATR_FLOOR_PCT", 1.0),
-            atr_cap_pct=get_float_env("CRYPTO_ATR_CAP_PCT", 4.0))
-        dca_entry1 = levels["dca_entry1"]
-        dca_entry2 = levels["dca_entry2"]
-        dca_entry3 = levels["dca_entry3"]
-        dca_stop = levels["dca_stop"]
-        levels_mode = "atr"
-    else:
-        dca_entry1 = current_price * 0.95
-        dca_entry2 = current_price * 0.90
-        dca_entry3 = current_price * 0.85
-        dca_stop = current_price * 0.88
-        levels = None
-        levels_mode = "fixed"
+    # 6b. DCA計画（分割エントリー水準）— 算出は _resolve_levels に集約
+    lv = _resolve_levels(current_price, atr_value)
+    dca_entry1 = lv["dca_entry1"]
+    dca_entry2 = lv["dca_entry2"]
+    dca_entry3 = lv["dca_entry3"]
+    dca_stop = lv["dca_stop"]
+    levels = lv["levels"]
+    levels_mode = lv["mode"]
 
     def _pct(level: float) -> float:
         return (level / current_price - 1) * 100 if current_price else 0.0
@@ -580,6 +599,174 @@ SCAN_SYMBOLS = [
 ]
 
 
+def _evaluate_symbol(symbol: str, df, fng_value: int) -> dict:
+    """1銘柄を本戦略のロジックで評価する (LLM・Tavily・I/Oなし)。
+
+    ライブのフル分析 (tool_analyze_crypto) と同じ _compute_indicators →
+    _decide_signal を通す。以前スキャンは `RSI<30 なら BUY` という独自判定を
+    持っており、同じ銘柄が /scan と /crypto で違うシグナルを出していた
+    (CLAUDE.md「ロジックのフォーク禁止」に抵触)。
+
+    news_risk は "NEUTRAL" 固定 — スキャンは Tavily を叩かないため。
+    BUY系が出た銘柄は tool_analyze_crypto を起動し直すので、ニュースゲートは
+    そこで適用される (売買コールがゲートを素通りすることはない)。
+    """
+    ind = _compute_indicators(df)
+    signal, confidence, signal_type, reasons = _decide_signal(
+        "NEUTRAL", ind["is_falling_knife"], ind["has_divergence"],
+        ind["is_sweep"], ind["sweep_level"], fng_value, ind["rsi"],
+        ind["regime"], ind["trend"], ind["adx"])
+
+    # 出来高変化率（直近5本 vs 前20本平均）— スキャン表示専用の指標
+    recent_vol = df['volume'].iloc[-5:].mean()
+    past_vol = df['volume'].iloc[-25:-5].mean()
+    vol_change = ((recent_vol / past_vol) - 1) * 100 if past_vol > 0 else 0.0
+
+    # スコアリング（RSI低い＋出来高急増＋恐怖 = 高スコア）
+    score = 0
+    if ind["rsi"] < 30:
+        score += 3
+    elif ind["rsi"] < 40:
+        score += 1
+    elif ind["rsi"] > 70:
+        score += 2  # 過熱も注目
+    if vol_change > 50:
+        score += 2
+    elif vol_change > 20:
+        score += 1
+    if fng_value < 20:
+        score += 2
+    if signal in ("BUY", "STRONG BUY"):
+        score += 3
+
+    return {
+        "symbol": symbol,
+        "price": ind["price"],
+        "rsi": ind["rsi"],
+        "vol_change": vol_change,
+        "trend": ind["trend"],
+        "regime": ind["regime"],
+        "signal": signal,
+        "signal_type": signal_type,
+        "confidence": confidence,
+        "reasons": reasons,
+        "atr_value": ind["atr_value"],
+        "score": score,
+    }
+
+
+def _scan_all_symbols(exchange, fng_value: int) -> list:
+    """SCAN_SYMBOLS を4h足で評価する (課金ゼロ: Binance 公開APIのみ)。"""
+    results = []
+    for symbol in SCAN_SYMBOLS:
+        try:
+            # 300本必須: 100本ではEMA200がNaN→トレンド列が全銘柄"DOWN"固定になる
+            ohlcv = exchange.fetch_ohlcv(symbol, '4h', limit=300)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high',
+                                              'low', 'close', 'volume'])
+            r = _evaluate_symbol(symbol, df, fng_value)
+            results.append(r)
+            print(f"  ✅ {symbol}: RSI={r['rsi']:.1f}, "
+                  f"Vol={r['vol_change']:+.1f}%, {r['signal']}")
+            time.sleep(0.3)
+        except Exception as e:
+            print(f"  ⚠️ {symbol} skipped: {e}")
+    return results
+
+
+def _record_scan_results(results: list) -> dict:
+    """スキャン結果を trade_log に反映する。
+
+    - BUY/STRONG BUY … tool_analyze_crypto を起動し直す。記録もニュースゲートも
+      あちら側で行われるため、売買コールがゲートを素通りすることはない
+    - signal_type付きの WATCH LIST … observation として直接記録 (課金ゼロ)
+    - それ以外 … 検証したい仮説が紐付かないため記録しない
+
+    同一銘柄に既にOPENの売買コールがあれば、フル分析を起動する前にスキップする
+    (どうせ記録されないものに Gemini/Tavily を払わない)。
+    """
+    logs = _load_trade_log()
+    triggered, observed, skipped = [], [], []
+    budget_hit = False
+
+    for r in results:
+        symbol, signal = r["symbol"], r["signal"]
+
+        if signal in ("BUY", "STRONG BUY"):
+            if _has_open_record(logs, symbol, RECORD_KIND_SIGNAL):
+                skipped.append(symbol)
+                continue
+            try:
+                SWEEP_COUNTER.check_and_increment()
+            except GeminiBudgetExceeded:
+                # 初回到達時は cost_guard がDiscord通知済み。観測記録は無料なので続行
+                budget_hit = True
+                continue
+            print(f"  🔎 BUY候補: {symbol} — フル分析を起動")
+            try:
+                tool_analyze_crypto(symbol)
+                triggered.append(symbol)
+            except Exception as e:
+                print(f"  ⚠️ {symbol} フル分析失敗: {e}")
+
+        elif signal == "WATCH LIST" and r.get("signal_type"):
+            if _has_open_record(logs, symbol, RECORD_KIND_OBSERVATION):
+                continue
+            lv = _resolve_levels(r["price"], r["atr_value"])
+            win_rate, _basis, _n = _resolve_win_rate(r["signal_type"],
+                                                    r["confidence"])
+            extra = {"levels_mode": lv["mode"]}
+            if lv["levels"] is not None:
+                extra.update({
+                    "atr_value": round(r["atr_value"], 6),
+                    "atr_used_pct": round(lv["levels"]["atr_used_pct"], 2),
+                    "sl_atr_mult": lv["levels"]["sl_mult"],
+                })
+            try:
+                rid = _save_prediction(
+                    symbol, signal, r["price"], lv["dca_stop"],
+                    _calculate_kelly(win_rate), r["reasons"],
+                    signal_type=r["signal_type"], extra=extra,
+                    record_kind=RECORD_KIND_OBSERVATION)
+                if rid:
+                    observed.append(symbol)
+            except Exception as e:
+                print(f"  ⚠️ {symbol} 観測記録失敗: {e}")
+
+    return {"triggered": triggered, "observed": observed,
+            "skipped": skipped, "budget_hit": budget_hit}
+
+
+def tool_crypto_sweep() -> str:
+    """4h足クローズ毎の全銘柄スイープ (scheduler から silent 起動)。
+
+    本戦略は4h足だが、ライブは長らく「08:30 の BTC 1本/日 + watcher の急変時」
+    しか評価しておらず、バックテスト (4h足ごと×全銘柄で年36件/銘柄) に対して
+    機会の数十分の一しかサンプルできていなかった。結果 trade_log は5ヶ月ゼロ件。
+    ここで密度を揃える。
+
+    評価そのものは Binance 公開APIのみで課金ゼロ。Gemini/Tavily を使うのは
+    BUY系候補にフル分析を起動するときだけ (SWEEP_COUNTER で日次上限)。
+    """
+    print(f"[Tool] 🌀 Crypto Sweep ({len(SCAN_SYMBOLS)} symbols)...")
+    exchange = ccxt.binance({'enableRateLimit': True})
+    fng_value, _fng_class = fetch_fear_greed_index()
+
+    results = _scan_all_symbols(exchange, fng_value)
+    if not results:
+        return "Error: Could not fetch any crypto data."
+
+    rec = _record_scan_results(results)
+    parts = [f"Sweep: {len(results)}銘柄を評価",
+             f"フル分析起動 {len(rec['triggered'])}件",
+             f"観測記録 {len(rec['observed'])}件"]
+    if rec["skipped"]:
+        parts.append(f"OPEN重複スキップ {len(rec['skipped'])}件")
+    if rec["budget_hit"]:
+        parts.append("⚠️ 分析予算上限に到達")
+    return "Success: " + " | ".join(parts)
+
+
 def tool_scan_crypto_market() -> str:
     """
     主要20銘柄を一括スキャンし、RSI・出来高変化率・Fear&Greedから
@@ -593,69 +780,13 @@ def tool_scan_crypto_market() -> str:
     # Fear & Greed Index（全銘柄共通）
     fng_value, fng_class = fetch_fear_greed_index()
 
-    results = []
-    for symbol in SCAN_SYMBOLS:
-        try:
-            # 300本必須: 100本ではEMA200がNaN→トレンド列が全銘柄"DOWN"固定になる
-            ohlcv = exchange.fetch_ohlcv(symbol, '4h', limit=300)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-
-            rsi_series = ta_lib.rsi(df['close'], length=14)
-            current_rsi = float(rsi_series.iloc[-1]) if rsi_series is not None and pd.notna(rsi_series.iloc[-1]) else 50.0
-            current_price = float(df['close'].iloc[-1])
-
-            # 出来高変化率（直近5本 vs 前20本平均）
-            recent_vol = df['volume'].iloc[-5:].mean()
-            past_vol = df['volume'].iloc[-25:-5].mean()
-            vol_change = ((recent_vol / past_vol) - 1) * 100 if past_vol > 0 else 0.0
-
-            # EMA200 トレンド判定
-            ema200_s = ta_lib.ema(df['close'], length=200)
-            ema200 = float(ema200_s.iloc[-1]) if ema200_s is not None and pd.notna(ema200_s.iloc[-1]) else current_price
-            trend = "UP" if current_price > ema200 else "DOWN"
-
-            # シグナル判定
-            if current_rsi < 30 and fng_value < 20:
-                signal = "STRONG BUY"
-            elif current_rsi < 30:
-                signal = "BUY"
-            elif current_rsi > 70:
-                signal = "OVERBOUGHT"
-            else:
-                signal = "NEUTRAL"
-
-            # スコアリング（低いほど注目: RSI低い＋出来高急増＋恐怖 = 高スコア）
-            score = 0
-            if current_rsi < 30:
-                score += 3
-            elif current_rsi < 40:
-                score += 1
-            elif current_rsi > 70:
-                score += 2  # 過熱も注目
-            if vol_change > 50:
-                score += 2
-            elif vol_change > 20:
-                score += 1
-            if fng_value < 20:
-                score += 2
-
-            results.append({
-                "symbol": symbol,
-                "price": current_price,
-                "rsi": current_rsi,
-                "vol_change": vol_change,
-                "trend": trend,
-                "signal": signal,
-                "score": score,
-            })
-            print(f"  ✅ {symbol}: RSI={current_rsi:.1f}, Vol={vol_change:+.1f}%, {signal}")
-            time.sleep(0.3)
-
-        except Exception as e:
-            print(f"  ⚠️ {symbol} skipped: {e}")
+    results = _scan_all_symbols(exchange, fng_value)
 
     if not results:
         return "Error: Could not fetch any crypto data."
+
+    # スキャン結果を trade_log に反映する (記録はここでも sweep でも同じ関数)
+    _record_scan_results(results)
 
     # スコア降順 → RSI昇順でソート
     results.sort(key=lambda x: (-x['score'], x['rsi']))
@@ -706,7 +837,12 @@ Fear & Greed Index: {fng_value} ({fng_class})
 
     # レポート作成
     today_str = datetime.datetime.now().strftime('%Y-%m-%d')
-    signal_emoji_map = {"STRONG BUY": "🔥", "BUY": "🟢", "OVERBOUGHT": "🔴", "NEUTRAL": "⚪"}
+    # フル分析 (tool_analyze_crypto) と同じ対応表。スキャンが _decide_signal を
+    # 通すようになり WATCH LIST / WAIT / STAY AWAY も出るため揃える
+    signal_emoji_map = {
+        "STRONG BUY": "🔥", "BUY": "🟢", "WATCH LIST": "👀",
+        "WAIT": "⏳", "STAY AWAY": "⛔", "OVERBOUGHT": "🔴", "NEUTRAL": "⚪",
+    }
 
     table_rows = ""
     for r in results:
@@ -714,7 +850,7 @@ Fear & Greed Index: {fng_value} ({fng_class})
         table_rows += (
             f"| {emoji} {r['symbol']} | ${r['price']:,.2f} | "
             f"{r['rsi']:.1f} | {r['vol_change']:+.1f}% | "
-            f"{r['trend']} | {r['signal']} |\n"
+            f"{r['trend']} | {r['regime']} | {r['signal']} |\n"
         )
 
     report = (
@@ -724,8 +860,8 @@ Fear & Greed Index: {fng_value} ({fng_class})
         f"> [!TIP] 初心者向け：今日の注目ポイント\n"
         f"{overview_callout}\n\n"
         f"## 📊 全銘柄スキャン結果\n"
-        f"| 銘柄 | 価格 | RSI | 出来高変化 | トレンド | シグナル |\n"
-        f"|---|---|---|---|---|---|\n"
+        f"| 銘柄 | 価格 | RSI | 出来高変化 | トレンド | レジーム | シグナル |\n"
+        f"|---|---|---|---|---|---|---|\n"
         f"{table_rows}\n"
         f"## 🏆 注目銘柄 TOP5\n"
     )

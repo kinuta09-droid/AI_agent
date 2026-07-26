@@ -53,7 +53,10 @@ _JOB_STATE_LOCK = threading.Lock()
 # agent_hello.py と同じディレクトリなので直接 import
 # ツールを直接インポート
 from tools.tool_web import tool_fetch_daily_news
-from tools.tool_crypto import tool_scan_crypto_market, tool_analyze_crypto, tool_audit_predictions
+from tools.tool_crypto import (
+    tool_scan_crypto_market, tool_analyze_crypto, tool_audit_predictions,
+    tool_crypto_sweep,
+)
 from tools.tool_crypto_watcher import tool_crypto_watch
 from tools.tool_crypto_stats import tool_weekly_crypto_report
 from engine_plan_execute import generate_performance_dashboard
@@ -306,6 +309,22 @@ SCHEDULE = [
         "name": "Crypto Market Scan",
         "func": tool_scan_crypto_market
     },
+    # Crypto Sweep (Phase 3): 4h足クローズ直後に全20銘柄を評価して記録する。
+    # 本戦略は4h足なのに、ライブは長らく 08:30 の BTC 1本/日 しか評価しておらず
+    # trade_log が5ヶ月ゼロ件だった。UTC 0/4/8/12/16/20 の確定直後 = JST の
+    # 09/13/17/21/01/05。09:00 は既存の Market Scan が同じ評価と記録を行うため
+    # ここでは重複させない。評価自体は Binance 公開APIのみで課金ゼロ、
+    # Gemini/Tavily を使うのは BUY系候補のフル分析だけ (SWEEP_COUNTER で上限)。
+    # 定型通知はスパムになるため silent。
+    *[
+        {
+            "time": t,
+            "name": "Crypto Sweep",
+            "func": tool_crypto_sweep,
+            "silent": True,
+        }
+        for t in ("01:05", "05:05", "13:05", "17:05", "21:05")
+    ],
     {
         "time": "22:30",
         "name": "Crypto Prediction Audit",
