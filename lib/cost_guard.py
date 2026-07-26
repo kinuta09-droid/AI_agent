@@ -181,5 +181,18 @@ WATCHER_COUNTER = DailyCounter(
 )
 
 
+# --- Crypto Sweep 分析回数カウンタ (Phase 3) -------------------------------
+# 4h足クローズ毎の全銘柄スイープ自体は Binance 公開APIのみで課金ゼロだが、
+# BUY系候補が出た銘柄には tool_analyze_crypto (Gemini+Tavily) を起動する。
+# 相場全体が同時に売られた日は候補が20銘柄同時に立ちうるため、ウォッチャーと
+# 同様に別枠の日次上限で先に止める。
+SWEEP_COUNTER_PATH = os.path.join("C:\\AI_agent", "logs", "crypto_sweep_daily.json")
+SWEEP_COUNTER = DailyCounter(
+    path=SWEEP_COUNTER_PATH,
+    limit=get_limit("DAILY_SWEEP_ANALYSIS_LIMIT", 6),
+    name="Crypto Sweep分析",
+)
+
+
 def check_and_increment(n: int = 1) -> int:
     return GEMINI_COUNTER.check_and_increment(n)

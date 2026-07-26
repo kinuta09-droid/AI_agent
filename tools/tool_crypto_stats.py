@@ -17,7 +17,10 @@ import datetime
 import ccxt
 
 from lib.lib_shared import VAULT_ROOT, CRYPTO_DIR_NAME
-from tools.tool_crypto import _load_trade_log, MIN_AUDIT_SAMPLES
+from tools.tool_crypto import (
+    _load_trade_log, MIN_AUDIT_SAMPLES,
+    RECORD_KIND_SIGNAL, RECORD_KIND_OBSERVATION,
+)
 
 # R定義はバックテスト (scripts/backtest_crypto.py R_BY_STATUS) と同一に揃える。
 # scripts側は pandas/bt_data を引き込むため import せず、算式のみ一致させる:
@@ -47,6 +50,24 @@ def _event_dt(trade: dict, status: str):
         if dt is not None:
             return dt
     return _parse_ts(trade.get("timestamp"))
+
+
+def split_by_kind(logs: list) -> tuple:
+    """レコードを (売買コール, 観測レコード) に分ける。
+
+    record_kind 未設定の旧レコードは売買コール扱い (後方互換)。
+    成績表を分けないと、様子見(WATCH LIST)の追跡結果が実際の売買コールの
+    勝率に混ざり、Kellyが参照する数字と表示が食い違う。
+    """
+    signals, observations = [], []
+    for t in logs:
+        if not isinstance(t, dict):
+            continue
+        if t.get("record_kind", RECORD_KIND_SIGNAL) == RECORD_KIND_OBSERVATION:
+            observations.append(t)
+        else:
+            signals.append(t)
+    return signals, observations
 
 
 def compute_stats(logs: list, since: datetime.datetime = None) -> dict:
@@ -164,6 +185,7 @@ def _recent_closed(logs: list, limit: int = 5) -> list:
 def _build_stats_report(logs: list, prices: dict,
                         now: datetime.datetime) -> str:
     """/crypto-stats のレポート本文を組み立てる (純関数)。"""
+    logs, observations = split_by_kind(logs)
     stats = compute_stats(logs)
     t = stats["total"]
     open_trades = [x for x in logs
@@ -184,6 +206,20 @@ def _build_stats_report(logs: list, prices: dict,
         lines += ["", f"**OPEN中の予測 ({len(open_trades)}件)**",
                   format_open_positions(open_trades, prices)]
 
+    if observations:
+        obs = compute_stats(observations)["total"]
+        obs_decided = obs["wins"] + obs["losses"]
+        lines += [
+            "",
+            "**👀 観測レコード (WATCH LIST を仮にエントリーしていたら)**",
+            f"記録 {obs_decided + obs['expired'] + obs['open']}件: "
+            f"判定済み {obs_decided} (WIN {obs['wins']} / LOSE {obs['losses']}) | "
+            f"EXPIRED {obs['expired']} | OPEN {obs['open']} | "
+            f"勝率 {_fmt(obs['win_rate'], pct=True)} | "
+            f"期待値R {_fmt(obs['expectancy_r'])}",
+            "→ 見送った判断が正しかったかの対照群。Kellyの実測勝率には使わない。",
+        ]
+
     recent = _recent_closed(logs)
     if recent:
         lines += ["", "**直近の決着 (最大5件)**"]
@@ -203,6 +239,7 @@ def build_weekly_report(logs: list, now: datetime.datetime) -> tuple:
     Returns: (report_md, summary_line)
     """
     since = now - datetime.timedelta(days=7)
+    logs, observations = split_by_kind(logs)
     week = compute_stats(logs, since=since)
     cumulative = compute_stats(logs)
     wt, ct = week["total"], cumulative["total"]
@@ -248,6 +285,19 @@ def build_weekly_report(logs: list, now: datetime.datetime) -> tuple:
         f"累積R: **{ct['sum_r']:+.1f}** / 判定済み {ct['wins'] + ct['losses']}件 / "
         f"EXPIRED {ct['expired']}件\n"
     )
+
+    if observations:
+        obs = compute_stats(observations)["total"]
+        obs_week = compute_stats(observations, since=since)["total"]
+        report += (
+            f"\n## 👀 観測レコード (WATCH LIST を仮にエントリーしていたら)\n"
+            f"今週の決着 {obs_week['wins'] + obs_week['losses'] + obs_week['expired']}件 | "
+            f"累積 判定済み {obs['wins'] + obs['losses']}件 "
+            f"(勝率 {_fmt(obs['win_rate'], pct=True)} / "
+            f"期待値R {_fmt(obs['expectancy_r'])})\n\n"
+            f"{format_type_table(compute_stats(observations))}\n\n"
+            f"見送った判断が正しかったかを測る対照群。Kellyの実測勝率には使わない。\n"
+        )
 
     summary = (f"Weekly Crypto Report: 今週の決着 {week_decided}件 "
                f"(WIN {wt['wins']} / LOSE {wt['losses']} / EXP {wt['expired']}, "
