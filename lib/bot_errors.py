@@ -43,7 +43,9 @@ def log_command_error(where: str, exc: BaseException,
     """
     exc_type = type(exc).__name__
     print(f"[Discord] ❌ {where} failed: {exc_type}: {exc}")
-    print(traceback.format_exc())
+    # format_exc() は末尾に改行を含むので end="" にする。launcher.log は
+    # 起動失敗時に真っ先に読むログなので、余計な空行を挟まない。
+    print(traceback.format_exc(), end="")
 
     message = str(exc)
     if len(message) > MAX_USER_MESSAGE:

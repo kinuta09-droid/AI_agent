@@ -42,10 +42,12 @@ _sessions = {}  # channel_id -> {"goal": str, "summary": str, "files": list, "ts
 
 # run_plan_and_execute が返す失敗文字列の接頭辞 (これらはセッションに保存しない)
 _FAILURE_PREFIXES = (
-    # "Error:" ではなく "Error" で判定する。log_command_error() が例外の型名を
-    # 挟んで "Error (RuntimeError): ..." を返すため、コロン固定だと失敗結果を
-    # 成功扱いして次回 /agent のセッション文脈に混ぜてしまう。
-    "Error",
+    # log_command_error() は例外の型名を挟んで "Error (RuntimeError): ..." を返す。
+    # "Error:" だけだと前方一致が外れ、失敗結果を成功扱いして次回 /agent の
+    # セッション文脈に混ぜてしまうため両方を挙げる ("Error" と緩めないのは、
+    # 「Errorハンドリングの調査」等で正常結果が Error で始まり得るため)。
+    "Error:",
+    "Error (",
     "計画生成に失敗しました",
     "計画を生成できませんでした",
     "タスク失敗:",

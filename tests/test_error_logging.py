@@ -164,6 +164,31 @@ def test_no_silent_handlers_remain():
           not findings, " / ".join(findings[:3]))
 
 
+def test_agent_failure_prefix_still_matches():
+    """/agent の失敗判定がヘルパーの出力形式に追従しているか。
+
+    _FAILURE_PREFIXES は前方一致で「この結果はセッション文脈に残さない」を
+    決めている。log_command_error が型名を挟む形にしたとき、ここが "Error:" の
+    ままだと失敗結果を成功扱いして次回の計画プロンプトに混ぜてしまう。
+    形式を変えたら必ずここで落ちるように結び付けておく。
+    """
+    print("\n[7] /agent の失敗判定がヘルパー出力と噛み合う")
+
+    from commands.bot_commands_agent import _FAILURE_PREFIXES
+
+    def run():
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError as e:
+            return log_command_error("/agent test", e)
+
+    msg, _ = _capture(run)
+    check("失敗と判定される", msg.startswith(_FAILURE_PREFIXES), f"{msg[:40]} vs {_FAILURE_PREFIXES}")
+    check("正常結果は失敗と誤判定しない",
+          not "Errorハンドリングを調査しました".startswith(_FAILURE_PREFIXES),
+          str(_FAILURE_PREFIXES))
+
+
 def test_detector_catches_the_bad_shape():
     """検出器そのものが機能しているか（0件を返すだけの飾りになっていないか）"""
     print("\n[6] 検出ルールが実際に違反を捕まえる")
@@ -218,6 +243,7 @@ if __name__ == "__main__":
     test_command_path_logs_and_replies()
     test_no_silent_handlers_remain()
     test_detector_catches_the_bad_shape()
+    test_agent_failure_prefix_still_matches()
 
     print("\n" + "=" * 55)
     print(f"PASS: {len(_PASS)} / FAIL: {len(_FAIL)}")
