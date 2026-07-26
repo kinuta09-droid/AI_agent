@@ -12,6 +12,7 @@ import io
 import asyncio
 from lib.lib_obsidian_utils import get_obsidian_uri, get_obsidian_uri_from_link
 from lib.engagement_log import log_event, parse_command_meta
+from lib.bot_errors import log_command_error
 from lib.pid_guard import acquire as _acquire_pid_lock, release as _release_pid_lock, read_owner as _read_pid_owner
 from lib import watchdog as _watchdog
 import datetime
@@ -521,7 +522,7 @@ async def _dispatch_curate(interaction: discord.Interaction, query: str):
         )
         await interaction.followup.send(embed=embed, view=view)
     except Exception as e:
-        await interaction.followup.send(f"Error: {e}")
+        await interaction.followup.send(log_command_error("/chat curate", e))
 
 
 async def _dispatch_agent(interaction: discord.Interaction, goal: str):
@@ -567,7 +568,7 @@ async def _dispatch_agent(interaction: discord.Interaction, goal: str):
     try:
         result = await asyncio.to_thread(run_plan_and_execute, goal, step_callback=sync_callback_wrapper)
     except Exception as e:
-        result = f"Error: {e}"
+        result = log_command_error(f"/chat agent {goal}", e)
 
     await asyncio.to_thread(_log_to_daily_note, "command", f"/chat agent {goal}", result)
 
@@ -619,7 +620,10 @@ class OpenInObsidianView(bot_views.AllowedUserView):
                     else:
                         await interaction.response.send_message("❌ Invalid URI scheme.", ephemeral=True)
                 except Exception as e:
-                    await interaction.response.send_message(f"❌ Failed to open: {e}", ephemeral=True)
+                    await interaction.response.send_message(
+                        log_command_error(f"Obsidian で開く ({name})", e, "❌ Failed to open"),
+                        ephemeral=True,
+                    )
             
             btn.callback = callback
             self.add_item(btn)
@@ -823,7 +827,9 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
         try:
             vc = await vc_channel.connect(cls=voice_recv.VoiceRecvClient)
         except Exception as e:
-            await interaction.followup.send(f"❌ ボイスチャンネル接続エラー: {e}")
+            await interaction.followup.send(
+                log_command_error("ボイスチャンネル接続", e, "❌ ボイスチャンネル接続エラー")
+            )
             return
 
         # セッション作成 (既存テキストセッションがあれば拡張、なければ新規)
@@ -911,7 +917,7 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
             )
             result = (response.text or "").strip() or "(応答なし)"
         except Exception as e:
-            result = f"Gemini API Error: {e}"
+            result = log_command_error("/chat (Gemini)", e, "Gemini API Error")
 
     # Obsidian にログ
     await asyncio.to_thread(_log_to_daily_note, "chat", message, result)

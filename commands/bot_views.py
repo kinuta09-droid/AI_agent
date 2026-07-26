@@ -18,6 +18,7 @@ import asyncio
 import discord
 
 from lib.lib_shared import WORK_DIR
+from lib.bot_errors import log_command_error
 
 # ---------------------------------------------------------
 # 認可付き基底 View
@@ -136,7 +137,10 @@ class BriefingDeepDiveView(AllowedUserView):
                     run_future_search, topic, "standard", False
                 )
             except Exception as e:
-                result = f"❌ 深掘りリサーチでエラーが発生しました: {e}"
+                result = log_command_error(
+                    f"深掘りリサーチ ({topic})", e,
+                    "❌ 深掘りリサーチでエラーが発生しました",
+                )
             finally:
                 _dive_running.discard(topic)
 
@@ -182,7 +186,10 @@ class TaskFailureView(AllowedUserView):
                 f.seek(max(0, size - 8000))
                 tail = f.read().decode("utf-8", errors="replace")
         except OSError as e:
-            await interaction.response.send_message(f"❌ ログ読み込みエラー: {e}", ephemeral=True)
+            await interaction.response.send_message(
+                log_command_error("scheduler.log 読み込み", e, "❌ ログ読み込みエラー"),
+                ephemeral=True,
+            )
             return
 
         file_obj = discord.File(io.BytesIO(tail.encode("utf-8")), filename="scheduler_log_tail.txt")

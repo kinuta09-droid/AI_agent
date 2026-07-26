@@ -84,6 +84,66 @@ def check_undefined_names(file_path):
     return findings
 
 
+def check_swallowed_exceptions(file_path):
+    """例外を握りつぶしてユーザーに見せるだけの except 節を検出する。
+
+    「捕まえた例外を f-string に埋め込んでいる (= ユーザーに見せている) のに、
+    節内に print / logger / traceback / raise が一つも無い」ものを違反とする。
+    この形はログに一行も残さないため、壊れていても誰も気付けない。
+    実際 /curate は _dispatch_curate の except でこの形をしており、
+    NameError のまま5ヶ月間発覚しなかった (2026-07-26 に全28箇所を lib.bot_errors
+    経由へ置換)。discord.py は未捕捉例外を自前ロガーで出すので、
+    この形の except は「無いほうがマシ」な状態になっている。
+
+    例外変数を使っていない `except ImportError: pass` 等は対象外
+    (意図的な握りつぶしであり、見せる情報も無い)。
+
+    返り値: [(行番号, 節の先頭文の要約), ...]
+    """
+    import ast
+
+    LOGGING_CALLS = {
+        "print", "error", "warning", "exception", "critical",
+        "format_exc", "print_exc", "log_command_error",
+    }
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            tree = ast.parse(f.read(), str(file_path))
+    except Exception:
+        return []  # 構文エラーは check_syntax の担当
+
+    def logs_something(handler):
+        for node in ast.walk(handler):
+            if isinstance(node, ast.Call):
+                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                if name in LOGGING_CALLS:
+                    return True
+            if isinstance(node, ast.Raise):
+                return True
+        return False
+
+    def shows_exception(handler):
+        """捕捉した例外変数を f-string に埋め込んでいるか"""
+        if not handler.name:
+            return False
+        for node in ast.walk(handler):
+            if isinstance(node, ast.FormattedValue):
+                for inner in ast.walk(node.value):
+                    if isinstance(inner, ast.Name) and inner.id == handler.name:
+                        return True
+        return False
+
+    findings = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler):
+            continue
+        if shows_exception(node) and not logs_something(node):
+            summary = ast.unparse(node.body[0]) if node.body else ""
+            findings.append((node.lineno, summary[:80]))
+    return findings
+
+
 def check_import(module_name):
     """モジュールが正常にインポート可能か確認する"""
     try:
@@ -242,6 +302,25 @@ def run_verification():
                 errors.append(msg)
                 print(f"  ❌ {rel}:{i}")
         print(f"  ✅ {rel} (no StringIO pattern)")
+
+    # 例外の握りつぶし (ログを残さず Discord に出すだけ) — bot 層のみが対象。
+    # tools/ の `return f"Error: {e}"` は呼び出し元への戻り値契約なので対象外。
+    bot_layer = [ROOT_DIR / 'bot_discord.py'] + sorted((ROOT_DIR / 'commands').glob('*.py'))
+    swallowed = 0
+    for bf in bot_layer:
+        if not bf.exists():
+            continue
+        rel = bf.relative_to(ROOT_DIR)
+        for lineno, summary in check_swallowed_exceptions(bf):
+            swallowed += 1
+            errors.append(
+                f"Swallowed Exception: {rel}:{lineno} — 例外をユーザーに見せるだけで"
+                f"ログに残していない。lib.bot_errors.log_command_error() を使うこと\n"
+                f"    {summary}"
+            )
+            print(f"  ❌ {rel}:{lineno} (例外がログに残らない)")
+    if swallowed == 0:
+        print(f"  ✅ bot層 {len(bot_layer)} ファイル (握りつぶした例外なし)")
 
     # 6. Briefing プロバイダー登録チェック
     print("\n[6] Checking Briefing Providers...")

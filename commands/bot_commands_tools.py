@@ -11,6 +11,8 @@ from tools.tool_crypto import tool_analyze_crypto, tool_scan_crypto_market
 from tools.tool_briefing_manager import tool_generate_briefing
 from tools.tool_gmail_manager import get_gmail_summary as tool_gmail_check
 
+from lib.bot_errors import log_command_error
+
 
 def _make_discord_file(content: str, filename: str) -> "discord.File":
     """bot_discord._make_discord_file と同一実装。循環インポート回避のためローカル定義。"""
@@ -46,7 +48,7 @@ async def cmd_news(interaction: discord.Interaction):
     try:
         result = await asyncio.to_thread(tool_fetch_daily_news)
     except Exception as e:
-        result = f"Error: {e}"
+        result = log_command_error("/news", e)
 
     if _log_to_daily_note:
         await asyncio.to_thread(_log_to_daily_note, "command", "/news", result)
@@ -62,7 +64,7 @@ async def cmd_briefing(interaction: discord.Interaction):
     try:
         result = await asyncio.to_thread(tool_generate_briefing, True)
     except Exception as e:
-        result = f"Error: {e}"
+        result = log_command_error("/briefing", e)
 
     if _log_to_daily_note:
         await asyncio.to_thread(_log_to_daily_note, "command", "/briefing", result)
@@ -91,7 +93,7 @@ async def cmd_memory(interaction: discord.Interaction):
         else:
             result = f"🧠 **現在の長期記憶** (編集は Obsidian で直接: `00_System/User_Memory.md`)\n\n{block}"
     except Exception as e:
-        result = f"Error: {e}"
+        result = log_command_error("/memory", e)
 
     if _send_with_fallback:
         await _send_with_fallback(interaction, result, title="User Memory", emoji="🧠")
@@ -105,7 +107,7 @@ async def cmd_gmail_check(interaction: discord.Interaction, hours: int = 12):
     try:
         result = await asyncio.to_thread(tool_gmail_check)
     except Exception as e:
-        result = f"Error: {e}"
+        result = log_command_error("/gmail_check", e)
 
     if _log_to_daily_note:
         await asyncio.to_thread(_log_to_daily_note, "command", f"/gmail_check {hours}h", result)
@@ -121,7 +123,7 @@ async def cmd_crypto(interaction: discord.Interaction, symbol: str = "BTC/USDT")
     try:
         result = await asyncio.to_thread(tool_analyze_crypto, symbol)
     except Exception as e:
-        result = f"Error: {e}"
+        result = log_command_error(f"/crypto {symbol}", e)
 
     if _log_to_daily_note:
         await asyncio.to_thread(_log_to_daily_note, "command", f"/crypto {symbol}", result)
@@ -149,7 +151,7 @@ async def cmd_scan(interaction: discord.Interaction):
     try:
         result = await asyncio.to_thread(tool_scan_crypto_market)
     except Exception as e:
-        result = f"Error: {e}"
+        result = log_command_error("/scan", e)
 
     if _log_to_daily_note:
         await asyncio.to_thread(_log_to_daily_note, "command", "/scan", result)
@@ -178,7 +180,7 @@ async def cmd_crypto_stats(interaction: discord.Interaction):
         from tools.tool_crypto_stats import tool_crypto_stats
         result = await asyncio.to_thread(tool_crypto_stats)
     except Exception as e:
-        result = f"Error: {e}"
+        result = log_command_error("/crypto-stats", e)
 
     if _log_to_daily_note:
         await asyncio.to_thread(_log_to_daily_note, "command", "/crypto-stats", result)
@@ -207,7 +209,7 @@ async def cmd_watchlist(interaction: discord.Interaction):
         from tools.tool_crypto_watcher import tool_watchlist_status
         result = await asyncio.to_thread(tool_watchlist_status)
     except Exception as e:
-        result = f"Error: {e}"
+        result = log_command_error("/watchlist", e)
 
     if _log_to_daily_note:
         await asyncio.to_thread(_log_to_daily_note, "command", "/watchlist", result)
@@ -257,7 +259,7 @@ async def cmd_xtrend(interaction: discord.Interaction, min_likes: int = 500):
                 lines.append(f"\n...他 {len(features)-5} 件 (Obsidianに全件保存済み)")
             result = "\n".join(lines)
     except Exception as e:
-        result = f"❌ XTrend Error: {e}"
+        result = log_command_error("/xtrend", e, "❌ XTrend Error")
 
     if _send_with_fallback:
         await _send_with_fallback(interaction, result, title="X Trend", emoji="🔥")
@@ -278,7 +280,7 @@ async def cmd_xtrend_prompt(interaction: discord.Interaction, index: int = 1):
             name = feature.get("feature_name", "?")
             result = f"**実装指示書生成完了: {name}**\n\n{prompt_text}"
     except Exception as e:
-        result = f"❌ XTrend Prompt Error: {e}"
+        result = log_command_error("/xtrend-prompt", e, "❌ XTrend Prompt Error")
 
     if _send_with_fallback:
         file = _make_discord_file(result, f"xtrend_prompt_{index}_{datetime.date.today().isoformat()}.md") if len(result) > 1800 else None
@@ -294,7 +296,7 @@ async def cmd_browse(interaction: discord.Interaction, url: str, task: str = "�
         browse_and_extract = _import_browser()
         result = await asyncio.to_thread(browse_and_extract, url, task)
     except Exception as e:
-        result = f"❌ Browse Error: {e}"
+        result = log_command_error(f"/browse {url}", e, "❌ Browse Error")
 
     if _send_with_fallback:
         await _send_with_fallback(interaction, result, title="Browse & Extract", emoji="🌐")
@@ -323,7 +325,7 @@ async def cmd_future(interaction: discord.Interaction, topic: str,
             run_future_search, topic, depth, uncensored, progress_cb
         )
     except Exception as e:
-        result = f"❌ FutureSearch Error: {e}"
+        result = log_command_error(f"/future {topic}", e, "❌ FutureSearch Error")
 
     if _send_with_fallback:
         file = _make_discord_file(result, f"future_{datetime.date.today().isoformat()}.md") if len(result) > 1800 else None

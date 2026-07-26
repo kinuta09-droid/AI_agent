@@ -12,6 +12,8 @@ from tools.tool_calendar import (
     tool_sync_to_daily_note,
 )
 
+from lib.bot_errors import log_command_error
+
 async def cmd_calendar(interaction: discord.Interaction, date: str = "today"):
     """Google Calendarから予定を取得します"""
     await interaction.response.defer()
@@ -19,7 +21,7 @@ async def cmd_calendar(interaction: discord.Interaction, date: str = "today"):
     try:
         result = await asyncio.to_thread(tool_get_calendar, date)
     except Exception as e:
-        result = f"Error: {e}"
+        result = log_command_error(f"/calendar {date}", e)
 
     embed = discord.Embed(
         title="📅 Calendar",
@@ -37,7 +39,7 @@ async def cmd_add_event(interaction: discord.Interaction,
     try:
         result = await asyncio.to_thread(tool_add_event, title, start_time, end_time)
     except Exception as e:
-        result = f"Error: {e}"
+        result = log_command_error("/add-event", e)
 
     await interaction.followup.send(result)
 
@@ -49,7 +51,7 @@ async def cmd_tasks(interaction: discord.Interaction, filter: str = "today"):
     try:
         result = await asyncio.to_thread(tool_get_tasks, filter)
     except Exception as e:
-        result = f"Error: {e}"
+        result = log_command_error(f"/tasks {filter}", e)
 
     embed = discord.Embed(
         title="✅ Tasks",
@@ -67,6 +69,6 @@ async def cmd_remind(interaction: discord.Interaction,
     try:
         result = await asyncio.to_thread(tool_create_task, content, due_date, 1)
     except Exception as e:
-        result = f"Error: {e}"
+        result = log_command_error("/remind", e)
 
     await interaction.followup.send(result)
