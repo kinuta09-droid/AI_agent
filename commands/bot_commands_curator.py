@@ -37,6 +37,20 @@ _format_discord_content = None
 _send_long_message = None
 _send_with_fallback = None
 
+def _result_icon(result: str) -> str:
+    """search_and_save_topic の戻り値から表示アイコンを決める。
+
+    戻り値5種のうち4種は失敗 (検索0件 / 検索例外 / 要約生成失敗 / 同名既存) だが、
+    従来は全て "✅" を前置していたため、Tavily や Gemini のエラー文がそのまま
+    成功として表示されていた (2026-07-26 修正)。
+    """
+    if result.startswith("Success:"):
+        return "✅"
+    if result.startswith("Error"):
+        return "❌"
+    return "⚠️"  # 「既にノートが存在します」など、失敗ではないが作成もしていない
+
+
 def init_helpers(log_func, view_func, format_func, send_long_func, send_fallback_func):
     global _log_to_daily_note, _create_obsidian_view, _format_discord_content, _send_long_message, _send_with_fallback
     _log_to_daily_note = log_func
@@ -223,8 +237,10 @@ class CurateView(discord.ui.View):
             kwargs = {}
             if view:
                 kwargs["view"] = view
-            
-            await interaction.followup.send(f"✅ {display_result}", **kwargs)
+
+            await interaction.followup.send(
+                f"{_result_icon(result)} {display_result}", **kwargs
+            )
 
         return callback
 
@@ -475,7 +491,9 @@ async def cmd_topic(interaction: discord.Interaction, query: str):
         if view:
             kwargs["view"] = view
 
-        await interaction.followup.send(f"✅ {display_result}", **kwargs)
+        await interaction.followup.send(
+            f"{_result_icon(result)} {display_result}", **kwargs
+        )
 
     except Exception as e:
         await interaction.followup.send(f"Error: {e}")
