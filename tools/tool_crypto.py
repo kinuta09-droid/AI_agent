@@ -26,6 +26,7 @@ from lib.quant_core import (
     _calculate_kelly, _detect_regime, _detect_liquidity_sweep,
     _check_divergence, _decide_signal, _compute_levels, get_float_env,
     _daily_trend, _apply_daily_gate, _compute_indicators, classify_news_risk,
+    _resolve_trade,
 )
 
 
@@ -111,6 +112,15 @@ def _update_trade_log(mutator):
 
 # 実測勝率をKellyに採用する最低サンプル数。これ未満は既定confidenceを使う
 MIN_AUDIT_SAMPLES = 20
+
+# レコード種別。
+#   signal      = 実際に BUY/STRONG BUY を出したコール。Kellyの実測勝率ソース
+#   observation = WATCH LIST (divergence 未確認の rsi_oversold / panic_reversal) を
+#                 「仮にエントリーしていたら」で追跡する対照群。Kellyには使わない
+# 種別を分けずに全部混ぜると、様子見コールの成績が売買コールの勝率を汚染する。
+# フィールドが無い旧レコードは signal 扱い (後方互換)。
+RECORD_KIND_SIGNAL = "signal"
+RECORD_KIND_OBSERVATION = "observation"
 # 実測勝率の上限クランプ（少数サンプルの偶然の連勝でポジションが暴走しない保険）
 EMPIRICAL_WIN_RATE_CAP = 0.75
 
@@ -119,6 +129,8 @@ def _get_signal_stats(logs: list = None) -> dict:
     """
     判定済み(WIN/LOSE)レコードをsignal_type別に集計する。
     EXPIREDは観測窓の限界によるクローズであり勝敗ではないため除外。
+    record_kind=observation (WATCH LISTの追跡) も除外 — Kellyに渡る勝率は
+    実際に売買コールを出した signal レコードだけで構成する。
     signal_type未設定の旧レコードは "legacy" として分離集計。
     Returns: {signal_type: {"wins": int, "losses": int, "win_rate": float}}
     """
@@ -128,6 +140,8 @@ def _get_signal_stats(logs: list = None) -> dict:
     for t in logs:
         if t.get("status") not in ("WIN", "LOSE"):
             continue
+        if t.get("record_kind", RECORD_KIND_SIGNAL) != RECORD_KIND_SIGNAL:
+            continue  # observation (様子見の追跡) はKellyの勝率に混ぜない
         stype = t.get("signal_type") or "legacy"
         s = stats.setdefault(stype, {"wins": 0, "losses": 0, "win_rate": 0.0})
         if t["status"] == "WIN":
@@ -158,14 +172,38 @@ def _resolve_win_rate(signal_type: str, default_confidence: float) -> tuple:
     return min(stats["win_rate"], EMPIRICAL_WIN_RATE_CAP), "実測", n
 
 
+def _has_open_record(logs: list, symbol: str, record_kind: str) -> bool:
+    """同一銘柄・同一種別のOPENレコードが既にあるか (純関数)。"""
+    for t in logs:
+        if not isinstance(t, dict):
+            continue
+        if (t.get("status") == "OPEN" and t.get("symbol") == symbol
+                and t.get("record_kind", RECORD_KIND_SIGNAL) == record_kind):
+            return True
+    return False
+
+
 def _save_prediction(symbol: str, signal: str, entry_price: float,
                      stop_loss: float, kelly_pct: float, reasons: list,
-                     signal_type: str = "unknown", extra: dict = None) -> str:
-    """BUY系シグナル発生時に予測をログに記録する。
+                     signal_type: str = "unknown", extra: dict = None,
+                     record_kind: str = RECORD_KIND_SIGNAL) -> str:
+    """予測/観測をログに記録する。既に同種のOPENがあればスキップ。
 
+    record_kind: RECORD_KIND_SIGNAL (売買コール) / RECORD_KIND_OBSERVATION
+                 (WATCH LIST の対照群追跡)。
     extra: 追加の記録フィールド (ATR水準のトレーサビリティ等)。
     スキーマは追加のみ — 監査/watcher/Kellyは既存フィールドしか読まないため
     旧レコードと混在しても安全。
+    Returns: 記録した場合は record id、重複でスキップした場合は None。
+
+    「同一銘柄・同一種別のOPENは1件まで」はバックテスター
+    (scripts/backtest_crypto.run_symbol の1銘柄1建玉制限) と同じ制約。
+    ライブとバックテストで母集団の定義を揃えるためで、同時に評価密度を
+    上げても記録が膨張しないキャップにもなる。
+
+    重複チェックは **必ずロック内で** 行う (check→append を別々にすると
+    bot/scheduler/watcher の3プロセスが同時に「無い」と判断して全員が
+    書き込む。lib/pid_guard で踏んだのと同じ非原子ガードの罠)。
     """
     risk = entry_price - stop_loss
     target_price = entry_price + (risk * 2) if risk > 0 else entry_price * 1.10
@@ -176,6 +214,7 @@ def _save_prediction(symbol: str, signal: str, entry_price: float,
         "symbol": symbol,
         "signal": signal,
         "signal_type": signal_type or "unknown",
+        "record_kind": record_kind,
         "entry_price": round(entry_price, 2),
         "stop_loss": round(stop_loss, 2),
         "target_price": round(target_price, 2),
@@ -187,8 +226,18 @@ def _save_prediction(symbol: str, signal: str, entry_price: float,
     if extra:
         record.update(extra)
 
-    _update_trade_log(lambda logs: logs.append(record))
-    print(f"  📝 Prediction logged: {record['id']} ({symbol} {signal} @ ${entry_price:,.2f})")
+    def _append_if_new(logs):
+        if _has_open_record(logs, symbol, record_kind):
+            return False
+        logs.append(record)
+        return True
+
+    if not _update_trade_log(_append_if_new):
+        print(f"  ⏭️ Skipped ({record_kind}): {symbol} は既にOPENあり")
+        return None
+
+    print(f"  📝 Logged [{record_kind}]: {record['id']} "
+          f"({symbol} {signal} @ ${entry_price:,.2f})")
     return record["id"]
 
 
@@ -493,9 +542,18 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
         else:
             print(f"  ⚠️ N8N_WEBHOOK_URL not set, skipping notification")
 
-    # 11. 売買シグナル(BUY/STRONG BUY)のみ予測をtrade_logに記録（Prediction Audit System）
-    # WATCH LISTは「様子見」であり売買コールではないため、勝率統計を汚染しないよう除外
+    # 11. trade_log への記録（Prediction Audit System）
+    # BUY/STRONG BUY = signal (売買コール。Kellyの実測勝率ソース)
+    # signal_type付きの WATCH LIST = observation (divergence未確認で見送った
+    #   ケースを「仮にエントリーしていたら」で追跡する対照群。Kellyには使わない)
+    # NEUTRAL/WAIT/STAY AWAY/OVERBOUGHT は検証したい仮説が紐付かないため記録しない
+    record_kind = None
     if signal in ["BUY", "STRONG BUY"]:
+        record_kind = RECORD_KIND_SIGNAL
+    elif signal == "WATCH LIST" and signal_type:
+        record_kind = RECORD_KIND_OBSERVATION
+
+    if record_kind:
         try:
             extra = {"levels_mode": levels_mode}
             if levels is not None:
@@ -505,7 +563,8 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
                     "sl_atr_mult": levels["sl_mult"],
                 })
             _save_prediction(symbol, signal, current_price, dca_stop, kelly_pct,
-                             reasons, signal_type=signal_type, extra=extra)
+                             reasons, signal_type=signal_type, extra=extra,
+                             record_kind=record_kind)
         except Exception as e:
             print(f"  ⚠️ Prediction log failed: {e}")
 
@@ -706,6 +765,42 @@ Fear & Greed Index: {fng_value} ({fng_class})
 # Prediction Audit Tool
 # ---------------------------------------------------------
 
+AUDIT_EXPIRY_DAYS = 21
+
+
+def _search_loss_reason(symbol: str, entry_time: datetime.datetime) -> str:
+    """LOSE判定の敗因を Tavily で調べて1行にまとめる。失敗しても文字列を返す。"""
+    coin_name = symbol.split('/')[0]
+    query = (f"Why did {coin_name} price drop crypto news "
+             f"{entry_time.strftime('%Y-%m')}")
+    try:
+        search_res = tavily_client.search(query=query, topic="news", max_results=3)
+    except Exception as e:
+        return f"ニュース検索失敗: {e}"
+    news_items = [f"[{r.get('title', 'No title')}]({r.get('url', '')})"
+                  for r in search_res.get('results', [])]
+    return "; ".join(news_items) if news_items else "関連ニュース見つからず"
+
+
+def _fetch_audit_candles(exchange, symbol: str, since_dt: datetime.datetime):
+    """監査用1h足を「その銘柄の最古エントリー以降」でまとめて1回取得する。
+
+    以前は OPEN 1件ごとに fetch_ohlcv していたため、記録件数に比例して
+    22:30 の監査が伸びた。銘柄単位にまとめることで API 呼び出しは
+    OPEN件数ではなく銘柄数で頭打ちになる。
+    limit は 21日(=504本)に余裕を持たせた 600本。
+    """
+    ohlcv = exchange.fetch_ohlcv(symbol, '1h',
+                                 since=int(since_dt.timestamp() * 1000),
+                                 limit=600)
+    if not ohlcv:
+        return None
+    df = pd.DataFrame(ohlcv,
+                      columns=['timestamp', 'open', 'high', 'low', 'close', 'vol'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    return df
+
+
 def tool_audit_predictions() -> str:
     """
     過去の予測ログ(trade_log.json)を読み込み、
@@ -722,7 +817,8 @@ def tool_audit_predictions() -> str:
         return "評価待ちの予測（OPEN）はありません。"
 
     exchange = ccxt.binance({'enableRateLimit': True})
-    today_str = datetime.datetime.now().strftime('%Y-%m-%d')
+    now = datetime.datetime.now()
+    today_str = now.strftime('%Y-%m-%d')
 
     report = f"# 🕵️ AI Prediction Audit Report ({today_str})\n\n"
     report += f"> [!SUMMARY] 概要\n"
@@ -737,104 +833,124 @@ def tool_audit_predictions() -> str:
     # (監査中に bot/watcher が追記した新レコードを潰さないため)
     updates = {}
 
-    for trade in open_trades:
-        symbol = trade["symbol"]
-        entry_time = datetime.datetime.fromisoformat(trade["timestamp"])
-        since_ts = int(entry_time.timestamp() * 1000)
+    # 銘柄単位にまとめて1回だけ市場データを取る
+    by_symbol = {}
+    for t in open_trades:
+        by_symbol.setdefault(t["symbol"], []).append(t)
 
-        print(f"  📊 Checking {symbol} (ID: {trade['id']}, entered {trade['timestamp'][:10]})...")
-
-        try:
-            ohlcv = exchange.fetch_ohlcv(symbol, '1h', since=since_ts, limit=500)
-            if not ohlcv:
-                print(f"    ⚠️ No data returned for {symbol}")
-                continue
-            df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
-        except Exception as e:
-            report += f"- ⚠️ {symbol} (ID: {trade['id']}): データ取得失敗 ({e})\n"
-            print(f"    ⚠️ Data fetch error: {e}")
+    for symbol, trades in by_symbol.items():
+        entry_times = {}
+        for t in trades:
+            try:
+                entry_times[t["id"]] = datetime.datetime.fromisoformat(t["timestamp"])
+            except (TypeError, ValueError):
+                report += f"- ⚠️ {symbol} (ID: {t.get('id')}): timestamp破損のためスキップ\n"
+        if not entry_times:
             continue
 
-        lowest = float(df['low'].min())
-        highest = float(df['high'].max())
+        oldest = min(entry_times.values())
+        print(f"  📊 Fetching {symbol} 1h since {oldest:%Y-%m-%d} "
+              f"({len(entry_times)}件)...")
+        try:
+            df = _fetch_audit_candles(exchange, symbol, oldest)
+        except Exception as e:
+            report += f"- ⚠️ {symbol}: データ取得失敗 ({e})\n"
+            print(f"    ⚠️ Data fetch error: {e}")
+            continue
+        if df is None or df.empty:
+            print(f"    ⚠️ No data returned for {symbol}")
+            continue
+
         current_close = float(df['close'].iloc[-1])
-        hours_elapsed = len(df)
 
-        new_status = "OPEN"
-        audit_comment = ""
+        for trade in trades:
+            entry_time = entry_times.get(trade["id"])
+            if entry_time is None:
+                continue
+            kind = trade.get("record_kind", RECORD_KIND_SIGNAL)
 
-        # 判定: SLヒット → LOSE, TPヒット → WIN
-        if lowest <= trade["stop_loss"]:
-            new_status = "LOSE"
-            lose_count += 1
+            # 決着判定は lib/quant_core._resolve_trade に統一。
+            # 旧実装は観測窓全体の min(low)/max(high) による SL優先の悲観近似で、
+            # 「TP先着 → 後日SL」を LOSE と誤判定していた (バックテストは時系列
+            # 走査なので同じ建玉の勝敗が食い違う = 判定のフォーク)。
+            # 過去レコードがゼロの今が互換性を気にせず揃えられる唯一の機会。
+            new_status, exit_time, note = _resolve_trade(
+                trade["entry_price"], trade["stop_loss"], trade["target_price"],
+                df, entry_time, expiry_days=AUDIT_EXPIRY_DAYS)
 
-            # 敗因分析: Tavily で当時のニュースを検索
-            coin_name = symbol.split('/')[0]
-            query = f"Why did {coin_name} price drop crypto news {entry_time.strftime('%Y-%m')}"
-            try:
-                search_res = tavily_client.search(query=query, topic="news", max_results=3)
-                news_items = []
-                for r in search_res.get('results', []):
-                    title = r.get('title', 'No title')
-                    url = r.get('url', '')
-                    news_items.append(f"[{title}]({url})")
-                news_text = "; ".join(news_items) if news_items else "関連ニュース見つからず"
-            except Exception as e:
-                news_text = f"ニュース検索失敗: {e}"
+            # データ端まで未決着でも実時間で期限を過ぎていれば期限切れにする
+            # (取得窓が足りずEXPIREDバーが無いケース)
+            if (new_status == "OPEN"
+                    and (now - entry_time).days >= AUDIT_EXPIRY_DAYS):
+                new_status, note = "EXPIRED", f"{AUDIT_EXPIRY_DAYS}日経過してもSL/TP未到達"
 
-            loss_pct = ((trade["stop_loss"] - trade["entry_price"]) / trade["entry_price"]) * 100
-            audit_comment = f"損切りライン(${trade['stop_loss']:,.2f})に到達。損失: {loss_pct:+.1f}%。敗因: {news_text}"
+            if new_status == "LOSE":
+                lose_count += 1
+                loss_pct = ((trade["stop_loss"] - trade["entry_price"])
+                            / trade["entry_price"]) * 100
+                # 敗因のニュース検索は売買コールのみ。observation は対照群として
+                # 大量に決着するため、ここで Tavily を叩くとクォータを浪費する
+                if kind == RECORD_KIND_SIGNAL:
+                    news_text = _search_loss_reason(symbol, entry_time)
+                else:
+                    news_text = "（観測レコードのため敗因検索はスキップ）"
+                audit_comment = (f"損切りライン(${trade['stop_loss']:,.2f})に到達。"
+                                 f"損失: {loss_pct:+.1f}%。敗因: {news_text}")
+            elif new_status == "WIN":
+                win_count += 1
+                gain_pct = ((trade["target_price"] - trade["entry_price"])
+                            / trade["entry_price"]) * 100
+                audit_comment = (f"利確目標(${trade['target_price']:,.2f})達成。"
+                                 f"利益: +{gain_pct:.1f}%。予測通りの値動き。")
+            elif new_status == "EXPIRED":
+                expired_count += 1
+                audit_comment = (
+                    f"エントリーから{AUDIT_EXPIRY_DAYS}日経過してもSL/TP未到達のため"
+                    f"期限切れクローズ。観測窓の最終価格: ${current_close:,.2f}"
+                    f"（現在値ではない）。勝率統計からは除外。")
+            else:
+                dist_to_tp = ((trade["target_price"] - current_close)
+                              / current_close) * 100
+                dist_to_sl = ((current_close - trade["stop_loss"])
+                              / current_close) * 100
+                hours_elapsed = int((now - entry_time).total_seconds() // 3600)
+                audit_comment = (f"未決着 ({hours_elapsed}h経過)。現在値: "
+                                 f"${current_close:,.2f} (TP まで {dist_to_tp:+.1f}%, "
+                                 f"SL まで {dist_to_sl:.1f}%)")
 
-        elif highest >= trade["target_price"]:
-            new_status = "WIN"
-            win_count += 1
-            gain_pct = ((trade["target_price"] - trade["entry_price"]) / trade["entry_price"]) * 100
-            audit_comment = f"利確目標(${trade['target_price']:,.2f})達成。利益: +{gain_pct:.1f}%。予測通りの値動き。"
+            # ログ更新 (localのtradeはレポート描画用、updatesが保存時の正)
+            if new_status != "OPEN":
+                trade["status"] = new_status
+                trade["audit_note"] = audit_comment
+                trade["audit_date"] = today_str
+                updates[trade["id"]] = {
+                    "status": new_status,
+                    "audit_note": audit_comment,
+                    "audit_date": today_str,
+                }
+                updated_count += 1
 
-        # 判定: 21日経過でも未到達 → EXPIRED
-        # (fetch_ohlcv 1h×500本 ≒ 20.8日が観測窓の上限。これを超えたOPENは
-        #  以降のSL/TPヒットを正しく検出できないため期限切れでクローズする)
-        elif (datetime.datetime.now() - entry_time).days >= 21:
-            new_status = "EXPIRED"
-            expired_count += 1
-            audit_comment = (f"エントリーから21日経過してもSL/TP未到達のため期限切れクローズ。"
-                             f"観測窓の最終価格: ${current_close:,.2f}（現在値ではない）。勝率統計からは除外。")
-
-        else:
-            # まだ決着がついていない
-            dist_to_tp = ((trade["target_price"] - current_close) / current_close) * 100
-            dist_to_sl = ((current_close - trade["stop_loss"]) / current_close) * 100
-            audit_comment = f"未決着 ({hours_elapsed}h経過)。現在値: ${current_close:,.2f} (TP まで {dist_to_tp:+.1f}%, SL まで {dist_to_sl:.1f}%)"
-
-        # ログ更新 (localのtradeはレポート描画用、updatesが保存時の正)
-        if new_status != "OPEN":
-            trade["status"] = new_status
-            trade["audit_note"] = audit_comment
-            trade["audit_date"] = today_str
-            updates[trade["id"]] = {
-                "status": new_status,
-                "audit_note": audit_comment,
-                "audit_date": today_str,
-            }
-            updated_count += 1
-
-            icon = {"WIN": "✅", "LOSE": "❌", "EXPIRED": "⌛"}.get(new_status, "❓")
-            report += (
-                f"## {icon} {symbol} — {new_status} (ID: {trade['id']})\n"
-                f"| 項目 | 値 |\n|---|---|\n"
-                f"| シグナル | {trade['signal']} |\n"
-                f"| シグナル種別 | {trade.get('signal_type', 'legacy')} |\n"
-                f"| エントリー | ${trade['entry_price']:,.2f} |\n"
-                f"| ターゲット | ${trade['target_price']:,.2f} |\n"
-                f"| ストップ | ${trade['stop_loss']:,.2f} |\n"
-                f"| Kelly% | {trade['kelly_pct']}% |\n"
-                f"| 予測日 | {trade['timestamp'][:10]} |\n"
-                f"| 判定理由 | {trade.get('reason', 'N/A')[:80]} |\n\n"
-                f"**監査結果**: {audit_comment}\n\n"
-            )
-            print(f"    {icon} {new_status}: {audit_comment[:80]}...")
-        else:
-            print(f"    ⏳ Still OPEN: {audit_comment[:80]}...")
+                icon = {"WIN": "✅", "LOSE": "❌", "EXPIRED": "⌛"}.get(new_status, "❓")
+                kind_label = ("売買コール" if kind == RECORD_KIND_SIGNAL
+                              else "観測(対照群)")
+                report += (
+                    f"## {icon} {symbol} — {new_status} (ID: {trade['id']})\n"
+                    f"| 項目 | 値 |\n|---|---|\n"
+                    f"| レコード種別 | {kind_label} |\n"
+                    f"| シグナル | {trade['signal']} |\n"
+                    f"| シグナル種別 | {trade.get('signal_type', 'legacy')} |\n"
+                    f"| エントリー | ${trade['entry_price']:,.2f} |\n"
+                    f"| ターゲット | ${trade['target_price']:,.2f} |\n"
+                    f"| ストップ | ${trade['stop_loss']:,.2f} |\n"
+                    f"| Kelly% | {trade['kelly_pct']}% |\n"
+                    f"| 予測日 | {trade['timestamp'][:10]} |\n"
+                    f"| 決着 | {exit_time if exit_time is not None else '—'} ({note}) |\n"
+                    f"| 判定理由 | {trade.get('reason', 'N/A')[:80]} |\n\n"
+                    f"**監査結果**: {audit_comment}\n\n"
+                )
+                print(f"    {icon} {new_status} {trade['id']}: {audit_comment[:70]}...")
+            else:
+                print(f"    ⏳ Still OPEN {trade['id']}: {audit_comment[:70]}...")
 
         time.sleep(0.3)
 
@@ -855,6 +971,19 @@ def tool_audit_predictions() -> str:
             f"| 勝率 | {win_rate_str} |\n"
             f"| EXPIRED (期限切れ) | {expired_count}件 |\n"
             f"| 未決着 | {len(open_trades) - updated_count}件 |\n\n"
+        )
+
+    # 観測レコード(WATCH LIST対照群)の累積。Kellyには使わないので別掲する
+    obs = [t for t in logs if isinstance(t, dict)
+           and t.get("record_kind") == RECORD_KIND_OBSERVATION
+           and t.get("status") in ("WIN", "LOSE")]
+    if obs:
+        obs_win = sum(1 for t in obs if t["status"] == "WIN")
+        report += (
+            f"## 👀 観測レコード（WATCH LIST を仮にエントリーしていたら）\n"
+            f"判定済み {len(obs)}件 / WIN {obs_win}件 "
+            f"({obs_win / len(obs) * 100:.1f}%)。"
+            f"Kellyの実測勝率には使わない対照群。\n\n"
         )
 
     # シグナル種別ごとの累積実績（Kellyの実測勝率ソース。n>=MIN_AUDIT_SAMPLESで実測に切替）
