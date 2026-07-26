@@ -51,6 +51,7 @@ py agent_trigger.py            # Trigger webhook
 - Windows `os.kill(pid, SIGTERM)` throws `OSError [WinError 87]` for dead PIDs -> catch `OSError`
 - `os.kill` は CPython 内部で `OpenProcess(PROCESS_ALL_ACCESS)` を要求する。タスクスケジューラが `/rl highest` で起動した高整合性プロセスを非管理者プロセス (`scripts/arms_ctl.py` 等) から終了させようとすると `PermissionError [WinError 5]` になる。**「殺せない」のではなく要求権限が過剰なだけ**で、終了に必要なのは `PROCESS_TERMINATE` のみ (同一ユーザーなら整合性レベルをまたいでも DACL で許可される) -> `lib/watchdog._terminate_via_handle` にフォールバックする
 - 子プロセスの stdout をファイルへリダイレクトすると Python は既定でブロックバッファリングし、`print()` が 8KB 貯まるまでログに現れない。`logs/launcher.log` は起動失敗時に真っ先に読むログなので、**ランチャー (`scripts/start_arms.bat` の `py -u main.py`) と子 (`main.py` の `Popen([python, "-u", script])`) の両方**に `-u` が要る (片方だけだと `[Monitor]` 行か `[Discord]` 行のどちらかが消える)
+- Windows PowerShell 5.1 は `.ps1` を **BOM が無いと ANSI (cp932)** として読む -> 日本語コメント入りの `.ps1` を BOM なし UTF-8 で保存すると全体が構文エラーになる。`open(p, 'w', encoding='utf-8-sig')` で保存すること。文字列内の環境変数も `"$env:X\..."` ではなく `"$($env:X)\..."` と部分式で囲む
 - **実行中の .bat を編集しない**。cmd.exe はバッチをバイトオフセットで逐次読み直すため、実行中に行を挿入すると次のコマンド読み込み位置がずれ、同じ行を再実行したりする (2026-07-26: `start_arms.bat` 編集中に `py main.py` 行が二度走り、停止したはずのスタックが独りでに復活した)
 - `OpenProcess` failing does **not** mean the process is dead: `ERROR_ACCESS_DENIED(5)` = alive but not queryable. Treating it as dead re-opens the duplicate-startup hole -> fall back to "alive" when in doubt (see `lib/pid_guard.is_process_alive`)
 - WMI `CommandLine LIKE '%foo%'` matches **your own query process** -> filter on `Name = 'python.exe'` before believing a stray process exists
