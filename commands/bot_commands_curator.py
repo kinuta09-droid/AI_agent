@@ -15,6 +15,7 @@ from tools.tool_curator import (
 
 # エンゲージメント計測 (Phase 1: 収集のみ)。提案ロジックには一切影響しない。
 from lib.engagement_log import log_event, log_impressions
+from lib.bot_errors import log_command_error
 
 # ---------------------------------------------------------
 # Constants & Helpers (Originally from bot_discord.py)
@@ -333,7 +334,9 @@ class CurateView(discord.ui.View):
             await interaction.followup.send(embed=new_embed, view=new_view)
 
         except Exception as e:
-            await interaction.followup.send(f"再提案の生成に失敗しました: {e}")
+            await interaction.followup.send(
+                log_command_error("/curate 再提案", e, "再提案の生成に失敗しました")
+            )
 
     async def _end_callback(self, interaction: discord.Interaction):
         """セッション終了。"""
@@ -470,7 +473,7 @@ async def cmd_setup(interaction: discord.Interaction):
         await interaction.followup.send(embed=embed, view=view)
 
     except Exception as e:
-        await interaction.followup.send(f"Error: {e}")
+        await interaction.followup.send(log_command_error("/setup", e))
 
 
 async def cmd_topic(interaction: discord.Interaction, query: str):
@@ -496,4 +499,4 @@ async def cmd_topic(interaction: discord.Interaction, query: str):
         )
 
     except Exception as e:
-        await interaction.followup.send(f"Error: {e}")
+        await interaction.followup.send(log_command_error(f"/topic {query}", e))

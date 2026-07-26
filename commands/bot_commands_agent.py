@@ -13,6 +13,8 @@ from engine_plan_execute import (
     generate_performance_dashboard,
 )
 
+from lib.bot_errors import log_command_error
+
 # bot_discord から注入されるヘルパー
 _log_to_daily_note = None
 _send_long_message = None
@@ -40,7 +42,12 @@ _sessions = {}  # channel_id -> {"goal": str, "summary": str, "files": list, "ts
 
 # run_plan_and_execute が返す失敗文字列の接頭辞 (これらはセッションに保存しない)
 _FAILURE_PREFIXES = (
+    # log_command_error() は例外の型名を挟んで "Error (RuntimeError): ..." を返す。
+    # "Error:" だけだと前方一致が外れ、失敗結果を成功扱いして次回 /agent の
+    # セッション文脈に混ぜてしまうため両方を挙げる ("Error" と緩めないのは、
+    # 「Errorハンドリングの調査」等で正常結果が Error で始まり得るため)。
     "Error:",
+    "Error (",
     "計画生成に失敗しました",
     "計画を生成できませんでした",
     "タスク失敗:",
@@ -137,7 +144,7 @@ async def cmd_agent(interaction: discord.Interaction, goal: str):
             session_context=session_context,
         )
     except Exception as e:
-        result = f"Error: {e}"
+        result = log_command_error(f"/agent {goal}", e)
 
     # 失敗結果は次回の文脈に混ぜない
     if not result.startswith(_FAILURE_PREFIXES):
@@ -179,4 +186,4 @@ async def cmd_agent_stats(interaction: discord.Interaction):
         await interaction.followup.send(embed=embed)
         await asyncio.to_thread(generate_performance_dashboard)
     except Exception as e:
-        await interaction.followup.send(f"Error: {e}")
+        await interaction.followup.send(log_command_error("/agent-stats", e))
