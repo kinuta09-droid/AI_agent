@@ -30,10 +30,14 @@ _IMPORTED_AT = time.time()
 # bot_discord から注入される discord.Client (自分自身を閉じるために必要)
 _bot = None
 
+# 認可リスト (ALLOWED_USER_IDS) が設定済みかを返す述語。
+_allowlist_configured = None
 
-def init_helpers(bot_client):
-    global _bot
+
+def init_helpers(bot_client, allowlist_configured=None):
+    global _bot, _allowlist_configured
     _bot = bot_client
+    _allowlist_configured = allowlist_configured
 
 
 def _format_uptime(seconds: float) -> str:
@@ -127,6 +131,17 @@ async def cmd_restart(interaction: discord.Interaction, target: str = "bot"):
     await interaction.response.defer()
     target = (target or "bot").lower()
 
+    # 管理系だけは fail-closed にする。bot_discord は ALLOWED_USER_IDS 未設定時に
+    # 「全ユーザー許可」で起動を続ける (env 設定ミスで Bot が完全停止するのを
+    # 避けるための意図的な fail-open)。読み取り系ならそれで許容できるが、
+    # 「誰でもサービスを落とせる」は許容できないのでここで止める。
+    if _allowlist_configured is not None and not _allowlist_configured():
+        await interaction.followup.send(
+            "⛔ `ALLOWED_USER_IDS` が未設定のため `/restart` は実行できません。\n"
+            "未設定だと全ユーザーがサービスを停止できてしまいます。"
+            "`.env` に自分の Discord ユーザー ID を設定してください。")
+        return
+
     # スーパーバイザが居ない状態で落とすと、そのまま沈黙して復帰できない。
     # request_restart 側でも弾いているが、自分自身を閉じる経路はそこを通らない
     # ので、ここで先に確認する。
@@ -147,13 +162,6 @@ async def cmd_restart(interaction: discord.Interaction, target: str = "bot"):
 
     restart_self = target in ("bot", "both")
     if restart_self:
-        # 自分は kill せず、フラグだけ立てて自主的に閉じる。スーパーバイザが
-        # 「意図的な再起動」と読んで失敗カウントを増やさない。
-        await asyncio.to_thread(service_control.set_restart_flag, "discord_bot")
-        # 完了報告の宛先を書き置く。この直後にプロセスが消えるので、
-        # 「問題なく再起動しました」を投稿できるのは次に起動した自分だけ。
-        await asyncio.to_thread(
-            service_control.write_restart_notice, interaction.channel_id, target)
         messages.append("♻️ Discord Bot: 応答後に自分を閉じます。約5秒後に新しいコードで復帰します。")
 
     if not messages:
@@ -164,6 +172,16 @@ async def cmd_restart(interaction: discord.Interaction, target: str = "bot"):
     await interaction.followup.send("\n".join(messages))
 
     if restart_self:
+        # 印を残すのは応答の送信に成功してから。先に立てると、送信が失敗して
+        # 停止に至らなかったときフラグだけが残り、後日の**本物のクラッシュ**を
+        # スーパーバイザが「意図的な再起動」と誤読する (鮮度の足切りもあるが、
+        # そもそも残さないのが正しい)。
+        # 自分は kill せず、フラグを立てて自主的に閉じる。
+        await asyncio.to_thread(service_control.set_restart_flag, "discord_bot")
+        # 完了報告の宛先を書き置く。この直後にプロセスが消えるので、
+        # 「問題なく再起動しました」を投稿できるのは次に起動した自分だけ。
+        await asyncio.to_thread(
+            service_control.write_restart_notice, interaction.channel_id, target)
         # followup の送信完了を待ってから閉じる (途中で切ると応答が消える)
         asyncio.create_task(_close_after(1.5))
         return   # 自分が落ちるので、これ以降の見届けタスクは走れない

@@ -1265,8 +1265,10 @@ async def on_ready():
     bot_commands_agent.init_helpers(
         _log_to_daily_note, _send_long_message, _send_with_fallback
     )
-    # /restart が自分自身を閉じられるよう Client を渡す
-    bot_commands_admin.init_helpers(bot)
+    # /restart が自分自身を閉じられるよう Client を渡す。
+    # 認可リストの設定有無も渡す: 管理系コマンドは fail-open にできない
+    # (未設定だと全ユーザーがサービスを停止できてしまう)
+    bot_commands_admin.init_helpers(bot, lambda: bool(ALLOWED_USER_IDS))
     # 永続 View: 認可判定関数を注入し、bot 再起動をまたいで動作するよう登録
     bot_views.init_views(_is_allowed_user)
     bot.add_view(bot_views.BriefingDeepDiveView())

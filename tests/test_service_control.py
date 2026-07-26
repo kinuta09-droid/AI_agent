@@ -182,6 +182,23 @@ def test_request_restart_when_already_stopped():
     print("✅ request_restart: 既に停止済みなら kill もフラグも行わない")
 
 
+def test_restart_flag_expires():
+    """置き去りのフラグが後日の本物のクラッシュを覆い隠さない。
+
+    フラグを立てた直後に停止が失敗する経路 (Discord への応答送信エラー等) が
+    あり、期限を持たないと「意図的な再起動」と誤読され続けて crash loop
+    検知が無効化される。
+    """
+    with _Sandbox() as box:
+        sc.set_restart_flag("bot")
+        path = sc.SERVICES["discord_bot"]["restart_flag"]
+        old = time.time() - sc.FLAG_MAX_AGE - 60
+        os.utime(path, (old, old))
+        assert sc.consume_restart_flag("bot") is False, "期限切れは意図的扱いにしない"
+        assert not box.flag_exists(), "期限切れでもフラグは片付ける"
+    print("✅ restart flag: 期限切れは意図的扱いにせず片付ける")
+
+
 def test_restart_notice_round_trip_and_single_consumption():
     """完了報告の宛先は1回だけ読める。
 

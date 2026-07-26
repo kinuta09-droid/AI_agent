@@ -162,6 +162,11 @@ def format_status_lines(now=None):
 # 再起動要求
 # ---------------------------------------------------------
 
+# 再起動フラグの有効期限。停止まで数秒しかかからないので短くてよい。
+# 長くすると「立てたが落ちなかった」フラグが後日のクラッシュを覆い隠す。
+FLAG_MAX_AGE = 300
+
+
 def set_restart_flag(name):
     """意図的な再起動であることを示すフラグを置く。
 
@@ -178,18 +183,28 @@ def set_restart_flag(name):
         return False
 
 
-def consume_restart_flag(name):
+def consume_restart_flag(name, max_age=FLAG_MAX_AGE, now=None):
     """フラグがあれば削除して True を返す (スーパーバイザが1回だけ消費する)。
 
     「読んで消す」を1関数にまとめているのは、消し忘れると次の異常終了まで
     「意図的」と誤認され続け、本物の crash loop を見逃すため。
+
+    期限切れ (max_age 超) は削除するが False を返す。フラグを立てた直後に
+    停止が失敗する経路 (Discord への応答送信エラー等) があり、置き去りの
+    フラグが何時間も後の**本物のクラッシュ**を「意図的な再起動」と誤読して
+    crash loop 検知を無効化してしまうため、鮮度で足切りする。
     """
     _key, svc = _service(name)
+    path = svc["restart_flag"]
     try:
-        os.remove(svc["restart_flag"])
-        return True
+        age = (time.time() if now is None else now) - os.path.getmtime(path)
     except OSError:
-        return False
+        return False          # フラグ無し = 通常の異常終了
+    try:
+        os.remove(path)
+    except OSError:
+        pass                  # 消せなくても判定は age で確定している
+    return 0 <= age <= max_age
 
 
 # 再起動を要求した側 (Discord) が「どこへ完了を報告すべきか」を書き置くファイル。
