@@ -28,6 +28,7 @@
 ## Commands
 ```bash
 py verify_project.py           # Pre-flight check (MANDATORY before release)
+scripts\arms.bat               # ワンクリック制御 (引数なし=メニュー / start|stop|restart|status|logs)
 py main.py                     # Universal launcher
 py bot_discord.py              # Start Discord bot
 py agent_scheduler.py          # Start scheduler

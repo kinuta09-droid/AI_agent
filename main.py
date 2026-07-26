@@ -57,21 +57,11 @@ def _get_function(func_path: str):
 
 # Watchdog (Tier2-c): 各サービスの heartbeat / PID ファイル。
 # poll() は「死亡」しか検知できないため、heartbeat の鮮度で「ハング」を検知する。
-# パスは各サービス側の定義 (bot_discord.HEARTBEAT_FILE 等) と一致させること。
-# import で揃えないのは、スーパーバイザに discord 等の重量級依存を持ち込まないため。
+# 定義は lib/service_control.py に集約済み (Discord の /status /restart と
+# scripts/arms_ctl.py も同じ表を参照する。写すとパスがずれた瞬間に
+# 「殺すべき PID を見失う」ため)。service_control は標準ライブラリのみに依存する
+# ので、スーパーバイザに discord 等の重量級依存は持ち込まれない。
 _ROOT = os.path.dirname(os.path.abspath(__file__))
-SERVICES = {
-    "discord_bot": {
-        "script": "bot_discord.py",
-        "hb_file": os.path.join(_ROOT, "logs", "bot_discord.hb"),
-        "pid_file": os.path.join(_ROOT, "bot_discord.pid"),
-    },
-    "scheduler": {
-        "script": "agent_scheduler.py",
-        "hb_file": os.path.join(_ROOT, "logs", "agent_scheduler.hb"),
-        "pid_file": os.path.join(_ROOT, "agent_scheduler.pid"),
-    },
-}
 
 # kill → ランチャー親 exit → poll() 検知 のタイムラグ中に再killを連打しないための猶予
 _KILL_COOLDOWN = 60
@@ -80,7 +70,19 @@ _KILL_COOLDOWN = 60
 def run_and_monitor():
     """Bot と Scheduler を起動し、監視（死亡 = 自動再起動 / ハング = 強制再起動）する"""
     from lib import watchdog
-    from lib.pid_guard import read_owner
+    from lib.pid_guard import acquire, release, read_owner
+    from lib.service_control import (
+        SERVICES, LAUNCHER_PID_FILE, consume_restart_flag,
+    )
+
+    # スーパーバイザ自身の多重起動ガード。
+    # 2つ目のスーパーバイザが上がると、その子は PID ガードで即 exit するため
+    # 「起動直後の終了」と数えられ、指数バックオフと偽の「🚨 起動失敗」通知が出る。
+    # ワンクリック起動 (scripts/arms.bat) の二度押しで簡単に踏むので入口で弾く。
+    if not acquire(LAUNCHER_PID_FILE):
+        print(f"  [Launcher] ⚠️ 既に起動しています (PID {read_owner(LAUNCHER_PID_FILE)})。"
+              f"二重起動を避けるため終了します。")
+        return
 
     print("\n" + "="*50)
     print("  🛰️ ARMS Parallel Launcher & Monitor")
@@ -128,17 +130,28 @@ def run_and_monitor():
                 if state["proc"].poll() is not None:
                     uptime = now - state["started_at"]
                     code = state["proc"].returncode
-                    # 起動直後の終了は「再起動すれば直る事故」ではなく
-                    # 「毎回同じ理由で上がってこない」ことがほとんど。
-                    # 数えて間隔を空け、閾値を超えたら人間に知らせる。
-                    if watchdog.is_fast_exit(uptime):
+                    # /restart や arms_ctl による「意図した停止」は、ここからは
+                    # 異常終了と見分けがつかない。フラグが立っていれば人間の指示
+                    # なので失敗として数えない (数えると 60秒以内の再起動が
+                    # crash loop 扱いになり、バックオフと偽の起動失敗通知が出る)。
+                    intentional = consume_restart_flag(name)
+                    if intentional:
+                        state["failures"] = 0
+                    elif watchdog.is_fast_exit(uptime):
+                        # 起動直後の終了は「再起動すれば直る事故」ではなく
+                        # 「毎回同じ理由で上がってこない」ことがほとんど。
+                        # 数えて間隔を空け、閾値を超えたら人間に知らせる。
                         state["failures"] += 1
                     else:
                         state["failures"] = 0
                     delay = watchdog.restart_delay(state["failures"])
-                    print(f"  [Monitor] ⚠️ {name} has stopped (code: {code}, "
-                          f"uptime: {int(uptime)}s). Restarting in {delay}s "
-                          f"(consecutive startup failures: {state['failures']})")
+                    if intentional:
+                        print(f"  [Monitor] ♻️ {name} intentional restart "
+                              f"(code: {code}). Restarting in {delay}s")
+                    else:
+                        print(f"  [Monitor] ⚠️ {name} has stopped (code: {code}, "
+                              f"uptime: {int(uptime)}s). Restarting in {delay}s "
+                              f"(consecutive startup failures: {state['failures']})")
                     if watchdog.should_alert(state["failures"]):
                         watchdog.notify_discord(
                             f"🚨 **起動失敗**: `{name}` が起動直後に終了する状態を "
@@ -179,6 +192,10 @@ def run_and_monitor():
             if state["proc"] is not None:   # バックオフ待機中は proc を持たない
                 state["proc"].terminate()
         print("  [Launcher] All processes terminated.")
+    finally:
+        # 手放さないと、次回起動が「既に起動しています」で弾かれ続ける。
+        # (強制終了された場合は pid_guard が stale として次回に回収する)
+        release(LAUNCHER_PID_FILE)
 
 # ---------------------------------------------------------
 # AI Router & Menu Functions

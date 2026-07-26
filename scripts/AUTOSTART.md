@@ -1,5 +1,29 @@
 # PC 起動時の自動起動と、立ち上がらないときの調べ方
 
+## 日常操作 (ターミナル不要)
+
+| やりたいこと | 手段 |
+|--------------|------|
+| コード変更を Bot に反映 | Discord `/restart target:bot` |
+| Scheduler だけ入れ直す | Discord `/restart target:scheduler` |
+| 今の稼働状況を見る | Discord `/status` または `arms.bat status` |
+| 落ちている / PC 再起動後に上げる | デスクトップの **ARMS Control** をダブルクリック → `1: start` |
+| スタックを止める | `arms.bat stop` (メニューなら `4`) |
+| ランチャーのログを見る | `arms.bat logs` (メニューなら `5`) |
+
+再起動の実体は「子プロセスを終わらせるだけ」で、再生成は `main.py` の
+スーパーバイザが行う。新しい python プロセスとして起動されるので、
+**再起動すればコード変更は反映される**。
+
+`main.py` 自身を書き換えたときだけは Discord から再起動できない
+(スーパーバイザを殺すと誰も再生成しないため)。`arms.bat restart` を使う。
+
+ショートカットの作成 (1回だけ):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_shortcut.ps1
+```
+
 ## 監視の守備範囲
 
 | 障害 | 検知するもの | 復旧 |
@@ -55,6 +79,9 @@ schtasks /run   /tn "ARMS Launcher"               # 手動で起動テスト
    同一ブート内で本当に二重起動しているケースはこのメッセージが正しい。
    `Get-CimInstance Win32_Process -Filter "Name='python.exe'" | select ProcessId,CommandLine`
    で実際のプロセスを数えて確認する。
+
+   `arms.bat status` (= Discord `/status` と同じ表示) で PID と heartbeat 鮮度を
+   まとめて確認できる。Launcher の行が `not running` なら 1. に戻る。
 
 5. **heartbeat の鮮度**
    `logs\bot_discord.hb` / `logs\agent_scheduler.hb` の更新時刻。
