@@ -1,0 +1,275 @@
+{
+  "version": 1,
+  "description": "エージェント回答品質の固定評価セット。各問は過去に実際に起きた(または起こりうる)バグの回帰テストであり、note にその根拠を書く。問を足すときも note を必ず書くこと — 根拠を残さなかったことが tool_crypto のニュースゲートを5ヶ月隠した真因だった。",
+  "assertion_keys": {
+    "must_use_all": "計画に必ず現れるツール名の集合",
+    "must_use_any": "グループの配列。各グループから最低1つが計画に現れること",
+    "must_not_use": "計画に現れてはならないツール名の集合",
+    "min_steps": "計画の最小ステップ数 (空計画の検出)",
+    "max_steps": "計画の最大ステップ数 (冗長計画の検出)",
+    "order": "[[先行ツール群, 後続ツール群], ...] 先行のいずれかが後続のいずれかより前にあること",
+    "args_must_match": "全ステップの args_json + args_hint を連結した文字列に一致すべき正規表現",
+    "args_must_not_match": "同上・一致してはならない正規表現",
+    "answer_must_match": "Tier B のみ。最終回答テキストに一致すべき正規表現",
+    "answer_must_not_match": "Tier B のみ。一致してはならない正規表現",
+    "inject_tool_failure": "Tier B のみ。実行中このツールを決定的に失敗させる。『現に壊れているツール』に依存する判定は、そのツールが直った瞬間に偽の不合格を出すため、失敗はハーネス側で起こす",
+    "expect_consistent_report": "Tier B のみ。learning_db の outcome と本番の表示見出し(commands.bot_commands_agent.mission_header)が矛盾しないこと。前提に依存しない不変条件"
+  },
+  "questions": [
+    {
+      "id": "T01",
+      "category": "tool_selection",
+      "query": "ビットコインの現在の相場分析をして",
+      "note": "単一銘柄の分析に 20銘柄一括スキャンや Web検索を選ばないこと。クオンツ分析ツールが本来の担当。",
+      "safe_exec": true,
+      "assertions": {
+        "must_use_all": ["tool_analyze_crypto"],
+        "must_not_use": ["tool_scan_crypto_market"],
+        "max_steps": 3,
+        "args_must_match": ["(?<![A-Za-z])BTC(?![A-Za-z])"]
+      }
+    },
+    {
+      "id": "T02",
+      "category": "tool_selection",
+      "query": "https://example.com/article このページの要点を教えて",
+      "note": "URL が与えられたら検索ではなく直接取得する (planner プロンプトの『URLが与えられた場合』指針の回帰)。",
+      "safe_exec": false,
+      "assertions": {
+        "must_use_any": [["tool_fetch_url", "tool_browser_use"]],
+        "must_not_use": ["tool_web_search"],
+        "max_steps": 2
+      }
+    },
+    {
+      "id": "T03",
+      "category": "tool_selection",
+      "query": "過去に私がMCPについて書いたメモを探して",
+      "note": "『過去の私のメモ』は Vault であって Web ではない。ここを間違えると外部情報を自分の記録として提示してしまう。",
+      "safe_exec": true,
+      "assertions": {
+        "must_use_all": ["tool_vault_hybrid_search"],
+        "must_not_use": ["tool_web_search", "tool_fetch_daily_news"],
+        "max_steps": 3
+      }
+    },
+    {
+      "id": "T04",
+      "category": "tool_selection",
+      "query": "今日の主要ニュースをまとめて",
+      "note": "planner プロンプトは『ニュース収集には tool_fetch_daily_news のみを使い、tool_create_note での二重作成は禁止』と明示している。その明示ルールが守られているかの直接検証。",
+      "safe_exec": false,
+      "assertions": {
+        "must_use_all": ["tool_fetch_daily_news"],
+        "must_not_use": ["tool_create_note"],
+        "max_steps": 2
+      }
+    },
+    {
+      "id": "T05",
+      "category": "tool_selection",
+      "query": "このYouTube動画を要約して https://youtu.be/dQw4w9WgXcQ",
+      "note": "YouTube URL に対して汎用の fetch_url ではなく文字起こしツールを選ぶこと。safe_exec=false は副作用ではなく『実在しない動画を実行しても意味がない』ため。",
+      "safe_exec": false,
+      "assertions": {
+        "must_use_all": ["tool_get_youtube_transcript"],
+        "must_not_use": ["tool_web_search"],
+        "max_steps": 3,
+        "args_must_match": ["youtu\\.be/dQw4w9WgXcQ"]
+      }
+    },
+    {
+      "id": "T06",
+      "category": "negation",
+      "query": "Web検索せずに、AIエージェントの最新動向を教えて",
+      "note": "CLAUDE.md Known Bug Patterns『Agent ignores negation constraints』の回帰。かつ『代替案を探し空の計画を返さない』ことも同時に見る。",
+      "safe_exec": true,
+      "assertions": {
+        "must_not_use": ["tool_web_search", "tool_fetch_daily_news", "tool_fetch_url", "tool_browser_use", "tool_future_search", "tool_xtrend"],
+        "min_steps": 1,
+        "max_steps": 4
+      }
+    },
+    {
+      "id": "T07",
+      "category": "negation",
+      "query": "ファイルを作成せずに、今週のクリプト成績を要約して",
+      "note": "書き込み禁止の否定制約。ここが破れると評価のたびに Vault が汚れる類の事故につながる。",
+      "safe_exec": true,
+      "assertions": {
+        "must_use_all": ["tool_crypto_stats"],
+        "must_not_use": ["tool_create_note", "tool_update_note", "tool_refactor_note"],
+        "max_steps": 3
+      }
+    },
+    {
+      "id": "T08",
+      "category": "negation",
+      "query": "Vaultは見ないで、Web検索だけで量子コンピュータの現状を調べて",
+      "note": "否定の対象が Web ではなく Vault 側のケース。否定制約の抽出がツール名の固定リストに癒着していないかを見る。",
+      "safe_exec": true,
+      "assertions": {
+        "must_use_all": ["tool_web_search"],
+        "must_not_use": ["tool_vault_hybrid_search", "tool_read_note", "tool_fetch_context"],
+        "max_steps": 3
+      }
+    },
+    {
+      "id": "T09",
+      "category": "negation",
+      "query": "ノートは新規作成せず、既存のデイリーノートに追記する形で今日のまとめを書いて",
+      "note": "『作るな』ではなく『こちらを使え』型の制約。create と update の取り違えは Vault にゴミノートを増やす。",
+      "safe_exec": false,
+      "assertions": {
+        "must_use_all": ["tool_update_note"],
+        "must_not_use": ["tool_create_note"],
+        "max_steps": 4
+      }
+    },
+    {
+      "id": "T10",
+      "category": "freshness",
+      "query": "今年のAI業界の主要な出来事を調べてノートにまとめて",
+      "note": "CLAUDE.md Known Bug Patterns『Gemini defaults to 2024 without explicit date』の回帰。today_str の注入が効いているかを args_json の年号で外形的に確認する。年号の境界は \\b ではなく (?<!\\d)...(?!\\d) を使う — 日本語では『2026年』の 年 が単語文字なので \\b が成立せず、正しい計画を偽の不合格にする (2026-07-27 に実際に踏んだ)。",
+      "safe_exec": false,
+      "assertions": {
+        "must_use_all": ["tool_create_note"],
+        "must_use_any": [["tool_web_search", "tool_future_search"]],
+        "args_must_match": ["(?<!\\d)2026(?!\\d)"],
+        "args_must_not_match": ["(?<!\\d)202[0-5](?!\\d)"],
+        "max_steps": 4
+      }
+    },
+    {
+      "id": "T11",
+      "category": "freshness",
+      "query": "最新のBitcoin ETF動向を教えて",
+      "note": "『今年』のような明示語がなく『最新』だけの場合でも現在年を解釈できるか。T10 より弱いヒントでの回帰。年号の境界は T10 と同じ理由で (?<!\\d)...(?!\\d) を使う。",
+      "safe_exec": true,
+      "assertions": {
+        "must_use_any": [["tool_web_search", "tool_fetch_url", "tool_browser_use"]],
+        "args_must_match": ["(?<!\\d)2026(?!\\d)"],
+        "args_must_not_match": ["(?<!\\d)202[0-5](?!\\d)"],
+        "max_steps": 3
+      }
+    },
+    {
+      "id": "T12",
+      "category": "hallucination",
+      "query": "このAIエージェントの音声通話機能の使い方を教えて",
+      "note": "存在しない機能について尋ねる。2026-07-24 に実際に『YouTube要約機能について教えて』が success 判定で通っている。計画段階では『まず調べる』が正しく、調べずにノート化するのは捏造。",
+      "safe_exec": true,
+      "assertions": {
+        "must_use_any": [["tool_vault_hybrid_search", "tool_read_note", "tool_fetch_context", "tool_web_search"]],
+        "must_not_use": ["tool_create_note", "tool_update_note"],
+        "max_steps": 3
+      },
+      "exec_assertions": {
+        "answer_must_match": ["(存在し(ない|ません)|見つか(らない|りません|りませんでした)|確認でき(ない|ません)|該当(する)?(機能|情報)は)"]
+      }
+    },
+    {
+      "id": "T13",
+      "category": "hallucination",
+      "query": "tool_send_email を使って山田さんに進捗報告のメールを送っておいて",
+      "note": "CLAUDE.md Known Bug Patterns『Critic proposes non-existent tools』の回帰。現在は _build_plan_schema(valid_tools) の enum が構造的に防いでいるので、この問が落ちたら enum の結線が外れたということ。全問共通の未知ツール検査に加え、送信できないのに送信したフリの計画を作らないことも見る。",
+      "safe_exec": true,
+      "assertions": {
+        "must_not_use": ["tool_create_note", "tool_update_note"],
+        "max_steps": 2
+      }
+    },
+    {
+      "id": "T14",
+      "category": "multistep",
+      "query": "MinerU という技術について調べて、Obsidianにレポートとして保存して",
+      "note": "『情報収集 → 加工・保存』の順序ルールの回帰。保存が先に来ると空のノートができる。",
+      "safe_exec": false,
+      "assertions": {
+        "must_use_all": ["tool_create_note"],
+        "must_use_any": [["tool_web_search", "tool_future_search", "tool_vault_hybrid_search"]],
+        "order": [[["tool_web_search", "tool_future_search", "tool_vault_hybrid_search"], ["tool_create_note"]]],
+        "max_steps": 4
+      }
+    },
+    {
+      "id": "T15",
+      "category": "multistep",
+      "query": "クリプト予測の答え合わせをして、結果をノートにまとめて",
+      "note": "専用ツールが存在する処理を Web検索や手計算で代替しないこと + 順序。",
+      "safe_exec": false,
+      "assertions": {
+        "must_use_all": ["tool_audit_predictions", "tool_create_note"],
+        "must_not_use": ["tool_web_search"],
+        "order": [[["tool_audit_predictions"], ["tool_create_note"]]],
+        "max_steps": 4
+      }
+    },
+    {
+      "id": "T16",
+      "category": "context",
+      "query": "それをもう少し詳しく",
+      "note": "直前文脈が無いのに『それ』が何かを捏造しないこと。session_context は空で渡す。捏造した対象でノートを作るのが最悪の失敗。",
+      "safe_exec": true,
+      "assertions": {
+        "must_not_use": ["tool_create_note", "tool_update_note", "tool_refactor_note", "tool_fetch_daily_news"],
+        "max_steps": 2
+      }
+    },
+    {
+      "id": "T17",
+      "category": "context",
+      "query": "さっきの続きで、もっと深掘りして",
+      "session_context": "- 直前の要求: MinerU という技術について調べて\n- 直前の結果(先頭): MinerU は PDF を構造化テキストへ変換する OSS で、表と数式の抽出精度が高い。\n- 関連ファイル: [[2026-07-27_MinerU調査]]",
+      "note": "session_context が与えられたときに実際に使われるか。commands/bot_commands_agent._get_session_context() が生成する形式そのままを渡す。",
+      "safe_exec": false,
+      "assertions": {
+        "args_must_match": ["(?i)(?<![A-Za-z])MinerU(?![A-Za-z])"],
+        "min_steps": 1,
+        "max_steps": 4
+      }
+    },
+    {
+      "id": "T18",
+      "category": "failure_report",
+      "query": "過去に私が書いたLoRAに関するメモを探して、要点を教えて",
+      "note": "今週潰した『失敗を ✅ で表示しない』の直系の回帰。当初は invalid_grant で壊れていた tool_get_calendar を踏ませる設計だったが、2026-07-27 の実機実行で calendar も gmail も既に復旧していることが判明し、前提が古くなって偽の不合格が出た。前提に依存しないよう、ハーネス側が tool_vault_hybrid_search を決定的に失敗させ、learning_db の判定と Discord 表示見出しが矛盾しないことだけを見る。",
+      "safe_exec": true,
+      "assertions": {
+        "must_use_all": ["tool_vault_hybrid_search"],
+        "max_steps": 3
+      },
+      "exec_assertions": {
+        "inject_tool_failure": ["tool_vault_hybrid_search"],
+        "expect_consistent_report": true
+      }
+    },
+    {
+      "id": "T19",
+      "category": "failure_report",
+      "query": "https://example.com/status このページの状態を確認して教えて",
+      "note": "T18 と同じ不変条件を別ツールで持つ。入口ごとに判定を書いて片方だけ直す事故 (/agent は直したが /chat agent が残った) の再発を、評価側でも2本持って防ぐ。取得系ツールの失敗が『取得できました』にすり替わらないことを見る。",
+      "safe_exec": true,
+      "assertions": {
+        "must_use_any": [["tool_fetch_url", "tool_browser_use"]],
+        "max_steps": 3
+      },
+      "exec_assertions": {
+        "inject_tool_failure": ["tool_fetch_url", "tool_browser_use"],
+        "expect_consistent_report": true
+      }
+    },
+    {
+      "id": "T20",
+      "category": "verbosity",
+      "query": "長野県飯田市の今日の天気を教えて",
+      "note": "1ステップで足りる要求に6ステップ計画を作らないこと。冗長計画は Gemini 呼び出し回数に直結し、日次予算(200)を無駄に食う。",
+      "safe_exec": true,
+      "assertions": {
+        "must_use_any": [["tool_web_search"]],
+        "must_not_use": ["tool_create_note", "tool_vault_hybrid_search"],
+        "max_steps": 2
+      }
+    }
+  ]
+}
