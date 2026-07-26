@@ -1,26 +1,21 @@
 @echo off
 rem ---------------------------------------------------------------
-rem ARMS 自動起動エントリポイント (Windows タスクスケジューラ用)
+rem ARMS autostart entry point (for Windows Task Scheduler).
 rem
-rem これまで PC 起動時の立ち上げはリポジトリ外の設定に依存していたため、
-rem 起動しなかったときに「何が起きたか」を示す記録がどこにも残らなかった。
-rem 本スクリプトは main.py (スーパーバイザ) の出力を logs\launcher.log に
-rem 落とし、直前のブートぶんを logs\launcher.prev.log として1世代だけ残す。
+rem This is a thin entry: it launches the real work hidden and exits.
+rem The actual startup lives in scripts\arms_core.bat.
 rem
-rem 登録方法とトラブルシュートは scripts\AUTOSTART.md を参照。
+rem Why the split (real incident, 2026-07-26): when the Task Scheduler
+rem runs a .bat directly, a visible console window stays on the desktop.
+rem Closing it sends CTRL_CLOSE_EVENT and main.py, the bot and the
+rem scheduler all die at once (exit 0xC000013A = STATUS_CONTROL_C_EXIT).
+rem Launching hidden via wscript leaves no window to close.
+rem
+rem The registered task action does not change: this file stays the entry.
+rem
+rem ASCII only on purpose (cmd.exe reads .bat in the OEM codepage).
+rem Japanese notes and troubleshooting: scripts\AUTOSTART.md
 rem ---------------------------------------------------------------
 setlocal
-set "ROOT=%~dp0.."
-cd /d "%ROOT%" || exit /b 1
-
-if not exist "logs" mkdir "logs"
-rem 前回ブートのログを1世代だけ退避する (無限に肥大させない)
-if exist "logs\launcher.log" move /y "logs\launcher.log" "logs\launcher.prev.log" >nul
-
-echo [%date% %time%] launcher start (cwd=%CD%) > "logs\launcher.log"
-rem -u (バッファなし): stdout をファイルへリダイレクトすると Python は既定で
-rem ブロックバッファリングし、[Monitor] / [Watchdog] の行が 8KB 貯まるまで
-rem ログに現れない。障害時に真っ先に読むログなので必ず即時反映させる。
-py -u main.py >> "logs\launcher.log" 2>&1
-echo [%date% %time%] launcher exited (code %errorlevel%) >> "logs\launcher.log"
+wscript.exe //B //Nologo "%~dp0arms_hidden.vbs"
 endlocal

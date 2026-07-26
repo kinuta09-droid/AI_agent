@@ -36,6 +36,26 @@ powershell -ExecutionPolicy Bypass -File scripts\install_shortcut.ps1
 最後の1行が重要で、heartbeat は「`main.py` が動いていること」を前提にした仕組み。
 PC 起動時に `main.py` が走らなければ heartbeat は一度も評価されず、当然通知も出ない。
 
+## 起動経路 (なぜ3ファイルに分かれているか)
+
+```
+タスクスケジューラ "ARMS Launcher"
+  └ scripts\start_arms.bat     … 入口。非表示で本体を起動して即 exit
+      └ scripts\arms_hidden.vbs … WScript.Shell.Run(..., 0, False) = 非表示
+          └ scripts\arms_core.bat … ログ退避 + py -u main.py (実処理)
+```
+
+**可視のコンソールウィンドウを作らないこと**が要件。タスクが `.bat` を直接実行すると
+黒いウィンドウがデスクトップに残り、その × を押すと `CTRL_CLOSE_EVENT` が飛んで
+`main.py`・Bot・Scheduler が一斉に死ぬ (終了コード `0xC000013A`)。
+実質「スタック全滅ボタン」になるため、必ず `wscript` 経由の非表示起動にする。
+2026-07-26 にこれで全停止した。
+
+これら `.bat` / `.vbs` は **ASCII のみ**で書くこと。cmd.exe は `.bat` を cp932 で読むため、
+UTF-8 の日本語コメントは化けるうえ、`。` の末尾バイトが行末の CR を食べて
+次の実行行をコメントに連結してしまう (終了コード 9009 で即死する)。
+日本語の説明はこの `.md` に書く。
+
 ## 自動起動の登録 (タスクスケジューラ)
 
 管理者 PowerShell で1回だけ実行する:
