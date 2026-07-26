@@ -87,6 +87,7 @@ def run_and_monitor():
     print("  - Starting Discord Bot & Scheduler...")
     print("  - Auto-restart enabled (5s delay)")
     print(f"  - Watchdog: heartbeat stale > {watchdog.STALE_THRESHOLD}s -> force restart")
+    print(f"  - Crash loop: exit within {watchdog.FAST_EXIT_SECONDS}s -> backoff + Discord alert")
     print("  - Ctrl+C to stop all and return to menu")
     print("="*50 + "\n")
 
@@ -102,6 +103,8 @@ def run_and_monitor():
             "proc": start_process(name, svc["script"]),
             "started_at": time.time(),   # ハング判定の起点 (起動猶予を兼ねる)
             "killed_at": 0.0,            # 直近の watchdog kill 時刻
+            "failures": 0,               # 連続「起動直後の終了」回数
+            "next_start_at": 0.0,        # バックオフ明けの再起動予定時刻
         }
         for name, svc in SERVICES.items()
     }
@@ -113,13 +116,40 @@ def run_and_monitor():
             for name, state in processes.items():
                 svc = SERVICES[name]
 
+                # --- バックオフ待機中: 予定時刻まで何もしない ---
+                if state["proc"] is None:
+                    if now >= state["next_start_at"]:
+                        state["proc"] = start_process(name, svc["script"])
+                        state["started_at"] = now
+                        state["killed_at"] = 0.0
+                    continue
+
                 # --- 死亡検知 (既存): ランチャー親の exit を拾って再生成 ---
                 if state["proc"].poll() is not None:
-                    print(f"  [Monitor] ⚠️ {name} has stopped "
-                          f"(code: {state['proc'].returncode}). Restarting...")
-                    state["proc"] = start_process(name, svc["script"])
-                    state["started_at"] = time.time()
-                    state["killed_at"] = 0.0
+                    uptime = now - state["started_at"]
+                    code = state["proc"].returncode
+                    # 起動直後の終了は「再起動すれば直る事故」ではなく
+                    # 「毎回同じ理由で上がってこない」ことがほとんど。
+                    # 数えて間隔を空け、閾値を超えたら人間に知らせる。
+                    if watchdog.is_fast_exit(uptime):
+                        state["failures"] += 1
+                    else:
+                        state["failures"] = 0
+                    delay = watchdog.restart_delay(state["failures"])
+                    print(f"  [Monitor] ⚠️ {name} has stopped (code: {code}, "
+                          f"uptime: {int(uptime)}s). Restarting in {delay}s "
+                          f"(consecutive startup failures: {state['failures']})")
+                    if watchdog.should_alert(state["failures"]):
+                        watchdog.notify_discord(
+                            f"🚨 **起動失敗**: `{name}` が起動直後に終了する状態を "
+                            f"{state['failures']} 回連続で検出しました "
+                            f"(終了コード {code}、次の再試行まで {delay} 秒)。"
+                            f"`logs/` とコンソール出力を確認してください。"
+                        )
+                    # proc を手放し、次周回のバックオフ待機パスへ委ねる。
+                    # ここで sleep すると他サービスの監視まで止まってしまう。
+                    state["proc"] = None
+                    state["next_start_at"] = now + delay
                     continue
 
                 # --- ハング検知 (Watchdog): heartbeat の鮮度で判定 ---
@@ -146,7 +176,8 @@ def run_and_monitor():
     except KeyboardInterrupt:
         print("\n  [Launcher] 🛑 Stopping all processes...")
         for state in processes.values():
-            state["proc"].terminate()
+            if state["proc"] is not None:   # バックオフ待機中は proc を持たない
+                state["proc"].terminate()
         print("  [Launcher] All processes terminated.")
 
 # ---------------------------------------------------------
