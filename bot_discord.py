@@ -595,13 +595,24 @@ async def _dispatch_agent(interaction: discord.Interaction, goal: str):
 # Obsidian Helper Views
 # ---------------------------------------------------------
 
+# Obsidian を開くボタンの有効期限 (最後の操作からの idle 秒数)。
+# この View は「そのメッセージ専用のリンク集」をコールバックのクロージャに閉じ込めて
+# おり、ボタンに固定 custom_id も無い (自動採番) ため、bot.add_view() で永続化できない。
+# かつて timeout=None を指定していたが、それは
+#   1. Bot 再起動後はどのみち押しても無反応 (所見3と同じ無言の死)
+#   2. discord.py の View ストアから永久に消えず、送信するたびにメモリを食う
+# という二重の嘘だった。有限期限にして「いつか失効する UI」であることを明示する
+# (恒久対応は custom_id に vault 相対パスを埋めた永続 View 化 — 別課題) (2026-07-26)。
+_OBSIDIAN_VIEW_TIMEOUT = 3600  # 1時間
+
+
 class OpenInObsidianView(bot_views.AllowedUserView):
     def __init__(self, links: dict[str, str]):
         """
         links: {filename: uri} の辞書
         """
-        super().__init__(timeout=None)
-        
+        super().__init__(timeout=_OBSIDIAN_VIEW_TIMEOUT)
+
         # リンク数に応じてボタンを追加 (最大5個まで)
         # 5個を超える場合はドロップダウン (TODO: 実装簡略化のため一旦ボタンのみ、溢れたら無視)
         count = 0
