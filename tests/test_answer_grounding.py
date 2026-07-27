@@ -231,6 +231,37 @@ def test_t12_assertion_still_rejects_the_original_bug():
               f"一致してしまった: {hit.group(0) if hit else ''}")
 
 
+def test_summary_prompt_preserves_citations():
+    """[7] 出典 [[ファイル名#見出し]] を残させ、かつ捏造を禁じている (Phase A2)
+
+    片方だけだと逆向きの嘘になる:
+      「出典を付けろ」だけ → それらしいファイル名を推測して [[...]] を作る
+      「捏造するな」だけ   → 安全側に倒れて出典を一切書かなくなり、
+                             検証手段が無い元の状態に戻る
+    両方が同時にプロンプトに載っていることを固定する。
+    """
+    print("\n[7] 出典の保持と捏造禁止 (Phase A2)")
+    results = [{
+        "step": 1, "task": "過去ノートを検索する", "tool": "tool_vault_hybrid_search",
+        "success": True,
+        "observation": "- File: [[crypto-tool-upgrade-plan.md#Phase3]] (rrf: 0.0325)\n"
+                       "  Snippet:\n## Phase3\nATR動的水準を導入した。\n...",
+    }]
+    prompt = _build_final_summary_prompt("過去のメモを踏まえてcryptoの改善経緯を教えて", results)
+
+    check("出典の節がある", "【出典の扱い】" in prompt)
+    check("observation のリンクをそのまま残せと書いてある",
+          "そのままの表記でコピー" in prompt)
+    check("見出しアンカーの改変を禁じている",
+          "省略・要約・整形してはならない" in prompt)
+    check("observation に無いリンクの捏造を禁じている",
+          "observation に出てこないリンクを書いてはならない" in prompt)
+    check("出典が無いときの言い方を指示している",
+          "見つかりませんでした" in prompt)
+    check("検索結果の出典が実際にプロンプトへ渡っている",
+          "[[crypto-tool-upgrade-plan.md#Phase3]]" in prompt)
+
+
 def test_planner_prompt_mentions_append_guideline():
     print("\n[5] Planner の【ツール選択の指針】に追記の行がある")
     path = os.path.join(_PROJECT_ROOT, "engine_plan_execute.py")
@@ -257,6 +288,7 @@ if __name__ == "__main__":
     test_summary_prompt_keeps_detail_requirements()
     test_note_tool_descriptions_are_distinguishable()
     test_t12_assertion_still_rejects_the_original_bug()
+    test_summary_prompt_preserves_citations()
     test_planner_prompt_mentions_append_guideline()
 
     print("\n" + "=" * 55)

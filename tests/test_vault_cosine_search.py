@@ -19,7 +19,9 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from tools.tool_vault_index import tool_vault_semantic_search, _connect, _normalize
+from tools.tool_vault_index import (
+    tool_vault_semantic_search, _semantic_hits, _connect, _normalize,
+)
 
 DIM = 4
 
@@ -68,10 +70,23 @@ def main():
         assert "best.md" in result and "mid.md" not in result, result
         print("✅ top_k=1 returns only the best hit")
 
-        # --- 出力形式が tool_vault_search と互換 ---
-        assert result.startswith("- File: [[best.md]]"), result
+        # --- 出力形式が tool_vault_search と互換 + 見出しアンカー (Phase A2) ---
+        assert result.startswith("- File: [[best.md#最重要]]"), result
         assert "Snippet:" in result
-        print("✅ output format matches tool_vault_search style")
+        print("✅ output format matches tool_vault_search style (with heading anchor)")
+
+        # --- 見出しの無いチャンクはアンカー無しリンク (壊れたリンクを出さない) ---
+        result_mid = tool_vault_semantic_search("テストクエリ", top_k=3, embed_fn=stub_embed, db_path=db)
+        assert "[[mid.md]]" in result_mid, f"heading=None must yield plain link:\n{result_mid}"
+        assert "[[mid.md#" not in result_mid, f"heading=None must not emit '#':\n{result_mid}"
+        print("✅ heading=None -> plain [[file]] link")
+
+        # --- chunk_id / heading が構造化ヒットに乗る (リランク・評価が使う) ---
+        hits = _semantic_hits("テストクエリ", top_k=1, embed_fn=stub_embed, db_path=db)
+        assert isinstance(hits, list) and hits, hits
+        assert hits[0]["heading"] == "最重要", hits[0]
+        assert hits[0]["chunk_id"] == "30_Main/best.md#0", hits[0]
+        print("✅ _semantic_hits exposes heading / chunk_id")
 
         # --- top_k が文字列で来ても動く (LLM解決引数対策) ---
         result = tool_vault_semantic_search("テストクエリ", top_k="2", embed_fn=stub_embed, db_path=db)
