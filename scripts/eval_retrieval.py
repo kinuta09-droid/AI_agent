@@ -156,8 +156,23 @@ def is_clean_arm(config: dict, results: list) -> bool:
     return not any(r["notes"] for r in results)
 
 
+def _looks_like_retrieval_run(payload) -> bool:
+    """このスクリプトが出した JSON か。
+
+    logs/eval/ には scripts/eval_agent.py の出力 (eval_*.json) も同居しており、
+    取り違えて --compare に渡すと KeyError でスタックトレースが出るだけになる。
+    """
+    return (isinstance(payload, dict)
+            and isinstance(payload.get("metrics"), dict)
+            and isinstance(payload.get("results"), list)
+            and f"hit@{HIT_K}" in payload["metrics"])
+
+
 def compare(before: dict, after: dict) -> str:
     """before/after の差分表を作る。コミットメッセージにそのまま貼れる形式。"""
+    if not _looks_like_retrieval_run(before):
+        return ("⛔ --compare に渡した JSON は eval_retrieval.py の出力ではありません "
+                "(logs/eval/retrieval_*.json を指定してください)。")
     lines = []
     for label, payload in (("before", before), ("after", after)):
         if payload.get("arm_clean") is False:
