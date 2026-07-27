@@ -13,7 +13,9 @@ from engine_plan_execute import (
     generate_performance_dashboard,
 )
 
-from lib.bot_errors import log_command_error, FAILURE_PREFIXES
+from lib.bot_errors import (
+    log_command_error, is_failure_result, is_partial_result, FAILURE_PREFIXES,
+)
 
 # bot_discord から注入されるヘルパー
 _log_to_daily_note = None
@@ -44,6 +46,9 @@ _sessions = {}  # channel_id -> {"goal": str, "summary": str, "files": list, "ts
 # 汎用分 ("Error:" / "Error (") は lib.bot_errors に集約し、ここには
 # Plan-Execute エンジン固有の文言だけを足す (判定が二重管理になると必ず割れる)。
 # この判定は「セッションに保存しない」と「見出しを ❌ にする」の両方で使う。
+# 判定そのものは必ず is_failure_result() を通すこと: 汎用側は接頭辞 tuple では
+# 表せない揺れ ("[ERROR] ..." / "[xtrend error] ..." / "Error creating note: ...")
+# を正規表現で見ており、ここで startswith を書くとその分だけ取りこぼす。
 _FAILURE_PREFIXES = FAILURE_PREFIXES + (
     "計画生成に失敗しました",
     "計画を生成できませんでした",
@@ -51,14 +56,25 @@ _FAILURE_PREFIXES = FAILURE_PREFIXES + (
 )
 
 
+def _is_failure(result: str) -> bool:
+    """エンジン固有の文言を足した失敗判定。この2用途の唯一の窓口。"""
+    return is_failure_result(result, _FAILURE_PREFIXES)
+
+
 def mission_header(result: str) -> str:
     """Plan-Execute の結果見出し。失敗を "✅ Mission Complete" で出さないための単一箇所。
 
     /agent (このモジュール) と /chat agent (bot_discord.py) は同じエンジンの
     戻り値を表示するため、両方からここを呼ぶ (public にしているのはそのため)。
+
+    3状態にしている理由 (2026-07-27): 全滅は "タスク失敗:" で失敗接頭辞が付くが、
+    部分失敗は成功が混ざるので失敗接頭辞を付けられない。無印で返すと
+    learning_db が outcome="partial" と記録した実行に ✅ が出て食い違う。
     """
-    if result.startswith(_FAILURE_PREFIXES):
+    if _is_failure(result):
         return "❌ **Mission Failed**"
+    if is_partial_result(result):
+        return "⚠️ **Mission Partial**"
     return "✅ **Mission Complete**"
 
 
@@ -155,7 +171,7 @@ async def cmd_agent(interaction: discord.Interaction, goal: str):
         result = log_command_error(f"/agent {goal}", e)
 
     # 失敗結果は次回の文脈に混ぜない
-    if not result.startswith(_FAILURE_PREFIXES):
+    if not _is_failure(result):
         _update_session(interaction.channel_id, goal, result)
 
     header = mission_header(result)

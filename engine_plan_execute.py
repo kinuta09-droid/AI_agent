@@ -22,7 +22,7 @@ from lib.lib_shared import (
 )
 from lib.tool_registry import get_tools_config
 from lib.cost_guard import GeminiBudgetExceeded
-from lib.bot_errors import is_failure_result
+from lib.bot_errors import is_failure_result, PARTIAL_PREFIX
 
 # スキル観測は任意機能: 不在・破損でもツール実行を止めない
 try:
@@ -424,7 +424,16 @@ def execute_plan(plan: list, step_callback=None) -> dict:
 
                 try:
                     observation = observe(tool_name, func, "engine_plan_execute", **args)
-                    success = True
+                    # ツール層は例外を投げず "Error: ..." 文字列を返す規約なので、
+                    # 「例外が出なかった＝成功」と決めつけない。決めつけていた間、
+                    # 失敗したステップが Critic には成功として渡り、learning_db には
+                    # outcome="success" で残り、Discord には ✅ Mission Complete が
+                    # 出ていた (2026-07-27 に評価ハーネスで実測)。
+                    # 判定は lib.bot_errors に集約する (二重管理は必ず割れる)。
+                    success = not is_failure_result(observation)
+                    if not success:
+                        print(f"[P&E] ⚠️ {tool_name} が文字列で失敗を返しました "
+                              f"(例外なし) → step {step_num} を failed として扱います")
                 except Exception as e:
                     observation = f"Error: {e}"
                     success = False
@@ -602,8 +611,9 @@ def _summarize_results(results: list) -> str:
 
     従来は「Success: / ✅ で始まらない observation」を一律 "完了" と書いていたため、
     失敗ステップが完了として報告され、しかもエラー本文が捨てられていた。
-    step_result["success"] は例外を捕まえたときだけ False になる (ツールが
-    "Error: ..." を *返した* 場合は True のまま) ので、文字列側も併せて見る。
+    execute_plan が success に is_failure_result を通すようになった (2026-07-27) ため
+    文字列判定は原則冗長だが、results は他所からも組み立てられる (テスト・将来の
+    別エンジン) ので、同じ関数で二重に見ておく。冗長でも判定は1本。
     """
     parts = []
     for r in results:
@@ -769,7 +779,7 @@ def run_plan_and_execute(user_query: str, step_callback=None,
                 log_execution(user_query, original_plan, all_results, critique, duration)
             except Exception as e:
                 print(f"[P&E] ⚠️ Failed to log execution: {e}")
-            return _generate_final_summary(user_query, all_results)
+            return _final_report(user_query, all_results, critique)
         elif critique["status"] == "needs_revision":
             revised = critique.get("revised_plan", [])
             if revised:
@@ -781,7 +791,7 @@ def run_plan_and_execute(user_query: str, step_callback=None,
                     log_execution(user_query, original_plan, all_results, critique, duration)
                 except Exception as e:
                     print(f"[P&E] ⚠️ Failed to log execution: {e}")
-                return _generate_final_summary(user_query, all_results)
+                return _final_report(user_query, all_results, critique)
         else:
             duration = time.time() - t_start
             try:
@@ -795,7 +805,51 @@ def run_plan_and_execute(user_query: str, step_callback=None,
         log_execution(user_query, original_plan, all_results, last_critique, duration)
     except Exception as e:
         print(f"[P&E] ⚠️ Failed to log execution: {e}")
-    return _generate_final_summary(user_query, all_results)
+    return _final_report(user_query, all_results, last_critique)
+
+
+def _final_report(user_query: str, results: list, critique: dict) -> str:
+    """最終的な戻り値を作る。1ステップも成功していない実行を成功の文面で返さない。
+
+    なぜ _generate_final_summary を直接呼ばないか (2026-07-27):
+      execute_plan の成否判定を直しても、run_plan_and_execute の戻り値は
+      「修正回数を使い切った」「Critic が ok と言った」経路で無条件に Gemini の
+      要約になっていた。要約は失敗を説明する文章であって失敗接頭辞を持たないため、
+      learning_db が outcome="failed" と記録した実行が Discord には
+      ✅ Mission Complete で出る。評価ハーネスの failure_report がこれを実測した
+      (T18/T19: 注入した失敗が2回とも needs_revision で終わり、for を抜けた)。
+
+    全ステップ失敗 = 目標未達とみなしてよい理由:
+      execute_plan は最初の失敗で break するので、成功が1件もないということは
+      どの修正計画も1歩目から進めなかったということ。
+
+    部分失敗 (成功と失敗が混ざる) を別扱いにする理由 (2026-07-27 追記):
+      全滅だけを直した時点では、3ステップ中2つ成功・保存だけ失敗のような実行が
+      log_execution では outcome="partial" なのに Discord では ✅ Mission Complete
+      で出ていた。「失敗を ✅ で表示しない」規約が半分だけ破れた状態。
+      失敗接頭辞は付けられない (成功が混ざっているので "タスク失敗:" は嘘になる)
+      ため、PARTIAL_PREFIX という第3の印を付けて mission_header に ⚠️ を出させる。
+    """
+    if not results:
+        return _generate_final_summary(user_query, results)
+
+    failed = [r for r in results if not r.get("success")]
+    if len(failed) == len(results):
+        reason = critique.get("feedback") or "全てのステップが失敗しました"
+        detail = str(failed[-1].get("observation", ""))[:300]
+        print("[P&E] ❌ 成功したステップが1件も無いため、失敗として報告します")
+        return f"タスク失敗: {reason}" + (f"\n\n最後のエラー: {detail}" if detail else "")
+
+    summary = _generate_final_summary(user_query, results)
+    if not failed:
+        return summary
+
+    # 失敗したステップを要約本文とは別に明示する。Gemini の要約は失敗に触れる
+    # とは限らず、触れても目立たない (自己申告を最終判定に使わない)。
+    steps = "、".join(f"Step {r.get('step', '?')} ({r.get('tool', '?')})"
+                      for r in failed[:3])
+    print(f"[P&E] ⚠️ {len(failed)}/{len(results)} ステップが失敗 → 部分完了として報告します")
+    return f"{PARTIAL_PREFIX}\n失敗したステップ: {steps}\n\n{summary}"
 
 
 def _generate_final_summary(user_query: str, results: list) -> str:

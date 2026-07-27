@@ -67,6 +67,38 @@ def test_is_failure_result():
           is_failure_result("タスク失敗: 中断", ("タスク失敗:",)), "")
     check("str 以外は失敗としない", not is_failure_result(None), "")
 
+    # tools/ を実際に洗って出てきた失敗形。接頭辞 tuple では拾えず、
+    # engine 側が success として learning_db に記録していた分 (2026-07-27)。
+    tool_failures = [
+        "Error creating note: [Errno 13] Permission denied",   # tool_obsidian
+        "Error searching web: read timeout",                   # tool_web
+        "Error fetching URL: 404 Client Error",                # tool_web
+        "Error fetching BTC/USDT data: rate limit",            # tool_crypto
+        "Error during revision: quota exceeded",               # tool_client_review
+        "[30_Main] Error merging reports: disk full",          # tool_obsidian (先頭に [タグ])
+        "[ERROR] Ollama not running. Start with: ollama serve",  # tool_gmail/vault_index
+        "[Error: Obsidian note 'x' could not be read]\n",      # tool_client_review
+        "[xtrend error] twitterAPI.io 401",                    # lib/tool_registry
+        "[future_search error] Tavily timeout",                # lib/tool_registry
+        "[browser_use error] playwright not installed",        # lib/tool_registry
+        "[xtrend_prompt error] boom",                          # lib/tool_registry
+        "Error: Unknown tool 'tool_nope'",                     # engine 側の戻り値
+    ]
+    for msg in tool_failures:
+        check(f"実在の失敗形を拾う ({msg[:34]}…)", is_failure_result(msg), msg[:60])
+
+    # 誤検知させてはいけない正常な戻り値 (同じ形をした成功系)
+    tool_successes = [
+        "Errorハンドリングを調査しました",          # 日本語が直後に続く
+        "Errors は複数形なので失敗ではない",         # 英字が直後に続く
+        "[30_Main] No files to merge.",             # 同じ [タグ] 形式の正常系
+        "[xtrend] 12件の機能を分析しました。",       # lazy wrapper の成功系
+        "Success: Updated [[30_Main/x]]",
+    ]
+    for msg in tool_successes:
+        check(f"正常な戻り値を誤検知しない ({msg[:30]}…)",
+              not is_failure_result(msg), msg[:60])
+
 
 # ---------------------------------------------------------
 # 2. /agent の Mission 見出し
@@ -307,6 +339,257 @@ def test_scheduler_notifies_string_failures():
         logging.disable(logging.NOTSET)
 
 
+# ---------------------------------------------------------
+# 9. エンジン中核: 例外の有無だけで成否を決めていないか
+# ---------------------------------------------------------
+
+def test_execute_plan_marks_string_failures():
+    """ツールが例外を投げず "Error: ..." を返したステップを failed にすること。
+
+    2026-07-27: execute_plan は try/except の外に success=True を置いていたため、
+    ツール層の戻り値契約 (例外を投げず Error 文字列を返す) と噛み合っておらず、
+    失敗が Critic には成功として渡り、learning_db には outcome="success" で
+    残っていた。2026-07-26 に bot 層で潰した穴が、エンジン中核に残っていた形。
+
+    Gemini は呼ばない (args_json を計画に埋めて引数解決をスキップさせる)。
+    """
+    print("\n[9] execute_plan が文字列の失敗を failed にする")
+
+    import contextlib
+    import io as _io
+    import engine_plan_execute as engine
+
+    def _ok_tool(query: str = "") -> str:
+        return "Success: 検索しました"
+
+    def _string_fail_tool(query: str = "") -> str:
+        # tools/ の規約どおり「例外を投げずに」失敗を返す
+        return "Error: 意図的に失敗させたツールです"
+
+    def _bracket_fail_tool(query: str = "") -> str:
+        # lib/tool_registry の lazy wrapper 形式 (接頭辞 tuple では拾えない)
+        return "[xtrend error] twitterAPI.io 401"
+
+    fake_map = {
+        "tool_ok": _ok_tool,
+        "tool_string_fail": _string_fail_tool,
+        "tool_bracket_fail": _bracket_fail_tool,
+    }
+
+    orig_config = engine._get_tools_config
+    orig_observe = engine.observe
+    engine._get_tools_config = lambda: ([], dict(fake_map))
+    engine.observe = lambda name, func, caller, **kw: func(**kw)  # 観測ログを汚さない
+    try:
+        def _run(tool_name):
+            plan = [{"step": 1, "task": "t", "tool": tool_name,
+                     "args_json": '{"query": "x"}'}]
+            with contextlib.redirect_stdout(_io.StringIO()):
+                return engine.execute_plan(plan)
+
+        ok = _run("tool_ok")
+        check("成功するツールは従来どおり success", ok["results"][0]["success"], str(ok))
+
+        for tool_name, label in (("tool_string_fail", "Error: 形式"),
+                                 ("tool_bracket_fail", "[xtrend error] 形式")):
+            res = _run(tool_name)
+            step = res["results"][0]
+            check(f"{label} のステップが failed になる", not step["success"], str(step))
+            check(f"{label} で execute_plan 全体も失敗", not res["success"], str(res))
+            check(f"{label} でエラー本文が observation に残る",
+                  is_failure_result(str(step["observation"])), str(step["observation"]))
+    finally:
+        engine._get_tools_config = orig_config
+        engine.observe = orig_observe
+
+
+def test_log_execution_outcome_not_success():
+    """文字列で失敗したステップが learning_db に outcome="success" で残らないこと。
+
+    Agent_Performance.md の成功率はこの outcome の集計なので、ここが嘘をつくと
+    「成功率92%」という水増しされた数字だけが残り、誰も壊れに気付けない。
+    実 learning_db は触らない (ロード/セーブを差し替える)。
+    """
+    print("\n[10] log_execution の outcome が水増しされない")
+
+    import contextlib
+    import io as _io
+    import engine_plan_execute as engine
+
+    saved = {}
+    orig_load, orig_save = engine._load_learning_db, engine._save_learning_db
+    engine._load_learning_db = lambda: {"executions": [], "seq": 0}
+    engine._save_learning_db = lambda db: saved.update(db)
+
+    def _log(results, critique_status="ok"):
+        saved.clear()
+        with contextlib.redirect_stdout(_io.StringIO()):
+            engine.log_execution("q", [{"step": 1}], results,
+                                 {"status": critique_status}, 1.0)
+        return saved["executions"][-1]
+
+    try:
+        entry = _log([{"step": 1, "task": "t", "tool": "tool_ok",
+                       "observation": "Success: ok", "success": True}])
+        check("全ステップ成功なら従来どおり success",
+              entry["outcome"] == "success", str(entry))
+
+        # execute_plan が is_failure_result を通した後の姿 (success=False)
+        entry = _log([{"step": 1, "task": "t", "tool": "tool_x",
+                       "observation": "Error: 意図的に失敗させたツールです",
+                       "success": False}])
+        check("文字列で失敗したステップは success で記録されない",
+              entry["outcome"] != "success", str(entry))
+        check("失敗理由が記録される",
+              "意図的に失敗" in (entry["failure_reason"] or ""), str(entry))
+        check("失敗ステップ番号が記録される", entry["failed_step"] == 1, str(entry))
+
+        entry = _log([
+            {"step": 1, "task": "a", "tool": "tool_ok",
+             "observation": "Success: ok", "success": True},
+            {"step": 2, "task": "b", "tool": "tool_x",
+             "observation": "[xtrend error] 401", "success": False},
+        ])
+        check("一部失敗は partial", entry["outcome"] == "partial", str(entry))
+    finally:
+        engine._load_learning_db, engine._save_learning_db = orig_load, orig_save
+
+
+def test_run_plan_and_execute_reports_total_failure():
+    """全ステップが失敗した実行を、成功の文面で返さないこと。
+
+    2026-07-27: execute_plan の成否判定を直しても、run_plan_and_execute は
+    「修正回数を使い切った」経路で無条件に Gemini の要約を返していた。
+    要約に失敗接頭辞は無いので mission_header は ✅ Mission Complete を出し、
+    learning_db の outcome="failed" と食い違う (評価ハーネス T18/T19 で実測)。
+
+    Gemini は呼ばない (generate_plan / critique_results / 要約生成を差し替える)。
+    """
+    print("\n[11] 全滅した実行が ✅ Mission Complete にならない")
+
+    import contextlib
+    import io as _io
+    import engine_plan_execute as engine
+    # 判定は bot 層と同じ窓口を使う (汎用の is_failure_result はエンジン固有の
+    # "タスク失敗:" を知らない — その差分こそ _FAILURE_PREFIXES の存在理由)
+    from commands.bot_commands_agent import mission_header, _is_failure
+
+    plan = [{"step": 1, "task": "検索", "tool": "tool_x"}]
+    fail_step = {"step": 1, "task": "検索", "tool": "tool_x",
+                 "observation": "Error: 意図的に失敗させたツールです",
+                 "success": False}
+
+    orig = {name: getattr(engine, name) for name in
+            ("generate_plan", "execute_plan", "critique_results",
+             "log_execution", "_generate_final_summary")}
+    logged = []
+    engine.generate_plan = lambda q, session_context="": {
+        "plan": list(plan), "expected_outcome": "x"}
+    engine.log_execution = lambda *a, **kw: logged.append(a[2])
+    # 「Critic が失敗を認めない」最悪ケースを固定で作る。
+    # revised_plan を返し続けるので、修正回数を使い切って for を抜ける経路に入る。
+    engine.critique_results = lambda *a: {
+        "status": "needs_revision", "feedback": "もう一度やって",
+        "revised_plan": list(plan)}
+    engine._generate_final_summary = lambda q, r: (
+        "## 📋 結論\n情報を取得できたのでまとめました")
+
+    try:
+        engine.execute_plan = lambda p, cb=None: {
+            "success": False, "results": [dict(fail_step)], "final_output": ""}
+        with contextlib.redirect_stdout(_io.StringIO()):
+            result = engine.run_plan_and_execute("LoRAのメモを探して")
+        check("全滅時は失敗として返る", _is_failure(result), result[:80])
+        check("見出しが ❌ になる", mission_header(result).startswith("❌"),
+              mission_header(result))
+        check("エラー本文が捨てられない", "意図的に失敗" in result, result[:120])
+        check("learning_db 側も success ではない",
+              logged and not any(r.get("success") for r in logged[-1]), str(logged))
+
+        # 1歩でも成功していれば従来どおり Gemini 要約を返す (過剰に ❌ にしない)
+        engine.execute_plan = lambda p, cb=None: {
+            "success": True,
+            "results": [{"step": 1, "task": "検索", "tool": "tool_x",
+                         "observation": "Success: ok", "success": True}],
+            "final_output": ""}
+        with contextlib.redirect_stdout(_io.StringIO()):
+            result = engine.run_plan_and_execute("LoRAのメモを探して")
+        check("全ステップ成功なら従来どおり要約を返す",
+              mission_header(result).startswith("✅"), result[:80])
+    finally:
+        for name, func in orig.items():
+            setattr(engine, name, func)
+
+
+def test_partial_failure_is_not_mission_complete():
+    """成功と失敗が混ざった実行を ✅ Mission Complete で出さないこと。
+
+    2026-07-27: 全滅ケースだけを直した時点では、log_execution が
+    outcome="partial" と記録した実行に ✅ Mission Complete が出ていた
+    (_final_report が「成功が1件でもあれば」無条件に Gemini 要約へ落ちるため)。
+    評価ハーネスの不変条件『outcome != success ⇒ 見出しは ❌ 系』が
+    半分だけ破れた状態だったので、第3の見出し ⚠️ を入れて閉じる。
+
+    Gemini は呼ばない。
+    """
+    print("\n[12] 部分失敗が ✅ Mission Complete にならない")
+
+    import contextlib
+    import io as _io
+    import engine_plan_execute as engine
+    from commands.bot_commands_agent import mission_header, _is_failure
+    from lib.bot_errors import is_partial_result, PARTIAL_PREFIX
+
+    mixed = [
+        {"step": 1, "task": "検索", "tool": "tool_web_search",
+         "observation": "検索結果です", "success": True},
+        {"step": 2, "task": "保存", "tool": "tool_create_note",
+         "observation": "Error creating note: disk full", "success": False},
+    ]
+
+    orig_summary = engine._generate_final_summary
+    engine._generate_final_summary = lambda q, r: "## 📋 結論\n情報をまとめました"
+    try:
+        with contextlib.redirect_stdout(_io.StringIO()):
+            result = engine._final_report("テスト", mixed, {"status": "ok", "feedback": ""})
+
+        check("見出しが ⚠️ になる", mission_header(result) == "⚠️ **Mission Partial**",
+              mission_header(result))
+        check("✅ Mission Complete では出ない",
+              not mission_header(result).startswith("✅"), mission_header(result))
+        check("全滅ではないので失敗接頭辞は付けない (嘘をつかない)",
+              not _is_failure(result), result[:80])
+        check("失敗したステップが本文に明示される",
+              "Step 2" in result and "tool_create_note" in result, result[:160])
+        check("要約本文も残る", "情報をまとめました" in result, result[:160])
+
+        # 不変条件: log_execution が付ける outcome と見出しが食い違わない
+        all_ok = all(r["success"] for r in mixed)
+        any_ok = any(r["success"] for r in mixed)
+        outcome = "success" if all_ok else ("partial" if any_ok else "failed")
+        check("outcome != success なら見出しは ✅ ではない",
+              (outcome != "success") == (not mission_header(result).startswith("✅")),
+              f"outcome={outcome} / header={mission_header(result)}")
+
+        # 判定は排他 — 部分失敗を失敗として扱うと、次回の /agent 文脈から
+        # 使える情報まで捨ててしまう
+        check("失敗判定と部分判定は排他",
+              is_partial_result(result) and not _is_failure(result))
+        check("正常な要約は部分失敗と判定されない",
+              not is_partial_result("## 📋 結論\nまとめました"))
+        check("印は lib.bot_errors 側の定数と一致",
+              result.startswith(PARTIAL_PREFIX), result[:40])
+
+        with contextlib.redirect_stdout(_io.StringIO()):
+            all_ok_result = engine._final_report(
+                "テスト", [dict(mixed[0])], {"status": "ok", "feedback": ""})
+        check("全成功には印を付けない",
+              not is_partial_result(all_ok_result)
+              and mission_header(all_ok_result).startswith("✅"), all_ok_result[:80])
+    finally:
+        engine._generate_final_summary = orig_summary
+
+
 if __name__ == "__main__":
     print("=" * 55)
     print(" 結果アイコン (失敗を ✅ で出さない) 回帰テスト")
@@ -320,6 +603,10 @@ if __name__ == "__main__":
     test_no_hardcoded_success_headers()
     test_summarize_results_marks_failures()
     test_scheduler_notifies_string_failures()
+    test_execute_plan_marks_string_failures()
+    test_log_execution_outcome_not_success()
+    test_run_plan_and_execute_reports_total_failure()
+    test_partial_failure_is_not_mission_complete()
 
     print("\n" + "=" * 55)
     print(f"PASS: {len(_PASS)} / FAIL: {len(_FAIL)}")
