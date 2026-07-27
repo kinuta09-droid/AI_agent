@@ -22,7 +22,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from scripts.eval_agent import (
-    load_eval_set, validate_question, missing_required_tools,
+    _check, load_eval_set, validate_question, missing_required_tools,
     plan_tools, plan_args_blob, score_plan, score_execution,
     select_questions, estimate_calls, summarize, render_report,
     build_tier_b_overrides, patched_tools, WRITE_TOOLS,
@@ -460,8 +460,20 @@ def test_comparison():
 # 15. 合格したチェックが失敗の説明文を持たないこと
 # ---------------------------------------------------------
 
+# 「失敗したときにしか意味を成さない語」。合格したチェックの detail に
+# これが出ていたら、読む人は合格を失敗と読み違える。
+FAILURE_WORDS = ["一致なし", "順序が逆", "判定できない", "禁止", "矛盾",
+                 "失敗", "未知のツール:", "含まれる", "記録される",
+                 "追記されていない"]
+
+
 def detail_of(checks, prefix):
-    return next(c["detail"] for c in checks if c["name"].startswith(prefix))
+    for c in checks:
+        if c["name"].startswith(prefix):
+            return c["detail"]
+    # next() を素通しにすると StopIteration でテスト全体が落ち、
+    # どの検査が壊れたのか読めなくなる
+    return f"(該当するチェックが無い: {prefix})"
 
 
 def test_passing_checks_have_no_failure_detail():
@@ -517,15 +529,71 @@ def test_passing_checks_have_no_failure_detail():
               score_plan({"assertions": {"must_use_all": ["tool_web_search"]}},
                          good_plan, TOOLS), "must_use_all:"))
 
-    # 呼び出し側が今後増えても効く網: 合格したチェックに失敗語彙を出さない
-    FAILURE_WORDS = ["一致なし", "順序が逆", "判定できない", "禁止", "矛盾",
-                     "失敗が成功として", "未知のツール:", "含まれる", "記録される",
-                     "追記されていない"]
+    # 実行した範囲の網: 合格したチェックに失敗語彙を出さない
     for c in plan_checks + ok + consistent:
         if c["ok"]:
             hit = [w for w in FAILURE_WORDS if w in c["detail"]]
             check(f"合格チェック '{c['name'][:32]}' に失敗語彙が無い",
                   not hit, f"{hit} — detail='{c['detail']}'")
+
+    # 両方渡したときの仕様 (今の呼び出し側は片方だけなので、ここでしか通らない)
+    both = []
+    _check(both, "n", True, detail="実際は 2 ステップ", fail_detail="上限を超えている")
+    check("合格時は fail_detail を捨てて detail だけ残す",
+          both[0]["detail"] == "実際は 2 ステップ", both)
+    _check(both, "n", False, detail="実際は 9 ステップ", fail_detail="上限を超えている")
+    check("不合格時は両方を連結する",
+          both[1]["detail"] == "実際は 9 ステップ 上限を超えている", both)
+
+
+def test_check_call_sites_are_static_safe():
+    """ソース走査: 失敗の説明文を detail 引数で渡している箇所が無いこと。
+
+    [15] は「私が組み立てたシナリオ」しか見ないため、_check() の呼び出しが
+    将来増えたとき、その問を書かない限り再混入に気付けない。このプロジェクトは
+    tests/test_result_icons.py / verify_project.py:check_swallowed_exceptions()
+    で「再混入をソース走査で止める」を確立しているので、同じ形の網を張る。
+    """
+    print("\n[16] ソース走査: _check() の呼び出し側")
+    import ast
+    src_path = os.path.join(_PROJECT_ROOT, "scripts", "eval_agent.py")
+    with open(src_path, encoding='utf-8') as f:
+        tree = ast.parse(f.read(), filename=src_path)
+
+    def literal_text(node):
+        """静的に読める文字列だけ取り出す (f-string は埋め込み式を無視)。"""
+        if isinstance(node, ast.Constant):
+            return node.value if isinstance(node.value, str) else ""
+        if isinstance(node, ast.JoinedStr):
+            return "".join(literal_text(v) for v in node.values)
+        if isinstance(node, ast.BinOp):
+            return literal_text(node.left) + literal_text(node.right)
+        return ""
+
+    calls, violations = 0, []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name) and node.func.id == "_check"):
+            continue
+        calls += 1
+        detail = None
+        if len(node.args) >= 4:
+            detail = node.args[3]
+        for kw in node.keywords:
+            if kw.arg == "detail":
+                detail = kw.value
+        if detail is None:
+            continue
+        if isinstance(detail, ast.IfExp):
+            continue  # `X if cond else ""` は呼び出し側で既に条件分岐している
+        text = literal_text(detail)
+        hit = [w for w in FAILURE_WORDS if w in text]
+        if hit:
+            violations.append(f"L{node.lineno}: {hit} in '{text[:40]}'")
+
+    check("_check() の呼び出しを走査できている", calls >= 10, f"{calls}箇所")
+    check("detail 引数に失敗の説明文を書いていない (fail_detail= を使う)",
+          not violations, " / ".join(violations))
 
 
 if __name__ == "__main__":
@@ -548,6 +616,7 @@ if __name__ == "__main__":
     test_report()
     test_comparison()
     test_passing_checks_have_no_failure_detail()
+    test_check_call_sites_are_static_safe()
     print("=" * 60)
     print(f"PASS: {PASS} / FAIL: {FAIL}")
     sys.exit(1 if FAIL else 0)
