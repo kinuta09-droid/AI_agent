@@ -514,11 +514,80 @@ def test_run_plan_and_execute_reports_total_failure():
             "final_output": ""}
         with contextlib.redirect_stdout(_io.StringIO()):
             result = engine.run_plan_and_execute("LoRAのメモを探して")
-        check("成功があれば従来どおり要約を返す",
+        check("全ステップ成功なら従来どおり要約を返す",
               mission_header(result).startswith("✅"), result[:80])
     finally:
         for name, func in orig.items():
             setattr(engine, name, func)
+
+
+def test_partial_failure_is_not_mission_complete():
+    """成功と失敗が混ざった実行を ✅ Mission Complete で出さないこと。
+
+    2026-07-27: 全滅ケースだけを直した時点では、log_execution が
+    outcome="partial" と記録した実行に ✅ Mission Complete が出ていた
+    (_final_report が「成功が1件でもあれば」無条件に Gemini 要約へ落ちるため)。
+    評価ハーネスの不変条件『outcome != success ⇒ 見出しは ❌ 系』が
+    半分だけ破れた状態だったので、第3の見出し ⚠️ を入れて閉じる。
+
+    Gemini は呼ばない。
+    """
+    print("\n[12] 部分失敗が ✅ Mission Complete にならない")
+
+    import contextlib
+    import io as _io
+    import engine_plan_execute as engine
+    from commands.bot_commands_agent import mission_header, _is_failure
+    from lib.bot_errors import is_partial_result, PARTIAL_PREFIX
+
+    mixed = [
+        {"step": 1, "task": "検索", "tool": "tool_web_search",
+         "observation": "検索結果です", "success": True},
+        {"step": 2, "task": "保存", "tool": "tool_create_note",
+         "observation": "Error creating note: disk full", "success": False},
+    ]
+
+    orig_summary = engine._generate_final_summary
+    engine._generate_final_summary = lambda q, r: "## 📋 結論\n情報をまとめました"
+    try:
+        with contextlib.redirect_stdout(_io.StringIO()):
+            result = engine._final_report("テスト", mixed, {"status": "ok", "feedback": ""})
+
+        check("見出しが ⚠️ になる", mission_header(result) == "⚠️ **Mission Partial**",
+              mission_header(result))
+        check("✅ Mission Complete では出ない",
+              not mission_header(result).startswith("✅"), mission_header(result))
+        check("全滅ではないので失敗接頭辞は付けない (嘘をつかない)",
+              not _is_failure(result), result[:80])
+        check("失敗したステップが本文に明示される",
+              "Step 2" in result and "tool_create_note" in result, result[:160])
+        check("要約本文も残る", "情報をまとめました" in result, result[:160])
+
+        # 不変条件: log_execution が付ける outcome と見出しが食い違わない
+        all_ok = all(r["success"] for r in mixed)
+        any_ok = any(r["success"] for r in mixed)
+        outcome = "success" if all_ok else ("partial" if any_ok else "failed")
+        check("outcome != success なら見出しは ✅ ではない",
+              (outcome != "success") == (not mission_header(result).startswith("✅")),
+              f"outcome={outcome} / header={mission_header(result)}")
+
+        # 判定は排他 — 部分失敗を失敗として扱うと、次回の /agent 文脈から
+        # 使える情報まで捨ててしまう
+        check("失敗判定と部分判定は排他",
+              is_partial_result(result) and not _is_failure(result))
+        check("正常な要約は部分失敗と判定されない",
+              not is_partial_result("## 📋 結論\nまとめました"))
+        check("印は lib.bot_errors 側の定数と一致",
+              result.startswith(PARTIAL_PREFIX), result[:40])
+
+        with contextlib.redirect_stdout(_io.StringIO()):
+            all_ok_result = engine._final_report(
+                "テスト", [dict(mixed[0])], {"status": "ok", "feedback": ""})
+        check("全成功には印を付けない",
+              not is_partial_result(all_ok_result)
+              and mission_header(all_ok_result).startswith("✅"), all_ok_result[:80])
+    finally:
+        engine._generate_final_summary = orig_summary
 
 
 if __name__ == "__main__":
@@ -537,6 +606,7 @@ if __name__ == "__main__":
     test_execute_plan_marks_string_failures()
     test_log_execution_outcome_not_success()
     test_run_plan_and_execute_reports_total_failure()
+    test_partial_failure_is_not_mission_complete()
 
     print("\n" + "=" * 55)
     print(f"PASS: {len(_PASS)} / FAIL: {len(_FAIL)}")

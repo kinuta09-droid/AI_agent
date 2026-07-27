@@ -204,6 +204,16 @@ def test_execution_scoring():
                          {"outcome": "failed"})
     check("失敗が失敗として報告されていれば合格", passed(ok), failed_names(ok))
 
+    # 見出しは3状態。partial を ❌ に寄せると過剰判定になるので、
+    # 見るのは「✅ でないこと」— ⚠️ Mission Partial も整合とみなす。
+    from lib.bot_errors import PARTIAL_PREFIX
+    partial = score_execution(
+        q, f"{PARTIAL_PREFIX}\n失敗したステップ: Step 2 (tool_create_note)\n\nまとめました",
+        {"outcome": "partial"})
+    check("outcome=partial を ⚠️ で出していれば整合とみなす",
+          not any(c["name"] == "learning_db と表示見出しが矛盾しない" and not c["ok"]
+                  for c in partial), failed_names(partial))
+
     # 前提の陳腐化に強いこと: ツールが直って成功しても、注入がある問では
     # 「注入したのに success」を落とす (空振りを見逃さない)
     stale = score_execution(q, "予定を確認しました。", {"outcome": "success"})

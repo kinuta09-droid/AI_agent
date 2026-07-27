@@ -22,7 +22,7 @@ from lib.lib_shared import (
 )
 from lib.tool_registry import get_tools_config
 from lib.cost_guard import GeminiBudgetExceeded
-from lib.bot_errors import is_failure_result
+from lib.bot_errors import is_failure_result, PARTIAL_PREFIX
 
 # スキル観測は任意機能: 不在・破損でもツール実行を止めない
 try:
@@ -822,15 +822,34 @@ def _final_report(user_query: str, results: list, critique: dict) -> str:
     全ステップ失敗 = 目標未達とみなしてよい理由:
       execute_plan は最初の失敗で break するので、成功が1件もないということは
       どの修正計画も1歩目から進めなかったということ。
+
+    部分失敗 (成功と失敗が混ざる) を別扱いにする理由 (2026-07-27 追記):
+      全滅だけを直した時点では、3ステップ中2つ成功・保存だけ失敗のような実行が
+      log_execution では outcome="partial" なのに Discord では ✅ Mission Complete
+      で出ていた。「失敗を ✅ で表示しない」規約が半分だけ破れた状態。
+      失敗接頭辞は付けられない (成功が混ざっているので "タスク失敗:" は嘘になる)
+      ため、PARTIAL_PREFIX という第3の印を付けて mission_header に ⚠️ を出させる。
     """
-    if results and not any(r.get("success") for r in results):
+    if not results:
+        return _generate_final_summary(user_query, results)
+
+    failed = [r for r in results if not r.get("success")]
+    if len(failed) == len(results):
         reason = critique.get("feedback") or "全てのステップが失敗しました"
-        last_failure = next((r for r in reversed(results)
-                             if not r.get("success")), None)
-        detail = str(last_failure.get("observation", ""))[:300] if last_failure else ""
+        detail = str(failed[-1].get("observation", ""))[:300]
         print("[P&E] ❌ 成功したステップが1件も無いため、失敗として報告します")
         return f"タスク失敗: {reason}" + (f"\n\n最後のエラー: {detail}" if detail else "")
-    return _generate_final_summary(user_query, results)
+
+    summary = _generate_final_summary(user_query, results)
+    if not failed:
+        return summary
+
+    # 失敗したステップを要約本文とは別に明示する。Gemini の要約は失敗に触れる
+    # とは限らず、触れても目立たない (自己申告を最終判定に使わない)。
+    steps = "、".join(f"Step {r.get('step', '?')} ({r.get('tool', '?')})"
+                      for r in failed[:3])
+    print(f"[P&E] ⚠️ {len(failed)}/{len(results)} ステップが失敗 → 部分完了として報告します")
+    return f"{PARTIAL_PREFIX}\n失敗したステップ: {steps}\n\n{summary}"
 
 
 def _generate_final_summary(user_query: str, results: list) -> str:

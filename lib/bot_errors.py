@@ -60,6 +60,15 @@ _TOOL_FAILURE_RE = re.compile(
 )
 
 
+# 「一部のステップだけ失敗した」実行の戻り値に付ける印。
+# 全滅は "タスク失敗:" で失敗として返せるが、部分失敗は成功が混ざるため
+# 失敗接頭辞を付けられない。かといって無印で返すと learning_db が
+# outcome="partial" と記録した実行に ✅ Mission Complete が出て、
+# 「失敗を ✅ で表示しない」規約が半分だけ破れたままになる (2026-07-27)。
+# 判定を各所で書き直さないよう、印と判定をここに置く。
+PARTIAL_PREFIX = "⚠️ 一部のステップが失敗しました。"
+
+
 def is_failure_result(result, extra_prefixes: tuple = ()) -> bool:
     """ツール/エンジンが文字列で返した結果が失敗かどうかを判定する。
 
@@ -77,6 +86,14 @@ def is_failure_result(result, extra_prefixes: tuple = ()) -> bool:
     if extra_prefixes and result.startswith(tuple(extra_prefixes)):
         return True
     return _TOOL_FAILURE_RE.match(result) is not None
+
+
+def is_partial_result(result) -> bool:
+    """一部のステップだけ失敗した実行の戻り値かどうか。
+
+    失敗 (is_failure_result) とは排他。全滅は失敗、部分失敗はこちら。
+    """
+    return isinstance(result, str) and result.startswith(PARTIAL_PREFIX)
 
 
 def log_command_error(where: str, exc: BaseException,

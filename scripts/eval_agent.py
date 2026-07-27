@@ -368,8 +368,11 @@ def score_execution(q: dict, answer: str, learning_entry: dict = None) -> list:
         else:
             outcome = learning_entry.get("outcome")
             failed = outcome != "success"
+            # 見出しは3状態 (✅ 完了 / ⚠️ 部分完了 / ❌ 失敗)。partial を ❌ に
+            # 寄せると過剰判定になるので、見るのは「✅ でないこと」。
+            reported = not header.startswith("✅")
             _check(checks, "learning_db と表示見出しが矛盾しない",
-                   failed == header.startswith("❌"),
+                   failed == reported,
                    f"outcome='{outcome}' なのに見出しは '{header}' "
                    f"— 失敗が成功として表示される")
             if exec_assertions.get("inject_tool_failure"):

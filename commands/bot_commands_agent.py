@@ -13,7 +13,9 @@ from engine_plan_execute import (
     generate_performance_dashboard,
 )
 
-from lib.bot_errors import log_command_error, is_failure_result, FAILURE_PREFIXES
+from lib.bot_errors import (
+    log_command_error, is_failure_result, is_partial_result, FAILURE_PREFIXES,
+)
 
 # bot_discord から注入されるヘルパー
 _log_to_daily_note = None
@@ -64,9 +66,15 @@ def mission_header(result: str) -> str:
 
     /agent (このモジュール) と /chat agent (bot_discord.py) は同じエンジンの
     戻り値を表示するため、両方からここを呼ぶ (public にしているのはそのため)。
+
+    3状態にしている理由 (2026-07-27): 全滅は "タスク失敗:" で失敗接頭辞が付くが、
+    部分失敗は成功が混ざるので失敗接頭辞を付けられない。無印で返すと
+    learning_db が outcome="partial" と記録した実行に ✅ が出て食い違う。
     """
     if _is_failure(result):
         return "❌ **Mission Failed**"
+    if is_partial_result(result):
+        return "⚠️ **Mission Partial**"
     return "✅ **Mission Complete**"
 
 
