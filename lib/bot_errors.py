@@ -15,6 +15,7 @@
   日本語を含む例外メッセージを print しても cp932 で落ちない
   (CLAUDE.md の Encoding Safety Rules LEVEL 0 に沿う。環境変数は触らない)。
 """
+import re
 import traceback
 
 # Discord に返す例外メッセージの上限。全文は必ずログ側に出るので、
@@ -29,15 +30,43 @@ MAX_USER_MESSAGE = 500
 #  ここを見に来られるよう、判定の起点は必ずこの定数にする。
 #   - "Error:"  … tools/ の `return f"Error: {e}"` および engine 層の戻り値契約
 #   - "Error (" … log_command_error() が型名を挟む形式
-# "Error" と緩めないのは、「Errorハンドリングの調査結果」のような正常な本文が
-# Error で始まり得るため。これらは前方一致で使うので tuple のまま公開する。
+# 前方一致で直接使う呼び出し元 (commands/bot_commands_agent) が残っているため
+# tuple のまま公開する。実際の判定は _TOOL_FAILURE_RE の方が広い。
 FAILURE_PREFIXES = ("Error:", "Error (")
+
+# tools/ を実際に洗って出てきた「失敗を文字列で返す」形の全て。
+# 接頭辞 tuple では拾えない揺れがあり、拾い漏れると engine 側が失敗を
+# success として learning_db に記録する (2026-07-27 に実測で確認)。
+#
+#   1. Error(?![^\W\d_])
+#        "Error: ..."                  tools/ の基本形・log_command_error の "Error (型名): "
+#        "Error creating note: ..."    tool_obsidian (動詞が挟まる)
+#        "Error searching web: ..."    tool_web
+#        "Error fetching BTC/USDT ..." tool_crypto
+#        "[30_Main] Error merging ..." tool_obsidian (先頭に [タグ] が付く)
+#      否定先読みは「Error の直後が文字ではない」。"Errorハンドリングの調査結果"
+#      のような正常本文を失敗と誤判定しないための最後の一線
+#      (Unicode の \b は日本語に隣接すると成立しないので使わない)。
+#   2. "[ERROR] ..."      tool_gmail_manager / tool_vault_index / tool_future_search / tool_user_memory
+#   3. "[Error: ...]"     tool_client_review
+#   4. "[xtrend error] "  lib/tool_registry の lazy wrapper 4種
+#                         ([future_search error] / [browser_use error] / [xtrend_prompt error])
+_TOOL_FAILURE_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:\[[^\[\]\n]{1,40}\]\s*)?Error(?![^\W\d_])"
+    r"|\[(?:ERROR\]|Error[:\]])"
+    r"|\[[^\[\]\n]{1,40}[eE]rror\]"
+    r")"
+)
 
 
 def is_failure_result(result, extra_prefixes: tuple = ()) -> bool:
     """ツール/エンジンが文字列で返した結果が失敗かどうかを判定する。
 
-    成功と失敗を同じ ✅ で表示してしまう事故 (2026-07-26) を防ぐための単一窓口。
+    成功と失敗を同じ ✅ で表示してしまう事故 (2026-07-26) と、
+    失敗を success として learning_db に記録する事故 (2026-07-27) を
+    防ぐための単一窓口。新しい失敗形を見つけたら _TOOL_FAILURE_RE に足す
+    — 呼び出し側で判定を書き足すと必ず割れる。
 
     Args:
         result: 判定対象。str 以外は「失敗ではない」とみなす。
@@ -45,7 +74,9 @@ def is_failure_result(result, extra_prefixes: tuple = ()) -> bool:
     """
     if not isinstance(result, str):
         return False
-    return result.startswith(FAILURE_PREFIXES + tuple(extra_prefixes))
+    if extra_prefixes and result.startswith(tuple(extra_prefixes)):
+        return True
+    return _TOOL_FAILURE_RE.match(result) is not None
 
 
 def log_command_error(where: str, exc: BaseException,
