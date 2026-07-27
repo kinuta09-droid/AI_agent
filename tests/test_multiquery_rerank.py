@@ -311,6 +311,44 @@ def test_search_queries_are_reported():
     print("✅ report: 実際に検索したクエリ変種が出力に残る")
 
 
+def test_defaults_match_the_measurement():
+    """.env 未設定時の既定が実測で決めた組み合わせであること。
+
+    既定は好みではなく計測結果 (scripts/eval_retrieval.py・15問・2026-07-28):
+      multi-query のみ : Hit@5 0.8667 / MRR@10 0.6133 / 8.62秒  ← 単体で悪化
+      リランクのみ     : Hit@5 1.0000 / MRR@10 0.8167 / 3.26秒  ← 最良かつ最速
+    黙って multi-query が既定 ON に戻ると、Hit@5 が下がった上に検索が3倍遅くなる
+    のに誰も気付けない (RRF が変種ごとに加点するため汎用ノートが本命を押し下げる)。
+    """
+    saved = (os.environ.get("VAULT_SEARCH_MULTIQUERY"),
+             os.environ.get("VAULT_SEARCH_RERANK"))
+    try:
+        os.environ.pop("VAULT_SEARCH_MULTIQUERY", None)
+        os.environ.pop("VAULT_SEARCH_RERANK", None)
+
+        spy = _Spy("[1]")
+        hits, notes, queries = _hybrid_hits(
+            "質問", top_k=3,
+            keyword_fn=lambda q: [_hit("a.md", 2)],
+            semantic_fn=lambda q, k: [], llm_fn=spy)
+
+        assert queries == ["質問"], f"既定でクエリ書き換えが走っている: {queries}"
+        assert len(spy.calls) == 1, f"既定のLLM呼び出しはリランクの1回だけ: {len(spy.calls)}"
+        assert "候補" in spy.calls[0], "唯一の呼び出しがリランクではない"
+        assert notes == [], notes
+
+        # .env で明示すれば既定を覆せる (機能を殺していない)
+        os.environ["VAULT_SEARCH_MULTIQUERY"] = "1"
+        spy2 = _Spy('["言い換え"]')
+        _, _, queries2 = _hybrid_hits(
+            "質問", top_k=3, keyword_fn=lambda q: [_hit("a.md", 2)],
+            semantic_fn=lambda q, k: [], llm_fn=spy2)
+        assert queries2 == ["質問", "言い換え"], queries2
+    finally:
+        _restore_env(saved)
+    print("✅ defaults: 既定は「リランクのみON」— 実測で決めた組み合わせ")
+
+
 # ---------------------------------------------------------
 # 9. LLM 出力のパース (前置き付き・コードフェンス付きでも拾う)
 # ---------------------------------------------------------

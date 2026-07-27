@@ -8,11 +8,11 @@ numpy 欠落時はキーワード検索のみに自動フォールバックす�
 
 Phase A2 で3段重ねた:
   1. multi-query 書き換え — 1問を Light Gemini で複数の言い換えに分解し、
-     全変種のランクリストを RRF に流す。質問の語彙とノートの語彙のズレを吸収する。
-     特にキーワード側は「日本語の一文まるごと」を部分文字列照合するため、
-     書き換えが無いとほぼ必ず 0 件になり、実質セマンティック単独になっていた。
+     全変種のランクリストを RRF に流す。**実測で悪化したため既定 OFF**
+     (理由と数値は MULTIQUERY_DEFAULT のコメント参照)。
   2. LLM リランク — RRF は「順位」しか見ず中身を読まない。上位候補を Light Gemini に
-     渡し「本当に質問に答えているのはどれか」で並べ替える。
+     渡し「本当に質問に答えているのはどれか」で並べ替える。**既定 ON**。
+     15問の実測で Hit@5 0.9333→1.0 / MRR@10 0.7317→0.8167、レイテンシは +0.6秒。
   3. 出典 (chunk_id 貫通) — 出力を [[ファイル名#見出し]] にする。これが無いと
      回答が正しいかをユーザーが検証できない。
 
@@ -24,9 +24,12 @@ Phase A2 で3段重ねた:
 import するため、同居させると numpy 欠落環境で検索ツールが全滅する。本モジュールは
 常に import 可能なのでレジストリ entry に optional を付けない。
 
-環境変数 (未設定＝ON。切りたいときだけ .env に 0 を書く):
-  VAULT_SEARCH_MULTIQUERY=0  — クエリ書き換えを止める
-  VAULT_SEARCH_RERANK=0      — LLM リランクを止める
+環境変数 (既定は下の MULTIQUERY_DEFAULT / RERANK_DEFAULT):
+  VAULT_SEARCH_MULTIQUERY=1  — クエリ書き換えを有効化する (既定 OFF)
+  VAULT_SEARCH_RERANK=0      — LLM リランクを止める (既定 ON)
+
+コスト: リランクが有効なとき検索1回あたり Light Gemini を1回叩く
+(cost_guard の日次上限を共有する)。両方 ON なら2回。
 """
 
 import json
@@ -41,6 +44,26 @@ NOT_FOUND = "Vault内に見つかりませんでした。"
 
 # 原クエリに追加する言い換えの本数 (計 1 + MULTIQUERY_VARIANTS 本を検索する)
 MULTIQUERY_VARIANTS = 2
+
+# 既定値。**実測 (scripts/eval_retrieval.py・15問・実Vault) で決めた** — 2026-07-28:
+#
+#   arm                | Hit@5  | MRR@10 | 平均秒
+#   -------------------|--------|--------|-------
+#   両OFF (従来のRRF)  | 0.9333 | 0.7317 | 2.68
+#   multi-query のみ   | 0.8667 | 0.6133 | 8.62   ← 単体で悪化
+#   リランクのみ       | 1.0000 | 0.8167 | 3.26   ← 全指標で最良かつ最速
+#   両ON               | 0.9333 | 0.8278 | 9.38
+#
+# multi-query が悪化させる理由: RRF は変種ごとに独立して加点するため、
+# 3変種すべてに薄く当たる汎用ノート (「介護×AI」一般論) が、1変種にだけ
+# 強く当たる本命 (「介護×AI×プライバシー」) を押し下げる。実際 R05 は
+# 2位→6位に転落した。効果はリランクがほぼ全部持っている。
+#
+# コードとフラグは残す: 変種ごとの寄与を正規化する (変種数で割る・
+# 変種側のランクリストに重みを付ける) 余地があり、そこを直せば効くかもしれない。
+# 試すときは必ず --multiquery on で測り直すこと。
+MULTIQUERY_DEFAULT = False
+RERANK_DEFAULT = True
 # リランクに渡す RRF 上位件数。多すぎるとプロンプトが膨れ Light の精度が落ちる
 RERANK_CANDIDATES = 20
 # リランクプロンプトに載せる 1 候補あたりのスニペット長
@@ -51,10 +74,11 @@ RERANK_SNIPPET_CHARS = 600
 # 設定・LLM 呼び出し
 # ---------------------------------------------------------
 
-def _enabled(name: str, override=None) -> bool:
+def _enabled(name: str, override=None, default: bool = True) -> bool:
     """機能フラグ。override が bool ならそれを優先、None なら環境変数を見る。
 
-    環境変数は未設定なら ON、"0"/"false"/"no"/"off" のみ OFF。
+    環境変数が未設定なら default。設定されていれば
+    "0"/"false"/"no"/"off" が OFF、それ以外が ON。
     import 時ではなく呼び出し時に読む: .env 差し替え後の再起動だけで効かせるため。
 
     override があるのは scripts/eval_retrieval.py の A/B 計測用。
@@ -65,7 +89,7 @@ def _enabled(name: str, override=None) -> bool:
         return bool(override)
     raw = os.getenv(name)
     if raw is None:
-        return True
+        return default
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
@@ -160,7 +184,7 @@ def _expand_queries(query: str, llm_fn=None, n: int = MULTIQUERY_VARIANTS,
       戻り値にも残す。
     """
     query = str(query).strip()
-    if not _enabled("VAULT_SEARCH_MULTIQUERY", enabled):
+    if not _enabled("VAULT_SEARCH_MULTIQUERY", enabled, default=MULTIQUERY_DEFAULT):
         print("[Hybrid] クエリ書き換えは無効 (VAULT_SEARCH_MULTIQUERY=0)")
         return [query], ""
 
@@ -242,7 +266,7 @@ def _llm_rerank(query: str, candidates: list, llm_fn=None, enabled=None):
     """
     if not candidates:
         return candidates, ""
-    if not _enabled("VAULT_SEARCH_RERANK", enabled):
+    if not _enabled("VAULT_SEARCH_RERANK", enabled, default=RERANK_DEFAULT):
         # OFF は既知の設定なのでログのみ。note は事故 (フォールバック) 専用
         # — _expand_queries の docstring 参照。
         print("[Hybrid] LLMリランクは無効 (VAULT_SEARCH_RERANK=0)")
