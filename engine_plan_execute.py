@@ -219,6 +219,8 @@ def generate_plan(user_query: str, session_context: str = "") -> dict:
 - **ユーザーの過去のメモや文脈が必要な場合**: tool_vault_hybrid_search を使う (キーワード+意味検索を自動統合)
 - **両方が必要な場合**: まず tool_web_search で外部情報を取得し、その後 tool_vault_hybrid_search で関連する過去ノートを探す
 - **URLが与えられた場合**: tool_fetch_url でページ内容を取得する
+- **既存ファイルに文章を書き足す場合**: tool_update_note を使う
+  (tool_sync_to_daily_note は予定/タスクの同期専用で、任意のテキストは書けない)
 
 【args_json の出力ルール】（実行を高速化するため重要！）
 - 引数がこの時点で確定できるステップは、args_json に引数のJSON文字列を出力すること
@@ -852,14 +854,33 @@ def _final_report(user_query: str, results: list, critique: dict) -> str:
     return f"{PARTIAL_PREFIX}\n失敗したステップ: {steps}\n\n{summary}"
 
 
-def _generate_final_summary(user_query: str, results: list) -> str:
-    """Gemini を使って実行結果から最終サマリーを生成する。"""
+def _build_capability_block() -> str:
+    """このシステムが実際に持つ機能の一覧を、ツールレジストリから組み立てる。
+
+    ハードコードした一覧を持たない理由:
+      ツールを足したときに更新を忘れた一覧は、「持っている機能を持っていないと言う」
+      新種の嘘になる。レジストリを唯一の真実に保つ。
+    usage を落として name + description だけにするのは、これが毎回の要約プロンプトに
+    載るため (機能の有無を判断するのに引数シグネチャは要らない)。
+    """
+    config_tools, _ = _get_tools_config()
+    return "\n".join(f"- {t['name']}: {t['description']}" for t in config_tools)
+
+
+def _build_final_summary_prompt(user_query: str, results: list) -> str:
+    """最終サマリー生成用のプロンプトを組み立てる (Gemini は呼ばない)。
+
+    _generate_final_summary から切り出してある理由 (2026-07-28):
+      プロンプトの中身が API 呼び出しの中に埋まっていると、規則が入っているか
+      どうかをテストで確かめられない。純関数にして tests/test_answer_grounding.py
+      から検証できるようにする。
+    """
     results_text = "\n".join(
         f"Step {r['step']}: {r['task']} → {'✅' if r['success'] else '❌'} {str(r['observation'])[:1500]}"
         for r in results
     )
 
-    prompt = f"""以下のタスク実行結果を、ユーザーへの報告にまとめてください。
+    return f"""以下のタスク実行結果を、ユーザーへの報告にまとめてください。
 
 【ユーザーの要求】: {user_query}
 
@@ -881,9 +902,39 @@ def _generate_final_summary(user_query: str, results: list) -> str:
 
 【注意】
 - 実行結果の observation に含まれる具体的な情報は可能な限り詳細レポートに反映する
-- 一般論や抽象的な表現だけで終わらせず、実データに基づいた内容にする"""
+- 一般論や抽象的な表現だけで終わらせず、実データに基づいた内容にする
 
+【このシステムがエージェント実行で使えるツールの一覧】（エージェントが呼べるのはこれで全て）
+{_build_capability_block()}
+
+【自己言及の要求に答えるときの規則】（重要！）
+要求が「このAI」「このエージェント」「あなた」など、このシステム自身の機能・使い方・
+仕様についてのものである場合:
+- 上記の一覧だけが根拠になる。Web検索で得た他社製品や一般記事の説明は、
+  このシステムがその機能を持つ証拠には一切ならない
+- 一覧に該当する機能が無ければ「その機能はエージェントのツールとしては存在しません」と
+  明言する。検索結果の内容を、このシステムの機能・仕様・料金プラン・対応プランとして
+  記述してはならない
+- 近い機能があれば代替として案内してよいが、「要求された機能とは別物である」と
+  明示すること
+- ただし上の一覧は「エージェントが呼べるツール」であって、このシステムの全機能では
+  ない。これとは別に Discord のスラッシュコマンド (約27種) と定時ジョブがあり、
+  それらはこの一覧に含まれない。**ツール一覧に無いというだけで「この機能は
+  存在しない」と結論してはならない**。ツールとして無いことだけを述べ、
+  「Discordコマンド側にある可能性があるので確認してほしい」と添えること"""
+
+
+def _generate_final_summary(user_query: str, results: list) -> str:
+    """Gemini を使って実行結果から最終サマリーを生成する。
+
+    プロンプト組み立ても try の中に入れている理由:
+      この関数は「何があっても文字列を返す」契約 (失敗時は _summarize_results)。
+      _build_final_summary_prompt は _get_tools_config() を呼ぶので、以前の
+      純粋な文字列連結と違って例外を投げうる。try の外に出すと要約が無言で
+      消える経路ができる。
+    """
     try:
+        prompt = _build_final_summary_prompt(user_query, results)
         response = _gemini_call(MODEL_NAME_HEAVY, prompt)
         return response.text.strip()
     except Exception:
