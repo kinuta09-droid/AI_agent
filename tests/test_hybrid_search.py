@@ -3,10 +3,20 @@
 Phase④ ハイブリッド検索 (RRF統合) のユニットテスト
 (keyword_fn / semantic_fn 注入 — ネットワーク・Vault実体なし)
 
+このファイルが守るのは **RRF 融合そのもの** の挙動。Phase A2 で足した
+multi-query 書き換え・LLMリランクは意図的に OFF にして、
+「A2 の変更が RRF の順位付けを壊していないこと」を切り分けて証明する。
+(A2 の機能自体は tests/test_multiquery_rerank.py が llm_fn 注入で検証する)
+
 実行: py tests/test_hybrid_search.py
 """
 import os
 import sys
+
+# 実 Gemini を叩かないための無効化。テストは専用プロセスで走るので
+# この os.environ 代入はこのプロセス内で閉じる (子プロセスを起こさない)。
+os.environ["VAULT_SEARCH_MULTIQUERY"] = "0"
+os.environ["VAULT_SEARCH_RERANK"] = "0"
 
 sys.stdout.reconfigure(encoding='utf-8')
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

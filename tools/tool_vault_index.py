@@ -29,6 +29,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from lib.lib_shared import VAULT_ROOT, EXCLUDE_DIRS
+from lib.lib_obsidian_utils import format_wikilink
 
 # ---------------------------------------------------------
 # Configuration
@@ -345,9 +346,15 @@ def _semantic_hits(query: str, top_k: int = 5,
                    db_path: str = DB_PATH):
     """意味検索のコア。構造化ヒット(スコア降順) or soft-error 文字列を返す。
 
-    返値: [{"rel_path", "filename", "score", "snippet"}, ...] (成功)
+    返値: [{"rel_path", "filename", "score", "snippet", "heading", "chunk_id"}, ...] (成功)
           str (失敗: 未構築 / [ERROR] / 空index — 例外は投げない規約)
     ハイブリッド検索は返値が list かどうかでフォールバックを判定する。
+
+    heading / chunk_id を返す理由 (Phase A2):
+      呼び出し側が出典を [[ファイル名#見出し]] で表示できるようにするため。
+      chunk_id ("30_Main/foo.md#3") はチャンクの一意キーで、リランクや
+      評価スクリプトが「どのチャンクが選ばれたか」をログに残すのに使う。
+      chunks.chunk_index / chunks.heading は既存カラムなので再インデックス不要。
     """
     if not query or not str(query).strip():
         return "No query."
@@ -368,7 +375,7 @@ def _semantic_hits(query: str, top_k: int = 5,
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            "SELECT filepath, heading, text, embedding FROM chunks"
+            "SELECT filepath, heading, text, embedding, chunk_index FROM chunks"
         ).fetchall()
     finally:
         conn.close()
@@ -386,7 +393,7 @@ def _semantic_hits(query: str, top_k: int = 5,
 
     hits = []
     for i in top_indices:
-        filepath, heading, text, _ = rows[int(i)]
+        filepath, heading, text, _, chunk_index = rows[int(i)]
         # サブ分割で見出し行が落ちたピースには見出しを補う (文脈をプランナーに渡す)
         snippet = text if (not heading or text.startswith("##")) else f"## {heading}\n{text}"
         hits.append({
@@ -394,6 +401,8 @@ def _semantic_hits(query: str, top_k: int = 5,
             "filename": os.path.basename(filepath),
             "score": float(scores[int(i)]),
             "snippet": snippet,
+            "heading": heading,
+            "chunk_id": f"{filepath}#{chunk_index}",
         })
     return hits
 
@@ -404,12 +413,15 @@ def tool_vault_semantic_search(query: str, top_k: int = 5,
     """Vault を意味ベースで検索する (embedding コサイン類似度)。
 
     出力形式は tool_vault_search と揃える (プランナー側の扱いを変えないため)。
+    リンクは見出しがあれば [[ファイル名#見出し]] — 回答の出典として
+    Obsidian でクリックすれば該当セクションまで辿れる (Phase A2)。
     """
     hits = _semantic_hits(query, top_k, embed_fn=embed_fn, db_path=db_path)
     if isinstance(hits, str):
         return hits
     return "\n\n".join(
-        f"- File: [[{h['filename']}]] (score: {h['score']:.3f})\n  Snippet:\n{h['snippet']}\n..."
+        f"- File: {format_wikilink(h['filename'], h.get('heading'))} "
+        f"(score: {h['score']:.3f})\n  Snippet:\n{h['snippet']}\n..."
         for h in hits
     )
 
