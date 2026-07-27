@@ -255,8 +255,24 @@ def plan_args_blob(plan: list) -> str:
 # 採点 (Tier A)
 # ---------------------------------------------------------
 
-def _check(checks: list, name: str, ok: bool, detail: str = "") -> None:
-    checks.append({"name": name, "ok": bool(ok), "detail": detail})
+def _check(checks: list, name: str, ok: bool, detail: str = "",
+           fail_detail: str = "") -> None:
+    """チェック1件を積む。
+
+    detail      合否に関わらず残す事実。「実際は 1 ステップ (['tool_update_note'])」
+                のように、合格した問でも読む価値がある情報だけを渡す。
+    fail_detail 失敗の説明。合格時は捨てる。
+
+    2つに分けている理由: 失敗の説明文を detail に無条件で入れると、
+    ok=true なのに detail が「回答に一致なし: ...」になり、レポートを読む人が
+    合格を失敗と読み違える。このプロジェクトが何度も潰してきた
+    「表示が実態と食い違う」バグ類型そのものなので、
+    呼び出し側が「これは失敗時にしか意味を成さない文か」を明示する。
+    """
+    ok = bool(ok)
+    parts = [detail] if ok else [detail, fail_detail]
+    checks.append({"name": name, "ok": ok,
+                   "detail": " ".join(p for p in parts if p)})
 
 
 def score_plan(q: dict, plan: list, tools: set = None) -> list:
@@ -276,7 +292,7 @@ def score_plan(q: dict, plan: list, tools: set = None) -> list:
     if tools is not None:
         unknown = sorted(t for t in used_set if t and t not in tools)
         _check(checks, "未知のツールを提案していない", not unknown,
-               f"未知のツール: {', '.join(unknown)}" if unknown else "")
+               fail_detail=f"未知のツール: {', '.join(unknown)}")
 
     for name in assertions.get("must_use_all", []):
         _check(checks, f"must_use_all: {name}", name in used_set,
@@ -290,7 +306,7 @@ def score_plan(q: dict, plan: list, tools: set = None) -> list:
 
     for name in assertions.get("must_not_use", []):
         _check(checks, f"must_not_use: {name}", name not in used_set,
-               f"禁止ツールが計画に含まれる (計画: {used})" if name in used_set else "")
+               fail_detail=f"禁止ツールが計画に含まれる (計画: {used})")
 
     if "min_steps" in assertions:
         lo = assertions["min_steps"]
@@ -309,20 +325,20 @@ def score_plan(q: dict, plan: list, tools: set = None) -> list:
         if first_before is None or first_after is None:
             # 片方が計画に無い場合は must_use_* 側で落ちる。順序としては判定不能。
             _check(checks, f"order: {label}", False,
-                   f"順序を判定できない (計画: {used})")
+                   fail_detail=f"順序を判定できない (計画: {used})")
         else:
             _check(checks, f"order: {label}", first_before < first_after,
-                   f"順序が逆 (計画: {used})")
+                   fail_detail=f"順序が逆 (計画: {used})")
 
     for pattern in assertions.get("args_must_match", []):
         _check(checks, f"args_must_match: {pattern}",
                re.search(pattern, blob) is not None,
-               f"args に一致なし: {blob[:200] or '(空)'}")
+               fail_detail=f"args に一致なし: {blob[:200] or '(空)'}")
 
     for pattern in assertions.get("args_must_not_match", []):
         hit = re.search(pattern, blob)
         _check(checks, f"args_must_not_match: {pattern}", hit is None,
-               f"禁止パターンが args に一致: '{hit.group(0)}'" if hit else "")
+               fail_detail=f"禁止パターンが args に一致: '{hit.group(0)}'" if hit else "")
 
     return checks
 
@@ -348,12 +364,12 @@ def score_execution(q: dict, answer: str, learning_entry: dict = None) -> list:
     for pattern in exec_assertions.get("answer_must_match", []):
         _check(checks, f"answer_must_match: {pattern}",
                re.search(pattern, answer) is not None,
-               f"回答に一致なし: {answer[:200]}")
+               fail_detail=f"回答に一致なし: {answer[:200]}")
 
     for pattern in exec_assertions.get("answer_must_not_match", []):
         hit = re.search(pattern, answer)
         _check(checks, f"answer_must_not_match: {pattern}", hit is None,
-               f"禁止パターンが回答に一致: '{hit.group(0)}'" if hit else "")
+               fail_detail=f"禁止パターンが回答に一致: '{hit.group(0)}'" if hit else "")
 
     if exec_assertions.get("expect_consistent_report"):
         # 「壊れているツールを踏ませる」型の判定は、そのツールが直った瞬間に
@@ -364,7 +380,7 @@ def score_execution(q: dict, answer: str, learning_entry: dict = None) -> list:
         header = _mission_header(answer)
         if learning_entry is None:
             _check(checks, "learning_db に実行が記録される", False,
-                   "エントリが追記されていない — 表示との突き合わせができない")
+                   fail_detail="エントリが追記されていない — 表示との突き合わせができない")
         else:
             outcome = learning_entry.get("outcome")
             failed = outcome != "success"
@@ -373,11 +389,12 @@ def score_execution(q: dict, answer: str, learning_entry: dict = None) -> list:
             reported = not header.startswith("✅")
             _check(checks, "learning_db と表示見出しが矛盾しない",
                    failed == reported,
-                   f"outcome='{outcome}' なのに見出しは '{header}' "
-                   f"— 失敗が成功として表示される")
+                   fail_detail=f"outcome='{outcome}' なのに見出しは '{header}' "
+                               f"— 失敗が成功として表示される")
             if exec_assertions.get("inject_tool_failure"):
                 _check(checks, "注入した失敗が learning_db に失敗として残る", failed,
-                       f"outcome='{outcome}' — ツールが失敗したのに success で記録される")
+                       fail_detail=f"outcome='{outcome}' "
+                                   f"— ツールが失敗したのに success で記録される")
 
     return checks
 

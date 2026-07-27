@@ -456,6 +456,78 @@ def test_comparison():
     check("ベースラインに無い問は '-' として出る", "| - |" in new_q)
 
 
+# ---------------------------------------------------------
+# 15. 合格したチェックが失敗の説明文を持たないこと
+# ---------------------------------------------------------
+
+def detail_of(checks, prefix):
+    return next(c["detail"] for c in checks if c["name"].startswith(prefix))
+
+
+def test_passing_checks_have_no_failure_detail():
+    print("\n[15] 合格したチェックに失敗の説明文が残らない")
+
+    # 本命の再現ケース: logs/eval/eval_20260728_0113.json の T12 では
+    # ok=true なのに detail が「回答に一致なし: ...」になっていた。
+    # レポートを読む人が合格を失敗と読み違えるため、このプロジェクトが
+    # 何度も潰してきた「表示が実態と食い違う」バグ類型と同じ。
+    q_answer = {"exec_assertions": {"answer_must_match": [r"存在し(ない|ません)"]}}
+    ok = score_execution(q_answer, "その機能は存在しません。", None)
+    check("合格した answer_must_match の detail は空",
+          detail_of(ok, "answer_must_match:") == "", ok)
+    ng = score_execution(q_answer, "音声通話機能の使い方は以下の通りです。", None)
+    check("不合格なら失敗の説明が残る",
+          "回答に一致なし" in detail_of(ng, "answer_must_match:"), ng)
+
+    # 失敗を報告できているケースでも、整合チェックの detail は
+    # 「失敗が成功として表示される」を持ってはいけない
+    q_consistent = {"exec_assertions": {"expect_consistent_report": True,
+                                        "inject_tool_failure": ["tool_web_search"]}}
+    consistent = score_execution(q_consistent, "Error: [eval] 意図的に失敗させたツールです",
+                                 {"outcome": "failed"})
+    check("合格した整合チェックの detail は空",
+          all(c["detail"] == "" for c in consistent if c["ok"]), consistent)
+
+    # Tier A 側も同じ規則で書かれていること
+    q_plan = {"assertions": {"must_not_use": ["tool_create_note"], "min_steps": 1,
+                             "max_steps": 3,
+                             "order": [[["tool_web_search"], ["tool_update_note"]]],
+                             "args_must_match": [r"(?<!\d)2026(?!\d)"],
+                             "args_must_not_match": [r"(?<!\d)2024(?!\d)"]}}
+    good_plan = [step(1, "tool_web_search", '{"query": "AI 2026"}'),
+                 step(2, "tool_update_note", args_hint="追記")]
+    plan_checks = score_plan(q_plan, good_plan, TOOLS)
+    check("前提: この計画は全て合格する", passed(plan_checks), failed_names(plan_checks))
+    for prefix in ("未知のツールを提案していない", "must_not_use:", "order:",
+                   "args_must_match:", "args_must_not_match:"):
+        check(f"合格した {prefix} の detail は空",
+              detail_of(plan_checks, prefix) == "",
+              detail_of(plan_checks, prefix))
+
+    # 逆方向の回帰: 合否に依存しない有用な detail まで消してはいけない。
+    # max_steps / min_steps は「実際は何ステップだったか」が合格時にも読まれる。
+    check("合格した max_steps は実測値を残す",
+          "実際は 2 ステップ" in detail_of(plan_checks, "max_steps"),
+          detail_of(plan_checks, "max_steps"))
+    check("合格した min_steps は実測値を残す",
+          "実際は 2 ステップ" in detail_of(plan_checks, "min_steps"),
+          detail_of(plan_checks, "min_steps"))
+    check("合格した must_use_* は計画のツールを残す",
+          "tool_web_search" in detail_of(
+              score_plan({"assertions": {"must_use_all": ["tool_web_search"]}},
+                         good_plan, TOOLS), "must_use_all:"))
+
+    # 呼び出し側が今後増えても効く網: 合格したチェックに失敗語彙を出さない
+    FAILURE_WORDS = ["一致なし", "順序が逆", "判定できない", "禁止", "矛盾",
+                     "失敗が成功として", "未知のツール:", "含まれる", "記録される",
+                     "追記されていない"]
+    for c in plan_checks + ok + consistent:
+        if c["ok"]:
+            hit = [w for w in FAILURE_WORDS if w in c["detail"]]
+            check(f"合格チェック '{c['name'][:32]}' に失敗語彙が無い",
+                  not hit, f"{hit} — detail='{c['detail']}'")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("Agent Eval Harness テスト")
@@ -475,6 +547,7 @@ if __name__ == "__main__":
     test_selection_and_budget()
     test_report()
     test_comparison()
+    test_passing_checks_have_no_failure_detail()
     print("=" * 60)
     print(f"PASS: {PASS} / FAIL: {FAIL}")
     sys.exit(1 if FAIL else 0)
