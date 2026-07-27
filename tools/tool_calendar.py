@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 load_dotenv(r'C:\AI_agent\.env')
 
 from lib.lib_shared import _run_gws_command
+from lib.bot_errors import is_failure_result
 
 # ---------------------------------------------------------
 # Configuration
@@ -497,7 +498,10 @@ def tool_sync_to_daily_note() -> str:
     cal_content = ""
     if GOOGLE_CALENDAR_ENABLED and _get_calendar_service() is not None:
         cal_result = tool_get_calendar("today")
-        if not cal_result.startswith("Error:") and not cal_result.startswith("Google Calendar"):
+        # 失敗判定は is_failure_result() に一本化する。ここが取りこぼすと
+        # エラー文がそのまま「今日の予定」としてデイリーノートに書き込まれる。
+        # "Google Calendar が未設定です" は失敗ではなく未設定のセンチネルなので別扱い。
+        if not is_failure_result(cal_result) and not cal_result.startswith("Google Calendar"):
             # ヘッダーを除去してコンテンツのみ
             cal_lines = cal_result.split("\n")[1:]  # "## ... の予定" を除去
             cal_content = "\n".join(cal_lines) if cal_lines else "予定はありません。"
@@ -507,7 +511,7 @@ def tool_sync_to_daily_note() -> str:
     tasks_content = ""
     if TODOIST_API_KEY and _get_todoist_client() is not None:
         tasks_result = tool_get_tasks("today")
-        if not tasks_result.startswith("Error:") and not tasks_result.startswith("Todoist"):
+        if not is_failure_result(tasks_result) and not tasks_result.startswith("Todoist"):
             tasks_lines = tasks_result.split("\n")[1:]  # ヘッダー除去
             tasks_content = "\n".join(tasks_lines) if tasks_lines else "タスクはありません。"
             synced_items.append("タスク")

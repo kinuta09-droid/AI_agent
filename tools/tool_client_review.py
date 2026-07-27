@@ -11,6 +11,7 @@ import re
 from lib.lib_shared import client, MODEL_NAME, safe_json_loads, WORK_DIR, load_json
 from lib.lib_persona import build_persona_prompt
 from tools.tool_obsidian import tool_read_note
+from lib.bot_errors import is_failure_result
 
 IMPROVEMENT_LOG_PATH = os.path.join(WORK_DIR, "improvement_log.json")
 
@@ -24,7 +25,10 @@ def _resolve_deliverable_text(deliverable: str) -> str:
         if not note_name.endswith(".md"):
             note_name += ".md"
         content = tool_read_note(note_name)
-        if content.startswith("Error:"):
+        # tool_read_note は "Error: File ... not found." のほかに
+        # "Error reading note: {e}" も返す。後者を拾い損ねると、エラー文が
+        # そのまま「レビュー対象の成果物」として LLM に渡る。
+        if is_failure_result(content):
             # 読み込めない場合は諦めてそのまま返すかエラーにする
             return f"[Error: Obsidian note '{note_name}' could not be read]\n"
         return content

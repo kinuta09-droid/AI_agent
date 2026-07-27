@@ -590,6 +590,63 @@ def test_partial_failure_is_not_mission_complete():
         engine._generate_final_summary = orig_summary
 
 
+def test_tool_layer_failure_checks():
+    """ツール層に残っていた startswith("Error:") が判定を取りこぼさないこと。
+
+    2026-07-27: engine / bot 層を is_failure_result() に寄せた後も、
+    ツール層に自前の前方一致が4箇所残っていた。実際の戻り値と突き合わせると
+    取りこぼしがある:
+      - tool_read_note は "Error: File ... not found." のほかに
+        "Error reading note: {e}" を返す → tool_client_review が拾えず、
+        エラー文がレビュー対象の成果物として LLM に渡る
+      - search_and_save_topic は "Error searching for topic: ..." を返す →
+        bare startswith("Error") は拾えるが「Errorハンドリングの調査結果」
+        のような正常本文まで ❌ にする
+    判定を一箇所に集約すれば、拾い漏れも誤検知も一度直せば全箇所に効く。
+
+    静的スキャンで「自前の前方一致が復活していないか」も見る。Gemini は呼ばない。
+    """
+    print("\n[13] ツール層の失敗判定が is_failure_result に寄っている")
+
+    import re as _re
+    from commands.bot_commands_curator import _result_icon
+
+    # 実際に各ツールが返す文字列で、表示アイコンが正しく決まること
+    check("検索0件は ❌", _result_icon("Error: 'x' の検索結果が見つかりませんでした。") == "❌")
+    check("検索例外 (動詞が挟まる形) も ❌",
+          _result_icon("Error searching for topic: timeout") == "❌",
+          _result_icon("Error searching for topic: timeout"))
+    check("要約生成失敗も ❌",
+          _result_icon("Error generating summary: quota") == "❌")
+    check("同名既存は ⚠️ (失敗ではない)",
+          _result_icon("既にノートが存在します: x.md") == "⚠️")
+    check("成功は ✅", _result_icon("Success: Created [[x.md]]") == "✅")
+    check("正常本文を ❌ にしない",
+          _result_icon("Errorハンドリングの調査結果をまとめました") == "⚠️",
+          _result_icon("Errorハンドリングの調査結果をまとめました"))
+
+    # 自前の前方一致が復活していないことの静的スキャン
+    targets = ["tools/tool_calendar.py", "tools/tool_daily_note.py",
+               "tools/tool_client_review.py", "commands/bot_commands_curator.py"]
+    pattern = _re.compile(r'startswith\(\s*["\']Error')
+    offenders = []
+    for rel in targets:
+        path = os.path.join(_PROJECT_ROOT, rel.replace("/", os.sep))
+        with open(path, encoding='utf-8') as f:
+            for i, line in enumerate(f, 1):
+                if pattern.search(line):
+                    offenders.append(f"{rel}:{i}")
+    check("自前の Error 前方一致が残っていない", not offenders, ", ".join(offenders))
+
+    # 「未設定」センチネルは失敗ではないので、判定に巻き込んでいないこと
+    check("'Google Calendar が未設定です' は失敗ではない",
+          not is_failure_result("Google Calendar が未設定です。"))
+    check("'Todoist が未設定です' は失敗ではない",
+          not is_failure_result("Todoist が未設定です。"))
+    check("正常な予定出力は失敗ではない",
+          not is_failure_result("## 2026-07-28 の予定\n- 10:00-11:00: 会議"))
+
+
 if __name__ == "__main__":
     print("=" * 55)
     print(" 結果アイコン (失敗を ✅ で出さない) 回帰テスト")
@@ -607,6 +664,7 @@ if __name__ == "__main__":
     test_log_execution_outcome_not_success()
     test_run_plan_and_execute_reports_total_failure()
     test_partial_failure_is_not_mission_complete()
+    test_tool_layer_failure_checks()
 
     print("\n" + "=" * 55)
     print(f"PASS: {len(_PASS)} / FAIL: {len(_FAIL)}")

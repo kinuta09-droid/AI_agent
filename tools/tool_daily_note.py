@@ -25,6 +25,8 @@ TEMPLATE_PATH = os.path.join(VAULT_ROOT, "99_Assets", "Templates", "Tpl_Daily.md
 # Imports from other tools
 # ---------------------------------------------------------
 
+from lib.bot_errors import is_failure_result
+
 try:
     from tools.tool_calendar import (
         tool_get_calendar,
@@ -116,7 +118,9 @@ def _fetch_calendar_content(date: datetime.date) -> str:
         return "Google Calendar が未設定です（gws CLI も利用不可）。"
     try:
         result = tool_get_calendar(date.strftime('%Y-%m-%d'))
-        if result.startswith("Error:") or result.startswith("Google Calendar"):
+        # 失敗をここで拾い損ねると、下でヘッダー行を剥がしてエラー文の断片だけを
+        # 「予定」として返してしまう。判定は is_failure_result() に一本化する。
+        if is_failure_result(result) or result.startswith("Google Calendar"):
             return result
         lines = result.split('\n')
         if lines and lines[0].startswith('##'):
@@ -168,7 +172,7 @@ def _fetch_tasks_content_todoist() -> str:
 
     try:
         result = tool_get_tasks("today")
-        if result.startswith("Error:") or result.startswith("Todoist"):
+        if is_failure_result(result) or result.startswith("Todoist"):
             return result
 
         # Remove header line

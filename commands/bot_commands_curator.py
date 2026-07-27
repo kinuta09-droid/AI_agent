@@ -15,7 +15,7 @@ from tools.tool_curator import (
 
 # エンゲージメント計測 (Phase 1: 収集のみ)。提案ロジックには一切影響しない。
 from lib.engagement_log import log_event, log_impressions
-from lib.bot_errors import log_command_error
+from lib.bot_errors import log_command_error, is_failure_result
 
 # ---------------------------------------------------------
 # Constants & Helpers (Originally from bot_discord.py)
@@ -44,10 +44,15 @@ def _result_icon(result: str) -> str:
     戻り値5種のうち4種は失敗 (検索0件 / 検索例外 / 要約生成失敗 / 同名既存) だが、
     従来は全て "✅" を前置していたため、Tavily や Gemini のエラー文がそのまま
     成功として表示されていた (2026-07-26 修正)。
+
+    2026-07-27: 判定を is_failure_result() に寄せた。旧実装の「Error で始まるか」
+    という前方一致は、search_and_save_topic の "Error searching for topic: ..." を
+    拾えてはいたが、「Errorハンドリングの調査結果」のような正常本文まで ❌ にする。
+    判定を一箇所に集約すれば、拾い漏れも誤検知も一度直せば全箇所に効く。
     """
     if result.startswith("Success:"):
         return "✅"
-    if result.startswith("Error"):
+    if is_failure_result(result):
         return "❌"
     return "⚠️"  # 「既にノートが存在します」など、失敗ではないが作成もしていない
 
