@@ -30,7 +30,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from lib.lib_shared import VAULT_ROOT, EXCLUDE_DIRS
-from lib.lib_obsidian_utils import format_wikilink
+from lib.lib_obsidian_utils import format_source_ref
 
 # ---------------------------------------------------------
 # Configuration
@@ -553,14 +553,16 @@ def tool_vault_semantic_search(query: str, top_k: int = 5,
     """Vault を意味ベースで検索する (embedding コサイン類似度)。
 
     出力形式は tool_vault_search と揃える (プランナー側の扱いを変えないため)。
-    リンクは見出しがあれば [[ファイル名#見出し]] — 回答の出典として
+    Vault のノートは見出しがあれば [[ファイル名#見出し]] — 回答の出典として
     Obsidian でクリックすれば該当セクションまで辿れる (Phase A2)。
+    行動ログ (Phase B) は実ファイルではないので [[ ]] にしない
+    — format_source_ref がその判断を持つ。
     """
     hits = _semantic_hits(query, top_k, embed_fn=embed_fn, db_path=db_path)
     if isinstance(hits, str):
         return hits
     return "\n\n".join(
-        f"- File: {format_wikilink(h['filename'], h.get('heading'))} "
+        f"- File: {format_source_ref(h.get('source'), h['filename'], h.get('heading'))} "
         f"(score: {h['score']:.3f})\n  Snippet:\n{h['snippet']}\n..."
         for h in hits
     )

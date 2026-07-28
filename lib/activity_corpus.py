@@ -106,8 +106,12 @@ def render_trade(rec: dict) -> dict:
     date = _date(rec.get("timestamp"))
     title = f"{symbol} {signal} ({stype}) {date}"
 
+    # 見出しに source 名 ("crypto予測ログ") を入れない: 表示側の
+    # format_source_ref がラベルとして必ず前置するので二重になる。
+    # ただし検索語としては欲しいので、本文の1行目に残す。
     lines = [
-        f"## crypto 予測ログ: {title}",
+        f"## {title}",
+        "記録の種類: crypto 予測ログ (シグナル1件分のトレード記録)",
         f"銘柄: {symbol} / シグナル: {signal} / シグナル種別: {stype}",
         f"記録種別: {rec.get('record_kind', '?')} / "
         f"結果: {_TRADE_STATUS_LABEL.get(status, status)}",
@@ -163,7 +167,8 @@ def render_trade_rollups(records: list) -> list:
         symbols = sorted({str(r.get("symbol", "?")) for r in recs})
 
         lines = [
-            f"## crypto シグナル種別 {stype} の実績まとめ",
+            f"## シグナル種別 {stype} の実績まとめ",
+            "記録の種類: crypto 予測ログの集計 (シグナル種別ごとの成績)",
             f"対象 {len(recs)} 件"
             + (f" ({dates[0]} 〜 {dates[-1]})" if dates else ""),
             "結果内訳: " + " / ".join(
@@ -190,7 +195,7 @@ def render_trade_rollups(records: list) -> list:
         docs.append({
             "doc_id": doc_id(SOURCE_CRYPTO, f"rollup-{stype}"),
             "source": SOURCE_CRYPTO,
-            "title": f"crypto シグナル種別 {stype} の実績まとめ",
+            "title": f"シグナル種別 {stype} の実績まとめ",
             "text": "\n".join(lines),
         })
     return docs
@@ -216,7 +221,8 @@ def render_execution(rec: dict) -> dict:
     title = f"{exec_id} {_OUTCOME_LABEL.get(outcome, outcome)} {date}"
 
     lines = [
-        f"## エージェント実行ログ: {title}",
+        f"## {title}",
+        "記録の種類: エージェントの実行ログ (Plan&Execute 1回分)",
         f"ユーザーの依頼: {query}",
         f"結果: {_OUTCOME_LABEL.get(outcome, outcome)} "
         f"(計画 {rec.get('plan_steps')} ステップ / "
@@ -297,7 +303,8 @@ def render_execution_rollups(records: list) -> list:
         samples = sorted({str(r.get("failure_reason")).strip() for r in recs})[:5]
 
         lines = [
-            f"## エージェントが繰り返している失敗パターン: {sig}",
+            f"## 繰り返している失敗パターン: {sig}",
+            "記録の種類: エージェントの実行ログの集計 (同じ原因の失敗をまとめたもの)",
             f"同じ原因で {len(recs)} 回失敗している"
             + (f" ({dates[0]} 〜 {dates[-1]})" if dates else ""),
             # tools_used は「その実行で使われたツール全体」で、失敗したステップの
@@ -347,7 +354,8 @@ def render_skill_rollups(rows: list) -> list:
         dates = sorted(_date(o.get("ts")) for o in obs if o.get("ts"))
 
         lines = [
-            f"## ツール {tool} の実行実績",
+            f"## {tool}",
+            "記録の種類: ツールの実行実績 (成功率・所要時間・エラーの集計)",
             f"観測 {len(obs)} 件"
             + (f" ({dates[0]} 〜 {dates[-1]})" if dates else "")
             + f": 成功 {ok} 件 / 失敗 {ng} 件"
@@ -371,7 +379,7 @@ def render_skill_rollups(rows: list) -> list:
         docs.append({
             "doc_id": doc_id(SOURCE_AGENT_SKILL, tool),
             "source": SOURCE_AGENT_SKILL,
-            "title": f"ツール {tool} の実行実績",
+            "title": tool,
             "text": "\n".join(lines),
         })
     return docs
