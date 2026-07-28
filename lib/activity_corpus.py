@@ -334,13 +334,22 @@ def render_execution_rollups(records: list) -> list:
 # agent_skill — ツール成否の観測 (skill_observations.jsonl)
 # ---------------------------------------------------------
 
-def render_skill_rollups(rows: list) -> list:
+def render_skill_rollups(rows: list, descriptions: dict = None) -> list:
     """ツール別の実行実績。
 
     生の観測1行は「tool_web_search が成功した・3.2秒」しか言っておらず、
     132行がほぼ同じ文になる。ツール単位に畳んで初めて
     「どのツールが不安定か」という検索可能な事実になる。
+
+    descriptions ({ツール名: 説明}) を渡す理由 (実測で分かったこと):
+      `tool_gmail_check` という文字列には「メール」という語が一度も出てこない。
+      ツール名は実装の識別子であってユーザーの語彙ではないので、
+      「メールを確認する機能がうまく動かなかったことはあるか」と聞かれても
+      bge-m3 が結び付けられず、評価 A02/A08 が圏外だった。
+      lib/tool_registry.get_tool_descriptions() の日本語説明を本文に入れて橋渡しする。
+      引数で受けるのはこのモジュールを純関数に保つため (レジストリを直接 import しない)。
     """
+    descriptions = descriptions or {}
     by_tool = collections.defaultdict(list)
     for row in rows:
         by_tool[str(row.get("tool") or "unknown")].append(row)
@@ -356,6 +365,11 @@ def render_skill_rollups(rows: list) -> list:
         lines = [
             f"## {tool}",
             "記録の種類: ツールの実行実績 (成功率・所要時間・エラーの集計)",
+        ]
+        desc = str(descriptions.get(tool) or "").strip()
+        if desc:
+            lines.append(f"このツールの役割: {desc}")
+        lines += [
             f"観測 {len(obs)} 件"
             + (f" ({dates[0]} 〜 {dates[-1]})" if dates else "")
             + f": 成功 {ok} 件 / 失敗 {ng} 件"
@@ -389,7 +403,8 @@ def render_skill_rollups(rows: list) -> list:
 # まとめ
 # ---------------------------------------------------------
 
-def render_all(trades: list, executions: list, observations: list) -> list:
+def render_all(trades: list, executions: list, observations: list,
+               descriptions: dict = None) -> list:
     """全ソースのドキュメントを組み立てる (純関数)。
 
     呼び出し側 (tool_activity_index) はファイルを読んでここに渡すだけ。
@@ -400,5 +415,5 @@ def render_all(trades: list, executions: list, observations: list) -> list:
     docs.extend(render_trade_rollups(trades))
     docs.extend(render_execution(r) for r in executions)
     docs.extend(render_execution_rollups(executions))
-    docs.extend(render_skill_rollups(observations))
+    docs.extend(render_skill_rollups(observations, descriptions))
     return docs

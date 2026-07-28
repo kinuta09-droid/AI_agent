@@ -118,8 +118,22 @@ _SOURCE_SPECS = (
     (SOURCE_AGENT_EXEC, load_executions,
      (lambda recs: [render_execution(r) for r in recs], render_execution_rollups)),
     (SOURCE_AGENT_SKILL, load_observations,
-     (render_skill_rollups,)),
+     (lambda rows: render_skill_rollups(rows, _tool_descriptions()),)),
 )
+
+
+def _tool_descriptions() -> dict:
+    """レジストリのツール説明。取れなくても行動ログの作成は止めない。
+
+    get_tool_descriptions は TOOL_ENTRIES を読むだけで tools/* を import
+    しないので、ここで呼んでも夜間バッチが重くならない。
+    """
+    try:
+        from lib.tool_registry import get_tool_descriptions
+        return get_tool_descriptions()
+    except Exception as e:
+        print(f"[ActivityIndex] ⚠️ ツール説明を取得できません ({e}) — 名前だけで作ります")
+        return {}
 
 
 def collect_documents() -> tuple:

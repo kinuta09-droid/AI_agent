@@ -192,6 +192,21 @@ def _build():
     return config_tools, tools_map
 
 
+def get_tool_descriptions() -> dict:
+    """{ツール名: 説明} を返す。**ツールモジュールを import しない**。
+
+    get_tools_config() と分けてある理由:
+      あちらは callable を解決するので tools/* を全部 import する (Tavily や
+      genai のクライアント初期化を伴う)。説明文だけが欲しい呼び出し側
+      (lib/activity_corpus の行動ログ文書) にその代償を払わせない。
+
+    用途: ツールの実行実績を検索可能な文書にするとき、`tool_gmail_check` という
+    識別子だけではユーザーの語彙 (「メール」) と繋がらない。説明文を本文に
+    入れて初めて意味検索で引ける。
+    """
+    return {e["name"]: e["description"] for e in TOOL_ENTRIES}
+
+
 def get_tools_config():
     """(config_tools, tools_map) を返す。初回呼び出しで構築し、以降プロセス内キャッシュ。
 
