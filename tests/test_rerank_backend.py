@@ -506,23 +506,40 @@ def test_index_build_never_uses_cpu_embedding():
 
     query_embed_on_cpu() は _semantic_hits (検索時) からしか呼ばれてはいけない。
     update_vault_index が巻き込まれると夜間バッチが桁違いに遅くなる。
+
+    **走査対象は Vault だけではない** (Phase B): tools/tool_activity_index.py も
+    数百文書を埋め込むバッチなので、同じ規則が要る。走査対象に足し忘れると
+    新しいインデクサが prefer_cpu=True を渡しても素通りする — この検査は
+    「書いた人が気付けないこと」を止めるためにあるので、対象の網羅が命。
     """
     import ast
-    path = os.path.join(_PROJECT_ROOT, "tools", "tool_vault_index.py")
-    with open(path, encoding='utf-8') as f:
-        tree = ast.parse(f.read())
+    indexers = ("tool_vault_index.py", "tool_activity_index.py")
 
     callers = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef):
-            continue
-        for inner in ast.walk(node):
-            if (isinstance(inner, ast.Call)
-                    and getattr(inner.func, "id", None) == "query_embed_on_cpu"):
-                callers.append(node.name)
-    assert callers == ["_semantic_hits"], \
-        f"query_embed_on_cpu の呼び出し元は _semantic_hits だけであるべき: {callers}"
-    print("✅ 分離: CPU埋め込みは検索時のみ (インデックス構築は GPU のまま)")
+    for filename in indexers:
+        path = os.path.join(_PROJECT_ROOT, "tools", filename)
+        assert os.path.exists(path), f"走査対象が存在しない: {path}"
+        with open(path, encoding='utf-8') as f:
+            tree = ast.parse(f.read())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            for inner in ast.walk(node):
+                if (isinstance(inner, ast.Call)
+                        and getattr(inner.func, "id", None) == "query_embed_on_cpu"):
+                    callers.append(f"{filename}:{node.name}")
+                # prefer_cpu=True をキーワードで渡していないかも見る。
+                # query_embed_on_cpu を経由せず直に True を渡す抜け道を塞ぐ。
+                if isinstance(inner, ast.Call):
+                    for kw in inner.keywords:
+                        if kw.arg == "prefer_cpu":
+                            callers.append(f"{filename}:{node.name}(prefer_cpu=)")
+
+    # ast.walk の訪問順は外側の Call が先に来るため順序は当てにしない (集合で比較)
+    assert set(callers) == {"tool_vault_index.py:_semantic_hits",
+                            "tool_vault_index.py:_semantic_hits(prefer_cpu=)"}, \
+        f"CPU埋め込みの呼び出し元は _semantic_hits だけであるべき: {sorted(callers)}"
+    print("✅ 分離: CPU埋め込みは検索時のみ (Vault/行動ログ両インデクサとも GPU のまま)")
 
 
 if __name__ == "__main__":

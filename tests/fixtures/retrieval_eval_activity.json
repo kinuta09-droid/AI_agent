@@ -1,0 +1,79 @@
+{
+  "_about": [
+    "行動ログコーパス (Phase B) 専用の評価セット。scripts/eval_retrieval.py が --fixture で読む。",
+    "  py scripts/eval_retrieval.py --fixture tests/fixtures/retrieval_eval_activity.json --multiquery off",
+    "",
+    "retrieval_eval.json (Vault ノート用) と分けてある理由:",
+    "  こちらは『Phase B 以前は原理的に答えられない』問いだけを集める。混ぜると",
+    "  Vault 側の回帰 (既存15問が落ちていないか) と新能力の獲得が同じ数字に潰れて、",
+    "  どちらが動いたのか分からなくなる。",
+    "",
+    "expected は『許容される正解』のリスト。1件でも上位に入れば当たりとする。",
+    "doc_id は仮想パス (_activity/<source>/<key>) で、chunks.filepath に入っている値。",
+    "",
+    "正解ラベルの根拠は必ず実データで確認すること。ここに書いた数字 (成功率・件数・秒数) は",
+    "2026-07-28 時点の logs/vault_index.db から読んだ実測値。**ログが伸びれば内容は変わる**が、",
+    "doc_id は安定なので expected は壊れない。件数そのものを問う設問は置かないこと",
+    "(答えが毎日変わる問題は、検索の良し悪しではなくデータの鮮度を測ってしまう)。"
+  ],
+  "questions": [
+    {
+      "id": "A01",
+      "query": "エージェントが同じ原因で何度もつまずいているのはどんなエラーか",
+      "expected": ["_activity/agent_exec/rollup-failure-00"],
+      "why": "失敗署名ごとのロールアップ。実データでは『存在しない引数を渡す TypeError』が5ヶ月で5回。クエリは 'unexpected keyword argument' も 'ツール' も使わない言い換え"
+    },
+    {
+      "id": "A02",
+      "query": "メールを確認する機能がうまく動かなかったことはあるか",
+      "expected": ["_activity/agent_skill/tool_gmail_check"],
+      "why": "tool_gmail_check は成功3/失敗2 (TypeError 2件)。クエリは 'gmail' も 'tool_' も出さず、ユーザー語彙の『メール』だけで引く"
+    },
+    {
+      "id": "A03",
+      "query": "予定表を見に行く処理で認証が切れたことはあるか",
+      "expected": ["_activity/agent_skill/tool_get_calendar"],
+      "why": "tool_get_calendar のみ RefreshError (invalid_grant) を持つ。『カレンダー』ではなく『予定表』、'RefreshError' ではなく『認証が切れた』で引く"
+    },
+    {
+      "id": "A04",
+      "query": "ウェブ検索はどれくらい時間がかかっていて、失敗はしていないのか",
+      "expected": ["_activity/agent_skill/tool_web_search"],
+      "why": "tool_web_search は観測37件・成功率100%・平均4.0秒。所要時間と成否を同時に持つのはツール実績ロールアップだけ"
+    },
+    {
+      "id": "A05",
+      "query": "売られすぎの水準まで下げた通貨を拾ったシグナルの成績",
+      "expected": [
+        "_activity/crypto/rollup-rsi_oversold",
+        "_activity/crypto/2026-07-28-d3624fe1"
+      ],
+      "why": "rsi_oversold のロールアップが本命。個別トレード文書のどれかが上位でも回答として成立するので許容に含める。クエリは 'RSI' を使わない"
+    },
+    {
+      "id": "A06",
+      "query": "安値を割り込んでから反発する動きを捉えた売買シグナルはどれか",
+      "expected": ["_activity/crypto/rollup-smc_sweep"],
+      "why": "smc_sweep の根拠が『直近安値をヒゲで割込み反発（SMC）』。'流動性回収' も 'SMC' も使わずに引けるか"
+    },
+    {
+      "id": "A07",
+      "query": "これまでに出した売買シグナルで勝ち負けは確定しているのか",
+      "expected": [
+        "_activity/crypto/rollup-rsi_oversold",
+        "_activity/crypto/rollup-smc_sweep"
+      ],
+      "why": "どちらのロールアップも『決着したトレードが1件も無いため算出できない』と明記している。勝率を捏造していないかを確認する設問でもある"
+    },
+    {
+      "id": "A08",
+      "query": "ノート検索の機能は実際に使われているのか、それとも動いていないのか",
+      "expected": [
+        "_activity/agent_skill/tool_vault_hybrid_search",
+        "_activity/agent_skill/tool_vault_search",
+        "_activity/agent_skill/tool_vault_semantic_search"
+      ],
+      "why": "Vault 検索系ツールの実績。3ツールに分かれており、どれが上位でも『使われている』という問いの答えになる"
+    }
+  ]
+}

@@ -40,7 +40,7 @@ import json
 import os
 import re
 
-from lib.lib_obsidian_utils import format_wikilink
+from lib.lib_obsidian_utils import format_source_ref
 from tools.tool_obsidian import _keyword_hits
 
 RRF_K = 60
@@ -386,7 +386,10 @@ def _format_rerank_candidates(candidates: list) -> str:
     limit = _env_int("VAULT_SEARCH_RERANK_SNIPPET_CHARS", RERANK_SNIPPET_CHARS)
     lines = []
     for i, h in enumerate(candidates, start=1):
-        link = format_wikilink(h["filename"], h.get("heading"))
+        # ここは**表示ではなくリランカに読ませるプロンプト**。行動ログに
+        # 偽の [[wikilink]] を付けると「これは Obsidian のノートだ」という
+        # 誤った手掛かりをモデルに与える (D5: 出す側は2箇所ある)。
+        link = format_source_ref(h.get("source"), h["filename"], h.get("heading"))
         body = str(h.get("snippet", ""))[:limit]
         # 本文が </candidates> を含んでいると区切りを閉じて以降を指示にできる
         body = body.replace("</candidates>", "<_/candidates>")
@@ -465,18 +468,61 @@ def _resolve_semantic_fn(semantic_fn):
         return None, f"[ERROR] semantic search unavailable: {e}"
 
 
-def _rank_lists(queries: list, keyword_fn, semantic_fn, per_query_k: int):
-    """各クエリ変種について (source, query_index, ランク済みヒット列) を列挙する。
+def _resolve_activity_keyword_fn(activity_keyword_fn):
+    """行動ログ側のキーワード検索を1回だけ解決する (semantic と同じ方式)。
+
+    tools.tool_activity_index は numpy を import するので、欠落環境では
+    ここで確定的に落ちる。落ちても Vault 側のキーワード検索は道連れにしない。
+    """
+    if activity_keyword_fn is not None:
+        return activity_keyword_fn, ""
+    try:
+        from tools.tool_activity_index import _activity_keyword_hits
+        return _activity_keyword_hits, ""
+    except Exception as e:
+        return None, f"[ERROR] activity keyword search unavailable: {e}"
+
+
+def _rank_lists(queries: list, keyword_fn, semantic_fn, per_query_k: int,
+                activity_keyword_fn=None):
+    """各クエリ変種について (origin, query_index, ランク済みヒット列) を列挙する。
+
+    origin は「どの経路が見つけたか」("keyword" / "semantic" / "activity")。
+    ドキュメント自体の出所 (vault / crypto / agent_exec …) は各ヒットの
+    "source" キーにあり、別物なので混同しないこと。
+
+    経路が3本ある理由 (設計判断 D4):
+      RRF はランクリストの本数に素直なので、Vault のノートが keyword+semantic の
+      2本から加点されるのに、行動ログが semantic の1本しか持たないと構造的に沈む。
+      "activity" は行動ログに対する keyword 経路で、非対称を消すためにある。
+      Ollama 停止時に行動ログが丸ごと消えないための保険も兼ねる。
 
     semantic 側の soft-error / 例外は keyword を道連れにしない
     (ImportError=numpy欠落、sqlite3.DatabaseError=index破損、
      ValueError=次元不一致blob のいずれでも継続する)。
-    Returns: (rank_lists, semantic_error) — semantic_error は最初の失敗理由。
+    Returns: (rank_lists, semantic_error, activity_error) — それぞれ最初の失敗理由。
     """
     rank_lists = []
     semantic_error = ""
+    activity_error = ""
     for qi, q in enumerate(queries, start=1):
         rank_lists.append(("keyword", qi, sorted(keyword_fn(q), key=lambda h: -h["score"])))
+
+        if activity_keyword_fn is not None:
+            try:
+                activity_hits = activity_keyword_fn(q, per_query_k)
+            except Exception as e:
+                # 行動ログ側が壊れても Vault 検索は続ける。ただし **無言にしない**:
+                # この経路は「Ollama が落ちても行動ログが残る」ための保険なので、
+                # 黙って消えると保険が効いていないことに誰も気付けない。
+                # stdout だけでなく戻り値の note にも載せる (activity_error)。
+                print(f"[Hybrid] ⚠️ 行動ログのキーワード検索に失敗: {e}")
+                if not activity_error:
+                    activity_error = f"[ERROR] activity keyword search failed: {e}"
+                activity_keyword_fn = None
+            else:
+                rank_lists.append(("activity", qi,
+                                   sorted(activity_hits, key=lambda h: -h["score"])))
 
         if semantic_fn is None:
             continue
@@ -498,7 +544,7 @@ def _rank_lists(queries: list, keyword_fn, semantic_fn, per_query_k: int):
                 seen.add(h["rel_path"])
                 deduped.append(h)
         rank_lists.append(("semantic", qi, deduped))
-    return rank_lists, semantic_error
+    return rank_lists, semantic_error, activity_error
 
 
 def _fuse(rank_lists: list) -> list:
@@ -507,27 +553,37 @@ def _fuse(rank_lists: list) -> list:
     融合キーが rel_path なのは、キーワード側とセマンティック側が出会える唯一の
     キーだから (キーワード検索はチャンクを知らない)。出典の見出しは、そのファイルに
     ついて最良だった semantic チャンクのものを採用する。
+
+    doc_source (vault / crypto / agent_exec …) はどの経路のヒットからでも
+    拾う: Ollama が落ちて semantic が消えても、出典ラベルを
+    [[wikilink]] にするかどうかの判断は正しく行われないといけない。
     """
     fused = {}
-    for source, qi, ranked in rank_lists:
+    for origin, qi, ranked in rank_lists:
         for rank, h in enumerate(ranked, start=1):
             d = fused.setdefault(h["rel_path"], {
                 "rel_path": h["rel_path"], "filename": h["filename"],
                 "rrf": 0.0, "sources": set(), "query_ids": set(),
                 "heading": None, "chunk_id": None, "snippet": None,
-                "_kw_snippet": None, "rerank_pos": None,
+                "_kw_snippet": None, "rerank_pos": None, "source": None,
             })
             d["rrf"] += 1.0 / (RRF_K + rank)
-            d["sources"].add(source)
+            d["sources"].add(origin)
             d["query_ids"].add(qi)
-            if source == "semantic":
+            if d["source"] is None and h.get("source"):
+                d["source"] = h["source"]
+            if origin == "semantic":
                 # semantic の最良チャンク (最初に来たもの) を出典・スニペットに採用
                 if d["snippet"] is None:
                     d["snippet"] = h["snippet"]
                     d["heading"] = h.get("heading")
                     d["chunk_id"] = h.get("chunk_id")
-            elif d["_kw_snippet"] is None:
-                d["_kw_snippet"] = h["snippet"]
+            else:
+                if d["_kw_snippet"] is None:
+                    d["_kw_snippet"] = h["snippet"]
+                # semantic が落ちている場合の出典ラベル用。semantic が来れば上書きされる
+                if d["heading"] is None and h.get("heading"):
+                    d["heading"] = h.get("heading")
 
     hits = []
     for d in fused.values():
@@ -548,18 +604,23 @@ def _fuse(rank_lists: list) -> list:
 
 def _hybrid_hits(query: str, top_k: int = 5, keyword_fn=_keyword_hits,
                  semantic_fn=None, llm_fn=None, multiquery=None, rerank=None,
-                 rerank_backend=None):
+                 rerank_backend=None, activity_keyword_fn=None):
     """ハイブリッド検索の構造化結果を返す。
 
     Returns:
         (hits, notes, queries) — hits は上位 top_k 件の dict 列
         (rel_path / filename / heading / chunk_id / snippet / rrf / sources /
-         query_ids / rerank_pos)、notes は劣化・フォールバックの理由行、
+         query_ids / rerank_pos / source)、notes は劣化・フォールバックの理由行、
         queries は実際に検索した全クエリ変種。
 
     multiquery / rerank に True/False、rerank_backend に "gemini"/"ollama" を
     渡すと .env より優先される (None なら .env)。scripts/eval_retrieval.py の
     A/B 計測用。
+
+    **注入の契約**: ランクリストは keyword / semantic / activity の3本ある。
+    None のものは実データ (Vault の .md / logs/vault_index.db) に解決されるので、
+    検索を隔離したいテストは **3本とも渡すこと**。2本だけ渡すと、隔離した
+    つもりで行動ログの実インデックスが混ざる。
 
     文字列整形と分けてあるのは scripts/eval_retrieval.py が Recall/MRR を
     採点するのに rel_path の並びだけを必要とするため。
@@ -568,12 +629,20 @@ def _hybrid_hits(query: str, top_k: int = 5, keyword_fn=_keyword_hits,
     notes = [expand_note] if expand_note else []
 
     semantic_fn, resolve_error = _resolve_semantic_fn(semantic_fn)
-    rank_lists, semantic_error = _rank_lists(
-        queries, keyword_fn, semantic_fn, per_query_k=top_k * 2)
+    activity_keyword_fn, act_resolve_error = _resolve_activity_keyword_fn(
+        activity_keyword_fn)
+    rank_lists, semantic_error, act_runtime_error = _rank_lists(
+        queries, keyword_fn, semantic_fn, per_query_k=top_k * 2,
+        activity_keyword_fn=activity_keyword_fn)
+    activity_error = act_resolve_error or act_runtime_error
 
     sem_error = resolve_error or semantic_error
     if sem_error:
         notes.insert(0, f"⚠️ 意味検索は利用できないためキーワード検索のみ ({sem_error})")
+    if activity_error:
+        # 行動ログが検索面から消えたことは黙って済ませない。意味検索も同時に
+        # 落ちていると、行動ログは**どの経路からも出てこない**状態になる。
+        notes.append(f"⚠️ 行動ログのキーワード検索は利用できません ({activity_error})")
 
     hits = _fuse(rank_lists)
     if not hits:
@@ -593,7 +662,9 @@ def _hybrid_hits(query: str, top_k: int = 5, keyword_fn=_keyword_hits,
 # ---------------------------------------------------------
 
 def _format_hit(h: dict) -> str:
-    link = format_wikilink(h["filename"], h.get("heading"))
+    # format_source_ref は Vault のノートだけ [[wikilink]] を返す。
+    # 行動ログを [[ ]] で出すと「Obsidianで開く」ボタンが空振りする (D5)。
+    link = format_source_ref(h.get("source"), h["filename"], h.get("heading"))
     detail = [f"rrf: {h['rrf']:.4f}", "+".join(h["sources"])]
     if h.get("query_ids"):
         detail.append("q" + "/".join(str(i) for i in h["query_ids"]))
@@ -606,7 +677,8 @@ def tool_vault_hybrid_search(query: str, top_k: int = 5,
                              keyword_fn=_keyword_hits,
                              semantic_fn=None, llm_fn=None,
                              multiquery=None, rerank=None,
-                             rerank_backend=None) -> str:
+                             rerank_backend=None,
+                             activity_keyword_fn=None) -> str:
     """Vault内をキーワード+意味検索のハイブリッド (RRF) で検索する。
 
     出力形式は tool_vault_search / tool_vault_semantic_search と揃える
@@ -625,7 +697,8 @@ def tool_vault_hybrid_search(query: str, top_k: int = 5,
 
     hits, notes, queries = _hybrid_hits(
         query, top_k, keyword_fn=keyword_fn, semantic_fn=semantic_fn, llm_fn=llm_fn,
-        multiquery=multiquery, rerank=rerank, rerank_backend=rerank_backend)
+        multiquery=multiquery, rerank=rerank, rerank_backend=rerank_backend,
+        activity_keyword_fn=activity_keyword_fn)
 
     if len(queries) > 1:
         # 何で引いた結果なのかを常に残す。ヒットが的外れなときに

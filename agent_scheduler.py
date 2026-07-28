@@ -70,6 +70,14 @@ except ImportError as _e:
     def update_vault_index():
         return f"Vault Semantic Index: tool_vault_index not available ({_vault_index_err})"
 
+# Activity Index (optional — Vault Semantic Index と同じ扱い)
+try:
+    from tools.tool_activity_index import update_activity_index
+except ImportError as _e:
+    _activity_index_err = str(_e)
+    def update_activity_index():
+        return f"Activity Index: tool_activity_index not available ({_activity_index_err})"
+
 # User Memory Distillation (optional)
 try:
     from tools.tool_user_memory import distill_daily_memory
@@ -375,6 +383,21 @@ SCHEDULE = [
         "time": "03:15",
         "name": "Vault Semantic Index",
         "func": update_vault_index,
+    },
+    # Activity Index (エージェントの行動ログを同じインデックスへ。Phase B)
+    #
+    # 03:25 にしてある理由は2つ:
+    #  1. 03:15 の Vault Index が埋め込みモデル/次元の整合を先に確定させる
+    #     (食い違うと Activity 側は書かずにエラーを返す設計)
+    #  2. 実行条件を再現可能にするため。bge-m3 が GPU に載るか CPU に載るかは
+    #     「直前に検索があったか」で変わる (PR #23 が検索時のクエリ埋め込みを
+    #     CPU 常駐にしたため、Ollama が既存ランナーを再利用する)。検索が走らない
+    #     深夜なら毎回同じ条件で走る。詳細と実測値は tool_activity_index の
+    #     docstring にある (当初懸念した VRAM 競合は実測では起きなかった)。
+    {
+        "time": "03:25",
+        "name": "Activity Index (行動ログ)",
+        "func": update_activity_index,
     },
     {
         "time": "23:30",

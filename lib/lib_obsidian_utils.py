@@ -56,6 +56,50 @@ def split_heading_anchor(link_text: str) -> tuple[str, str]:
     return file_part.strip(), heading.strip()
 
 
+# Vault のノート以外 (エージェントの行動ログ) を指す source 名。
+# 検索インデックスが Vault と同居するようになったので (Phase B)、
+# 出典を組み立てる側がここで分岐する必要がある。
+VAULT_SOURCE = "vault"
+
+# source を人間向けに読める名前にする。検索結果の出典ラベルに使う。
+_SOURCE_LABEL = {
+    "crypto": "crypto予測ログ",
+    "agent_exec": "エージェント実行ログ",
+    "agent_skill": "ツール実行実績",
+}
+
+
+def format_source_ref(source, filename: str, heading=None) -> str:
+    """検索ヒットの出典表記を組み立てる。source によって形が変わる。
+
+    - Vault のノート → `[[ファイル名#見出し]]` (従来どおり)
+    - 行動ログ       → `` `crypto予測ログ: 見出し` `` (**wikilink にしない**)
+
+    行動ログを [[ ]] で出してはいけない理由:
+      `get_obsidian_uri_from_link` は [[ ]] の中身を Vault 内から再帰検索する。
+      行動ログは実ファイルではないので必ず空振りし、Discord の
+      「Obsidianで開く」ボタンが無言で消える (ログにも一行も残らない)。
+      悪くすると名前の似た無関係なノートに当たって、間違ったノートを開く。
+
+      これは Phase A2 で `[[file]]` → `[[file#heading]]` にしたときと同じ罠で、
+      だから `format_wikilink` (出す) と `split_heading_anchor` (解決する) を
+      同じモジュールに並べてある。この関数も同じ場所に置く — 出典の形を
+      変える人が、解決側を見ずに済ませられないようにするため。
+
+    出す側は表示だけではない: リランクのプロンプト
+    (`tool_vault_hybrid._format_rerank_candidates`) にも出典ラベルが載る。
+    そちらで偽の wikilink を出すと、判定するモデルに
+    「これは Obsidian のノートである」という誤った手掛かりを与える。
+    """
+    if not source or str(source) == VAULT_SOURCE:
+        return format_wikilink(filename, heading)
+    label = _SOURCE_LABEL.get(str(source), str(source))
+    # heading (=ドキュメントのタイトル) が本体。無ければ doc_id の末尾で代用する。
+    name = " ".join(str(heading or filename or "").split())
+    # バッククォートは Discord のコードスパンを閉じるので潰す
+    return f"`{label}: {name.replace('`', '')}`"
+
+
 def get_obsidian_uri(file_path: str) -> str:
     """
     絶対パスを受け取り、ObsidianのURIスキーム（obsidian://open...）を返す。

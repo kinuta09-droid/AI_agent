@@ -30,7 +30,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from lib.lib_shared import VAULT_ROOT, EXCLUDE_DIRS
-from lib.lib_obsidian_utils import format_wikilink
+from lib.lib_obsidian_utils import format_source_ref
 
 # ---------------------------------------------------------
 # Configuration
@@ -87,6 +87,15 @@ def query_embed_on_cpu() -> bool:
     return backend.strip().lower() == "ollama"
 
 DB_PATH = os.path.join(_PROJECT_ROOT, "logs", "vault_index.db")
+
+# chunks/files.source の値。Vault の .md は "vault"、エージェントの行動ログは
+# tools/tool_activity_index.py が別の値 ("crypto" 等) で同じ DB に同居する。
+#
+# **この定数がある理由**: update_vault_index() は「Vault 走査で見つからなかった
+# files 行」を削除する。source で閉じずに書くと、次の夜間ジョブが行動ログを
+# 全消しする (しかもログに一行も残らない)。同居する以上、この indexer の
+# 読み書きは必ず source='vault' に限定すること (Phase B の設計判断 D2)。
+SOURCE_VAULT = "vault"
 
 # テンプレートは検索結果を汚染するためインデックス対象から除外する
 # (共有の EXCLUDE_DIRS は変更せず、このモジュール専用の合成セットを使う)
@@ -235,11 +244,12 @@ def _connect(db_path: str) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript("""
+    conn.executescript(f"""
         CREATE TABLE IF NOT EXISTS files (
             filepath    TEXT PRIMARY KEY,
             mtime       REAL NOT NULL,
-            chunk_count INTEGER NOT NULL
+            chunk_count INTEGER NOT NULL,
+            source      TEXT NOT NULL DEFAULT '{SOURCE_VAULT}'
         );
         CREATE TABLE IF NOT EXISTS chunks (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -248,7 +258,8 @@ def _connect(db_path: str) -> sqlite3.Connection:
             heading     TEXT,
             text        TEXT NOT NULL,
             embedding   BLOB NOT NULL,
-            dim         INTEGER NOT NULL
+            dim         INTEGER NOT NULL,
+            source      TEXT NOT NULL DEFAULT '{SOURCE_VAULT}'
         );
         CREATE INDEX IF NOT EXISTS idx_chunks_filepath ON chunks(filepath);
         CREATE TABLE IF NOT EXISTS meta (
@@ -256,7 +267,38 @@ def _connect(db_path: str) -> sqlite3.Connection:
             value TEXT
         );
     """)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """既存DBに不足しているカラムを足す (冪等)。
+
+    `CREATE TABLE IF NOT EXISTS` は既存テーブルを一切変更しないので、
+    スキーマを増やしたときはここで明示的に ALTER する必要がある。
+
+    追加する列は全て **additive** (NULL 可 or DEFAULT 付き) にする。既存行の
+    embedding に触れないので 5000件規模の再埋め込みが発生しない
+    (Phase B の設計判断 D1)。列を増やす以外の移行は行わないこと —
+    PK の作り直しはテーブル再構築になり、その瞬間に埋め込みを失う。
+
+    fingerprint は行動ログ側 (tool_activity_index) の変更検知に使う。
+    Vault は mtime で差分を取れるが、行動ログのドキュメントは JSON から
+    毎回組み立てるので mtime に相当するものが無い。本文のハッシュを持たせて
+    「中身が変わったものだけ再埋め込み」を成立させる。
+    """
+    migrations = (
+        ("files", "source", f"TEXT NOT NULL DEFAULT '{SOURCE_VAULT}'"),
+        ("chunks", "source", f"TEXT NOT NULL DEFAULT '{SOURCE_VAULT}'"),
+        ("files", "fingerprint", "TEXT"),
+    )
+    for table, column, decl in migrations:
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            print(f"[VaultIndex] 🔧 migrate: {table}.{column} を追加しました")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source)")
+    conn.commit()
 
 
 def _get_meta(conn: sqlite3.Connection, key: str):
@@ -319,13 +361,20 @@ def update_vault_index(embed_fn=_call_ollama_embed, db_path: str = DB_PATH,
             if stored_model is not None:
                 print(f"[VaultIndex] ⚠️ Embedding model/dim changed "
                       f"({stored_model}/{stored_dim} -> {OLLAMA_EMBED_MODEL}/{dim}). Full reindex.")
+            # ここだけは source で閉じない: モデル/次元が変わると **全ソースの**
+            # 埋め込みが等しく無効になるため。行動ログ側は行が消えれば
+            # 「未登録」として次回の tool_activity_index 実行で作り直される
+            # (差分判定が doc_id の有無なので自己修復する)。
             conn.execute("DELETE FROM chunks")
             conn.execute("DELETE FROM files")
             _set_meta(conn, "embedding_model", OLLAMA_EMBED_MODEL)
             _set_meta(conn, "embedding_dim", str(dim))
             conn.commit()
 
-        stored_mtimes = dict(conn.execute("SELECT filepath, mtime FROM files").fetchall())
+        # source='vault' に限定する。ここを開けると、下の「消えたファイルの掃除」が
+        # 行動ログの doc_id を「Vault に無いファイル」とみなして全消しする (D2)。
+        stored_mtimes = dict(conn.execute(
+            "SELECT filepath, mtime FROM files WHERE source=?", (SOURCE_VAULT,)).fetchall())
 
         updated = 0
         failed = 0
@@ -363,20 +412,22 @@ def update_vault_index(embed_fn=_call_ollama_embed, db_path: str = DB_PATH,
                     failed += 1
                     continue
 
-                conn.execute("DELETE FROM chunks WHERE filepath=?", (rel_path,))
+                conn.execute("DELETE FROM chunks WHERE filepath=? AND source=?",
+                             (rel_path, SOURCE_VAULT))
                 for idx, (chunk, vec) in enumerate(zip(chunks, vectors)):
                     arr = _normalize(np.asarray(vec, dtype=np.float32))
                     conn.execute(
-                        "INSERT INTO chunks(filepath, chunk_index, heading, text, embedding, dim) "
-                        "VALUES(?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO chunks(filepath, chunk_index, heading, text, "
+                        "embedding, dim, source) VALUES(?, ?, ?, ?, ?, ?, ?)",
                         (rel_path, idx, chunk["heading"], chunk["text"],
-                         arr.tobytes(), dim),
+                         arr.tobytes(), dim, SOURCE_VAULT),
                     )
                 conn.execute(
-                    "INSERT INTO files(filepath, mtime, chunk_count) VALUES(?, ?, ?) "
+                    "INSERT INTO files(filepath, mtime, chunk_count, source) "
+                    "VALUES(?, ?, ?, ?) "
                     "ON CONFLICT(filepath) DO UPDATE SET mtime=excluded.mtime, "
-                    "chunk_count=excluded.chunk_count",
-                    (rel_path, mtime, len(chunks)),
+                    "chunk_count=excluded.chunk_count, source=excluded.source",
+                    (rel_path, mtime, len(chunks), SOURCE_VAULT),
                 )
                 conn.commit()
                 updated += 1
@@ -384,15 +435,21 @@ def update_vault_index(embed_fn=_call_ollama_embed, db_path: str = DB_PATH,
                 print(f"[VaultIndex] ⚠️ Failed to index {rel_path}: {e}")
                 failed += 1
 
-        # 削除・移動されたファイルの行を除去
+        # 削除・移動されたファイルの行を除去。
+        # stored_mtimes が source='vault' 限定なので差集合に行動ログは入らないが、
+        # DELETE 側にも source を書く: 片方だけの防御は、後から片方だけ
+        # 書き換えられたときに黙って穴が開く (D2)。
         removed = 0
         for rel_path in set(stored_mtimes) - seen:
-            conn.execute("DELETE FROM chunks WHERE filepath=?", (rel_path,))
-            conn.execute("DELETE FROM files WHERE filepath=?", (rel_path,))
+            conn.execute("DELETE FROM chunks WHERE filepath=? AND source=?",
+                         (rel_path, SOURCE_VAULT))
+            conn.execute("DELETE FROM files WHERE filepath=? AND source=?",
+                         (rel_path, SOURCE_VAULT))
             removed += 1
         conn.commit()
 
-        total = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM chunks WHERE source=?",
+                             (SOURCE_VAULT,)).fetchone()[0]
         return (f"Vault index: {updated} files updated, {removed} removed, "
                 f"{failed} failed, {total} chunks total.")
     finally:
@@ -408,9 +465,16 @@ def _semantic_hits(query: str, top_k: int = 5,
                    db_path: str = DB_PATH):
     """意味検索のコア。構造化ヒット(スコア降順) or soft-error 文字列を返す。
 
-    返値: [{"rel_path", "filename", "score", "snippet", "heading", "chunk_id"}, ...] (成功)
+    返値: [{"rel_path", "filename", "score", "snippet", "heading", "chunk_id",
+            "source"}, ...] (成功)
           str (失敗: 未構築 / [ERROR] / 空index — 例外は投げない規約)
     ハイブリッド検索は返値が list かどうかでフォールバックを判定する。
+
+    **source をまたいで検索する** (Phase B): Vault のノートと行動ログを
+    同じ検索面から引くのが目的なので、ここでは絞り込まない。
+    表示側 (lib_obsidian_utils.format_source_ref) が source を見て
+    [[wikilink]] を出すかどうかを決める — 行動ログは Obsidian ノートでは
+    ないので [[ ]] を出すと「Obsidianで開く」ボタンが空振りする。
 
     heading / chunk_id を返す理由 (Phase A2):
       呼び出し側が出典を [[ファイル名#見出し]] で表示できるようにするため。
@@ -448,8 +512,12 @@ def _semantic_hits(query: str, top_k: int = 5,
 
     conn = _connect(db_path)
     try:
+        # source は末尾に足す: r[3] (embedding) など既存の位置参照を動かさない。
+        # ORDER BY は「同点のときの順序」を行の物理配置から切り離すために要る
+        # (下の argsort と対で意味を持つ — 片方だけでは決定的にならない)。
         rows = conn.execute(
-            "SELECT filepath, heading, text, embedding, chunk_index FROM chunks"
+            "SELECT filepath, heading, text, embedding, chunk_index, source "
+            "FROM chunks ORDER BY filepath, chunk_index"
         ).fetchall()
     finally:
         conn.close()
@@ -463,11 +531,18 @@ def _semantic_hits(query: str, top_k: int = 5,
         return ("[ERROR] インデックスの埋め込み次元がクエリと一致しません。"
                 "update_vault_index() で再構築してください。")
     scores = matrix @ query_vec
-    top_indices = np.argsort(-scores)[:top_k]
+    # kind="stable" は必須。既定の quicksort は不安定なので、**同点のチャンクの
+    # 順序が配列の中身に依存する**。実際 Phase B で行動ログ 178 行を同じテーブルに
+    # 足したとき、無関係なはずの R03 (「使う人に合わせて賢くなるエージェント」) で
+    # スコアが完全同値 (0.5807) の2ノートが入れ替わり、それがリランカに渡す
+    # 候補の番号を1つずらして最終順位を 4位→7位 に落とした。
+    # 行が増えただけで既存の順位が動くのは、それ自体が欠陥。
+    # 上の ORDER BY と対で「行集合に依存しない決定的な順序」を作る。
+    top_indices = np.argsort(-scores, kind="stable")[:top_k]
 
     hits = []
     for i in top_indices:
-        filepath, heading, text, _, chunk_index = rows[int(i)]
+        filepath, heading, text, _, chunk_index, source = rows[int(i)]
         # サブ分割で見出し行が落ちたピースには見出しを補う (文脈をプランナーに渡す)
         snippet = text if (not heading or text.startswith("##")) else f"## {heading}\n{text}"
         hits.append({
@@ -477,6 +552,7 @@ def _semantic_hits(query: str, top_k: int = 5,
             "snippet": snippet,
             "heading": heading,
             "chunk_id": f"{filepath}#{chunk_index}",
+            "source": source or SOURCE_VAULT,
         })
     return hits
 
@@ -487,14 +563,16 @@ def tool_vault_semantic_search(query: str, top_k: int = 5,
     """Vault を意味ベースで検索する (embedding コサイン類似度)。
 
     出力形式は tool_vault_search と揃える (プランナー側の扱いを変えないため)。
-    リンクは見出しがあれば [[ファイル名#見出し]] — 回答の出典として
+    Vault のノートは見出しがあれば [[ファイル名#見出し]] — 回答の出典として
     Obsidian でクリックすれば該当セクションまで辿れる (Phase A2)。
+    行動ログ (Phase B) は実ファイルではないので [[ ]] にしない
+    — format_source_ref がその判断を持つ。
     """
     hits = _semantic_hits(query, top_k, embed_fn=embed_fn, db_path=db_path)
     if isinstance(hits, str):
         return hits
     return "\n\n".join(
-        f"- File: {format_wikilink(h['filename'], h.get('heading'))} "
+        f"- File: {format_source_ref(h.get('source'), h['filename'], h.get('heading'))} "
         f"(score: {h['score']:.3f})\n  Snippet:\n{h['snippet']}\n..."
         for h in hits
     )
