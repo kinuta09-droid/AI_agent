@@ -353,6 +353,47 @@ def test_solid_overrides_a_negative_verdict():
     print("✅ [14] 1位が一致していれば no 判定でも引き直さない")
 
 
+def test_stale_rerank_pos_does_not_survive_a_second_round():
+    """2周目で選ばれなかった候補が1周目の rerank_pos を持ち越さない
+
+    持ち越すと実害が2つ (どちらも無言):
+      1. 出力の `rerank:N` が「このリランカが選んだ順位」ではなくなる = 表示が嘘
+      2. _looks_solid は rerank_pos の有無で採用数を数えるので、古い順位が
+         水増しして「候補が薄い」兆候を消し、抑制条件が誤発火する
+    """
+    # 1周目は [2,3] を選ぶ (b=1位, c=2位) → no 判定 → 2周目は [1] だけ選ぶ
+    llm = _Scripted("[2, 3]\nSUFFICIENT: no\nMISSING: 別の観点",
+                    '["別クエリ"]',
+                    "[1]\nSUFFICIENT: yes")
+    hits, notes, queries = _hits3(
+        query="質問", keyword_fn=_kw("a.md", "b.md", "c.md"), llm_fn=llm,
+        rerank=True, loop=True, top_k=10)
+
+    assert len(queries) == 2, queries
+    picked = [h for h in hits if h.get("rerank_pos")]
+    assert len(picked) == 1, (
+        "2周目のリランカは1件しか選んでいないのに "
+        f"{len(picked)}件が順位を持っている: "
+        f"{[(h['rel_path'], h['rerank_pos']) for h in hits]}")
+    assert picked[0]["rerank_pos"] == 1, picked[0]
+    print("✅ [15] 2周目で選ばれなかった候補が古い rerank_pos を持ち越さない")
+
+
+def test_final_hits_have_no_duplicate_paths():
+    """引き直し後の最終結果に同じ rel_path が2回現れない"""
+    names = [f"f{i:02d}.md" for i in range(25)]
+    llm = _Scripted("[1]\nSUFFICIENT: no\nMISSING: x",
+                    '["別クエリ"]',
+                    "[1, 2]\nSUFFICIENT: yes")
+    hits, _notes, _q = _hits3(
+        query="質問", keyword_fn=_kw(*names), llm_fn=llm,
+        rerank=True, loop=True, top_k=25)
+    paths = [h["rel_path"] for h in hits]
+    dupes = sorted({p for p in paths if paths.count(p) > 1})
+    assert not dupes, f"最終結果に重複: {dupes}"
+    print("✅ [16] 引き直し後の最終結果に重複した rel_path が無い")
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

@@ -534,6 +534,16 @@ def _llm_rerank(query: str, candidates: list, llm_fn=None, enabled=None, backend
         print("[Hybrid] LLMリランクは無効 (VAULT_SEARCH_RERANK=0)")
         return candidates, "", (None, "")
 
+    # 前回の呼び出しが付けた rerank_pos を必ず消す。
+    # Retriever ループの2周目は「1周目に選ばれた候補」を含む集合を渡すので、
+    # 消さないと**2周目のリランカが選ばなかった候補が1周目の順位を持ったまま**残る。
+    # 実害は2つあり、どちらも黙って起きる:
+    #   1. 出力の `rerank:N` が「このリランカが選んだ順位」ではなくなる (表示が嘘)
+    #   2. _looks_solid が rerank_pos の有無で採用数を数えるので、古い順位が
+    #      水増しして「候補が薄い」兆候を消してしまう (抑制条件が誤発火する)
+    for h in candidates:
+        h["rerank_pos"] = None
+
     if llm_fn is None:
         llm_fn, backend_name = _resolve_rerank_llm(backend)
     else:
