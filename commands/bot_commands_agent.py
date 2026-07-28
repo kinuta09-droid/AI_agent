@@ -78,6 +78,71 @@ def mission_header(result: str) -> str:
     return "✅ **Mission Complete**"
 
 
+# ---------------------------------------------------------
+# 進捗表示 (Phase C1)
+# /agent と /chat agent は同じエンジンの同じイベントを描く。入口ごとに書くと
+# 片方だけ直して片方が取り残される (CLAUDE.md: ✅ ハードコード事件と同じ形)。
+# 実際この2つは fan-out 以前からほぼ同一のコピーだった。
+# ---------------------------------------------------------
+
+def _render_execute(step_data: dict):
+    """execute フェーズの1行。ウェーブ (並列実行) は1行にまとめる。
+
+    ウェーブを1行に集約する理由: 3本同時なら running/done が6回ほぼ同時に飛び、
+    edit_original_response が Discord のレート制限に当たる。
+    エンジン側もウェーブにつき1回しか通知しないので、ここは受け取った形に従うだけ。
+    """
+    wave = step_data.get("wave") or []
+    status = step_data.get("status", "")
+    total = step_data.get("total", "?")
+
+    if len(wave) > 1:
+        labels = " / ".join(
+            f"Step {w.get('step', '?')} {w.get('task', '')}" for w in wave
+        )
+        if status == "running":
+            return f"⚡ **{len(wave)}件を並列実行中:** {labels}"
+        failed = step_data.get("failed_steps") or []
+        if failed:
+            steps = "、".join(str(s) for s in failed)
+            return (f"❌ {len(wave)}件中 {len(failed)}件が失敗 (Step {steps})\n"
+                    f"{labels}\n\n⏳ 次のステップへ...")
+        return f"✅ {len(wave)}件完了: {labels}\n\n⏳ 次のステップへ..."
+
+    step = step_data.get("step", "?")
+    task = step_data.get("task", "")
+    if status == "running":
+        return f"▶️ **実行中:** Step {step}/{total} - {task}..."
+    if status in ("done", "error"):
+        icon = "✅" if status == "done" else "❌"
+        return f"{icon} Step {step}/{total} - {task}\n\n⏳ 次のステップへ..."
+    return None
+
+
+def render_progress(step_data: dict):
+    """run_plan_and_execute の step_callback イベントを表示文字列にする。
+
+    None を返したら「更新するものが無い」。呼び出し側は None を送らないこと
+    (空文字で edit すると Discord 側で本文が消える)。
+    """
+    phase = step_data.get("phase", "")
+    status = step_data.get("status", "")
+
+    if phase == "plan" and status == "planning":
+        return "🧠 **計画を策定中...**"
+    if phase == "plan" and status == "ready":
+        lines = [f"{p.get('step', '?')}. {p.get('task', '')}"
+                 for p in step_data.get("plan", [])]
+        return "📋 **実行計画:**\n" + "\n".join(lines) + "\n\n▶️ 実行開始..."
+    if phase == "execute":
+        return _render_execute(step_data)
+    if phase == "critique":
+        return "🔍 **結果を評価中...**"
+    if phase == "revision":
+        return f"🔄 **再計画中... (修正 {step_data.get('attempt', 1)}回目)**"
+    return None
+
+
 def _get_session_context(channel_id) -> str:
     """TTL内のセッションがあれば文脈テキストを返す。期限切れは削除して空文字。"""
     entry = _sessions.get(channel_id)
@@ -129,30 +194,11 @@ async def cmd_agent(interaction: discord.Interaction, goal: str):
     async def discord_pe_callback(step_data):
         if not is_deferred:
             return
-        phase = step_data.get("phase", "")
+        content = render_progress(step_data)
+        if not content:
+            return
         try:
-            if phase == "plan" and step_data.get("status") == "planning":
-                await interaction.edit_original_response(content="🧠 **計画を策定中...**")
-            elif phase == "plan" and step_data.get("status") == "ready":
-                plan = step_data.get("plan", [])
-                lines = [f"{p['step']}. {p['task']}" for p in plan]
-                plan_text = "\n".join(lines)
-                await interaction.edit_original_response(content=f"📋 **実行計画:**\n{plan_text}\n\n▶️ 実行開始...")
-            elif phase == "execute" and step_data.get("status") == "running":
-                await interaction.edit_original_response(
-                    content=f"▶️ **実行中:** Step {step_data.get('step', '?')}/{step_data.get('total', '?')} - {step_data.get('task', '')}..."
-                )
-            elif phase == "execute" and step_data.get("status") in ("done", "error"):
-                icon = "✅" if step_data["status"] == "done" else "❌"
-                await interaction.edit_original_response(
-                    content=f"{icon} Step {step_data.get('step', '?')}/{step_data.get('total', '?')} - {step_data.get('task', '')}\n\n⏳ 次のステップへ..."
-                )
-            elif phase == "critique":
-                await interaction.edit_original_response(content="🔍 **結果を評価中...**")
-            elif phase == "revision":
-                await interaction.edit_original_response(
-                    content=f"🔄 **再計画中... (修正 {step_data.get('attempt', 1)}回目)**"
-                )
+            await interaction.edit_original_response(content=content)
         except Exception as e:
             print(f"[AgentUI] Warning: Failed to update status: {e}")
 

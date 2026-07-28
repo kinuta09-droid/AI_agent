@@ -534,31 +534,14 @@ async def _dispatch_agent(interaction: discord.Interaction, goal: str):
     loop = asyncio.get_running_loop()
 
     async def discord_pe_callback(step_data):
-        phase = step_data.get("phase", "")
+        # 描画は /agent (commands/bot_commands_agent.py) と共用する。
+        # 同じエンジンの同じイベントを2箇所で描いていたため、
+        # fan-out のウェーブ表示を片方だけ足すと必ず食い違う。
+        content = bot_commands_agent.render_progress(step_data)
+        if not content:
+            return
         try:
-            if phase == "plan" and step_data.get("status") == "planning":
-                await interaction.edit_original_response(content="🧠 **計画を策定中...**")
-            elif phase == "plan" and step_data.get("status") == "ready":
-                plan = step_data.get("plan", [])
-                lines = [f"{p['step']}. {p['task']}" for p in plan]
-                await interaction.edit_original_response(
-                    content=f"📋 **実行計画:**\n" + "\n".join(lines) + "\n\n▶️ 実行開始..."
-                )
-            elif phase == "execute" and step_data.get("status") == "running":
-                await interaction.edit_original_response(
-                    content=f"▶️ **実行中:** Step {step_data.get('step', '?')}/{step_data.get('total', '?')} - {step_data.get('task', '')}..."
-                )
-            elif phase == "execute" and step_data.get("status") in ("done", "error"):
-                icon = "✅" if step_data["status"] == "done" else "❌"
-                await interaction.edit_original_response(
-                    content=f"{icon} Step {step_data.get('step', '?')}/{step_data.get('total', '?')} - {step_data.get('task', '')}\n\n⏳ 次のステップへ..."
-                )
-            elif phase == "critique":
-                await interaction.edit_original_response(content="🔍 **結果を評価中...**")
-            elif phase == "revision":
-                await interaction.edit_original_response(
-                    content=f"🔄 **再計画中... (修正 {step_data.get('attempt', 1)}回目)**"
-                )
+            await interaction.edit_original_response(content=content)
         except Exception as e:
             print(f"[Discord] Warning: Failed to update status: {e}")
 

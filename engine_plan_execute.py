@@ -10,6 +10,7 @@ import os
 import datetime
 import inspect
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from google.genai import types
 
@@ -20,7 +21,8 @@ from lib.lib_shared import (
     PERFORMANCE_DASHBOARD_PATH, VAULT_ROOT,
     retry,
 )
-from lib.tool_registry import get_tools_config
+from lib.concurrency import fanout_workers, parallel_enabled
+from lib.tool_registry import get_tools_config, get_parallel_safe_tools
 from lib.cost_guard import GeminiBudgetExceeded
 from lib.bot_errors import is_failure_result, PARTIAL_PREFIX
 
@@ -362,49 +364,109 @@ def _resolve_step_args(tool_name: str, func, item: dict, task: str,
     return _sanitize_tool_args(tool_name, func, resolved)
 
 
-def execute_plan(plan: list, step_callback=None) -> dict:
-    """計画を順番に実行する。
+def _is_fanout_ready(item: dict, tools_map: dict, parallel_safe) -> bool:
+    """このステップを他ステップと同時に実行してよいか (Phase C1)。
 
-    Args:
-        plan: generate_plan() が返した plan リスト
-        step_callback: Discord等へのリアルタイム通知用コールバック
+    2つの条件を **両方** 満たすときだけ True:
 
-    Returns:
-        {"success": bool, "results": [...], "final_output": "..."}
+    1. データ依存が無い — `_try_planned_args()` が使える引数を返すこと。
+       これは新しい判定ではなく、既存の契約をそのまま読んでいる:
+       generate_plan のプロンプトは「前のステップの実行結果に依存する引数は
+       args_json を空文字にして args_hint だけ書く」と指示している。
+       つまり args_json が使えるステップは、定義上どの前ステップの
+       observation も必要としていない。
+       Planner に depends_on を書かせない理由: LLM が依存を1本落とすと
+       競合状態が黙って混入する。落とし方が「安全側」にならない判定は使わない。
+
+    2. 副作用が無い — レジストリで parallel_safe が宣言されていること。
+       データ依存が無くても、書き込み順は保たれている必要がある
+       (ノートを作ってから読む、等)。
+
+    _sanitize_tool_args まで通すのは、ここで OK と言ったステップが実行時に
+    Gemini 再解決へ落ちると「依存が無い」という前提が崩れるため
+    (再解決は accumulated_context を読む = 他ステップの結果に依存する)。
     """
-    _, tools_map = _get_tools_config()
-    results = []
-    accumulated_context = []
+    tool_name = item.get("tool", "")
+    if tool_name not in parallel_safe:
+        return False
+    func = tools_map.get(tool_name)
+    if func is None:
+        return False
+    planned = _try_planned_args(item)
+    if planned is None:
+        return False
+    return _sanitize_tool_args(tool_name, func, planned) is not None
 
+
+def _plan_waves(plan: list, tools_map: dict, parallel_safe=None,
+                enabled=None) -> list:
+    """計画を実行単位 (ウェーブ) に分割する純関数。
+
+    連続する fan-out 可能なステップを1つのウェーブに束ね、それ以外は
+    1要素ウェーブ (= 従来どおりの逐次) にする。
+
+    「連続する」に限る理由:
+      間に副作用のあるステップを挟んで並べ替えると、計画の書き順が持っていた
+      意味 (保存してから読む、等) が壊れる。ウェーブ内の結果は元のステップ順に
+      並べ直すので、**results の中身と順序は逐次実行と同一**になる。違うのは
+      タイミングだけ。
+
+    parallel_safe / enabled を注入できるようにしてあるのはテスト用。
+    os.environ を書き換えて切り替える方式は採らない (CLAUDE.md スコープ階層 LEVEL 2)。
+    """
+    if parallel_safe is None:
+        parallel_safe = get_parallel_safe_tools()
+    if enabled is None:
+        enabled = parallel_enabled()
+
+    if not enabled:
+        return [[item] for item in plan]
+
+    waves, current = [], []
     for item in plan:
-        step_num = item.get("step", len(results) + 1)
-        task = item.get("task", "")
-        tool_name = item.get("tool", "")
-        args_hint = item.get("args_hint", "")
+        if _is_fanout_ready(item, tools_map, parallel_safe):
+            current.append(item)
+            continue
+        if current:
+            waves.append(current)
+            current = []
+        waves.append([item])
+    if current:
+        waves.append(current)
+    return waves
 
-        print(f"[P&E] ▶️ Step {step_num}: {task} (tool={tool_name})")
 
-        if step_callback:
-            step_callback({
-                "phase": "execute",
-                "step": step_num,
-                "total": len(plan),
-                "task": task,
-                "tool": tool_name,
-                "status": "running",
-            })
+def _run_step(item: dict, tools_map: dict, context: list,
+              fallback_step: int = 1) -> dict:
+    """1ステップを実行して step_result を返す。**例外を外へ出さない**。
 
-        # 引数検証にシグネチャが要るため、ツール解決を先に行う
-        func = tools_map.get(tool_name)
-        args = {}
+    step_callback を呼ばないのは意図的: ウェーブ内ではこれがワーカースレッドから
+    呼ばれるため、進捗通知はオーケストレータ側 (execute_plan) に集約する。
+    ワーカーから直接飛ばすと、3本同時のとき Discord の edit が6回ほぼ同時に走って
+    レート制限に当たる。
+
+    context は呼び出し側が渡したスナップショット。fan-out されたステップは
+    定義上これを読まない (_is_fanout_ready の条件1) が、逐次ステップは読む。
+    """
+    step_num = item.get("step", fallback_step)
+    task = item.get("task", "")
+    tool_name = item.get("tool", "")
+    args_hint = item.get("args_hint", "")
+    started = time.time()
+
+    print(f"[P&E] ▶️ Step {step_num}: {task} (tool={tool_name})")
+
+    # 引数検証にシグネチャが要るため、ツール解決を先に行う
+    func = tools_map.get(tool_name)
+    args = {}
+    try:
         if func is None:
             observation = f"Error: Unknown tool '{tool_name}'"
             success = False
         else:
             # 計画時点で確定済みの引数があれば使い、なければ Gemini に解決させる。
             # どちらもシグネチャ検証を通す（TypeError を事前に潰す）
-            args = _resolve_step_args(tool_name, func, item, task,
-                                      accumulated_context)
+            args = _resolve_step_args(tool_name, func, item, task, context)
             if args is None:
                 args = {}
                 observation = (
@@ -415,11 +477,11 @@ def execute_plan(plan: list, step_callback=None) -> dict:
             else:
                 # tool_create_note の場合、content を専用プロンプトでリッチに再生成する
                 # JSON制約内では長文生成が困難なため、2段階方式で品質を担保する
-                if tool_name == "tool_create_note" and accumulated_context:
+                if tool_name == "tool_create_note" and context:
                     rich_content = _generate_rich_content(
                         task=task,
                         filename=args.get("filename", ""),
-                        context=accumulated_context,
+                        context=context,
                     )
                     if rich_content:
                         args["content"] = rich_content
@@ -439,33 +501,136 @@ def execute_plan(plan: list, step_callback=None) -> dict:
                 except Exception as e:
                     observation = f"Error: {e}"
                     success = False
+    except Exception as e:
+        # ここに来るのは引数解決やリッチ本文生成が想定外の例外を投げたとき。
+        # ワーカースレッドで投げっぱなしにすると future.result() で
+        # execute_plan ごと落ち、**同ウェーブの実行済みの結果まで消える**。
+        observation = f"Error ({type(e).__name__}): {e}"
+        success = False
+        print(f"[P&E] ❌ Step {step_num} が例外で終了: {observation}")
 
-        print(f"  {'✅' if success else '❌'} {str(observation)[:200]}...")
+    print(f"  {'✅' if success else '❌'} {str(observation)[:200]}...")
 
-        step_result = {
-            "step": step_num,
-            "task": task,
-            "tool": tool_name,
-            "args": args,
-            "observation": observation,
-            "success": success,
+    return {
+        "step": step_num,
+        "task": task,
+        "tool": tool_name,
+        "args": args,
+        "observation": observation,
+        "success": success,
+        "duration_seconds": round(time.time() - started, 2),
+    }
+
+
+def _run_wave(wave: list, tools_map: dict, accumulated_context: list) -> tuple:
+    """ウェーブを実行し (計画順に並べた結果, 短縮できた秒数) を返す。
+
+    短縮秒数を「ステップ所要時間の合計 − ウェーブの実測壁時計」で **実行の中から**
+    取るのは、別実行との A/B にしないため。このプロジェクトでは
+    「before を別の日・別の索引状態で取ったせいで施策の効果と混ざった」という
+    失敗を既に踏んでいる (Phase B の回帰ゲート)。同一実行内なら土俵が同じ。
+    """
+    if len(wave) == 1:
+        return [_run_step(wave[0], tools_map, accumulated_context)], 0.0
+
+    # ワーカーには文脈のスナップショットを渡す。fan-out 対象は定義上これを
+    # 読まないが、共有リストを実行中に触らせない方が後から読む人が迷わない。
+    snapshot = list(accumulated_context)
+    workers = min(len(wave), fanout_workers())
+    print(f"[P&E] ⚡ Wave: {len(wave)}件を並列実行します (worker={workers}) — "
+          + " / ".join(str(i.get('tool', '?')) for i in wave))
+
+    started = time.time()
+    indexed = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(_run_step, item, tools_map, snapshot,
+                            item.get("step", pos + 1)): pos
+            for pos, item in enumerate(wave)
         }
-        results.append(step_result)
-        accumulated_context.append(step_result)
+        for fut in as_completed(futures):
+            indexed[futures[fut]] = fut.result()
 
-        if step_callback:
-            step_callback({
-                "phase": "execute",
-                "step": step_num,
-                "total": len(plan),
-                "task": task,
-                "tool": tool_name,
-                "status": "done" if success else "error",
-                "observation": str(observation)[:500],
-            })
+    wall = time.time() - started
+    ordered = [indexed[pos] for pos in range(len(wave))]
+    sequential = sum(r.get("duration_seconds", 0.0) for r in ordered)
+    saved = max(sequential - wall, 0.0)
+    speedup = (sequential / wall) if wall > 0 else 1.0
+    print(f"[P&E] ⚡ Wave({len(wave)}件): 逐次なら {sequential:.1f}秒 → "
+          f"実測 {wall:.1f}秒 ({speedup:.1f}x, -{saved:.1f}秒)")
+    return ordered, saved
 
-        if not success:
-            print(f"[P&E] ⚠️ Step {step_num} failed, passing to Critic...")
+
+def _emit_wave_event(step_callback, wave: list, total: int, status: str,
+                     results: list = None) -> None:
+    """ウェーブ1本につき1回だけ進捗を通知する。
+
+    step / task / tool に**先頭ステップ**の値を入れるのは後方互換のため
+    (既存の描画は step_data["step"] を読む)。ウェーブの全容は "wave" キーに入れ、
+    描画側が長さ1かどうかで出し分ける。
+    """
+    if not step_callback:
+        return
+    head = wave[0] if wave else {}
+    event = {
+        "phase": "execute",
+        "step": head.get("step", "?"),
+        "total": total,
+        "task": head.get("task", ""),
+        "tool": head.get("tool", ""),
+        "status": status,
+        "wave": [{"step": i.get("step", "?"), "task": i.get("task", ""),
+                  "tool": i.get("tool", "")} for i in wave],
+    }
+    if results is not None:
+        # 失敗が1件でもあれば error。ウェーブ全体を1行で出すので、
+        # 「一部失敗を ✅ で表示しない」という既存の規約をここでも守る。
+        failed = [r for r in results if not r.get("success")]
+        event["status"] = "error" if failed else "done"
+        event["observation"] = str(results[0].get("observation", ""))[:500]
+        event["failed_steps"] = [r.get("step") for r in failed]
+    step_callback(event)
+
+
+def execute_plan(plan: list, step_callback=None) -> dict:
+    """計画を実行する。依存の無い連続ステップは同時に走らせる (Phase C1)。
+
+    Args:
+        plan: generate_plan() が返した plan リスト
+        step_callback: Discord等へのリアルタイム通知用コールバック
+
+    Returns:
+        {"success": bool, "results": [...], "final_output": "...",
+         "parallel": {"waves": int, "saved_seconds": float}}
+
+    失敗したら **ウェーブ境界で** 止める (従来の「最初の失敗で break」を
+    ウェーブ単位に読み替えたもの)。ウェーブ内で失敗が出ても同ウェーブの
+    他ステップの結果は捨てない — 既に実行済みなので、捨てる方が実態に反する。
+    失敗の局所化 (依存していない後続ステップを続行する) は Phase C2 の範囲。
+    """
+    _, tools_map = _get_tools_config()
+    results = []
+    accumulated_context = []
+    total = len(plan)
+    parallel = {"waves": 0, "saved_seconds": 0.0}
+
+    for wave in _plan_waves(plan, tools_map):
+        _emit_wave_event(step_callback, wave, total, "running")
+
+        wave_results, saved = _run_wave(wave, tools_map, accumulated_context)
+        if len(wave) > 1:
+            parallel["waves"] += 1
+            parallel["saved_seconds"] = round(parallel["saved_seconds"] + saved, 2)
+
+        results.extend(wave_results)
+        accumulated_context.extend(wave_results)
+
+        _emit_wave_event(step_callback, wave, total, "done", wave_results)
+
+        failed = [r for r in wave_results if not r["success"]]
+        if failed:
+            steps = "、".join(str(r["step"]) for r in failed)
+            print(f"[P&E] ⚠️ Step {steps} failed, passing to Critic...")
             break
 
     all_ok = all(r["success"] for r in results)
@@ -473,6 +638,7 @@ def execute_plan(plan: list, step_callback=None) -> dict:
         "success": all_ok,
         "results": results,
         "final_output": _summarize_results(results) if all_ok else "",
+        "parallel": parallel,
     }
 
 
@@ -758,6 +924,16 @@ def run_plan_and_execute(user_query: str, step_callback=None,
 
     all_results = []
     last_critique = {}
+    # 修正計画をまたいで積む (1回の /agent で fan-out が何回効いたかを見たい)
+    parallel_total = {"waves": 0, "saved_seconds": 0.0}
+
+    def _log(critique: dict) -> None:
+        """学習DBへの記録。4箇所で同じ try/except を書き写さないための1本化。"""
+        try:
+            log_execution(user_query, original_plan, all_results, critique,
+                          time.time() - t_start, parallel=parallel_total)
+        except Exception as e:
+            print(f"[P&E] ⚠️ Failed to log execution: {e}")
 
     for revision in range(MAX_REVISIONS + 1):
         if revision > 0:
@@ -767,6 +943,10 @@ def run_plan_and_execute(user_query: str, step_callback=None,
 
         exec_result = execute_plan(plan, step_callback)
         all_results.extend(exec_result["results"])
+        wave_stats = exec_result.get("parallel") or {}
+        parallel_total["waves"] += wave_stats.get("waves", 0)
+        parallel_total["saved_seconds"] = round(
+            parallel_total["saved_seconds"] + wave_stats.get("saved_seconds", 0.0), 2)
 
         if step_callback:
             step_callback({"phase": "critique", "status": "evaluating"})
@@ -776,11 +956,7 @@ def run_plan_and_execute(user_query: str, step_callback=None,
         print(f"[P&E] 🔍 Critic: {critique.get('status')} - {critique.get('feedback', '')[:100]}")
 
         if critique["status"] == "ok":
-            duration = time.time() - t_start
-            try:
-                log_execution(user_query, original_plan, all_results, critique, duration)
-            except Exception as e:
-                print(f"[P&E] ⚠️ Failed to log execution: {e}")
+            _log(critique)
             return _final_report(user_query, all_results, critique)
         elif critique["status"] == "needs_revision":
             revised = critique.get("revised_plan", [])
@@ -788,25 +964,13 @@ def run_plan_and_execute(user_query: str, step_callback=None,
                 plan = revised
                 print(f"[P&E] 📝 Revised plan ({len(plan)} steps)")
             else:
-                duration = time.time() - t_start
-                try:
-                    log_execution(user_query, original_plan, all_results, critique, duration)
-                except Exception as e:
-                    print(f"[P&E] ⚠️ Failed to log execution: {e}")
+                _log(critique)
                 return _final_report(user_query, all_results, critique)
         else:
-            duration = time.time() - t_start
-            try:
-                log_execution(user_query, original_plan, all_results, critique, duration)
-            except Exception as e:
-                print(f"[P&E] ⚠️ Failed to log execution: {e}")
+            _log(critique)
             return f"タスク失敗: {critique.get('feedback', 'Unknown error')}"
 
-    duration = time.time() - t_start
-    try:
-        log_execution(user_query, original_plan, all_results, last_critique, duration)
-    except Exception as e:
-        print(f"[P&E] ⚠️ Failed to log execution: {e}")
+    _log(last_critique)
     return _final_report(user_query, all_results, last_critique)
 
 
@@ -1048,8 +1212,15 @@ def _append_archive(entries: list) -> None:
 
 
 def log_execution(query: str, plan: list, results: list,
-                  critique: dict, duration_seconds: float) -> None:
-    """実行結果を学習DBに記録する。"""
+                  critique: dict, duration_seconds: float,
+                  parallel: dict = None) -> None:
+    """実行結果を学習DBに記録する。
+
+    parallel は fan-out (Phase C1) の実測 {"waves": n, "saved_seconds": x}。
+    **追加のみ** で、既存エントリを読む側 (extract_patterns / eval) は
+    .get() で参照するため過去分は無影響。省略時は記録しない
+    (「0秒短縮」と「そもそも測っていない」を区別できるようにする)。
+    """
     db = _load_learning_db()
 
     all_success = all(r.get("success", False) for r in results)
@@ -1088,6 +1259,11 @@ def log_execution(query: str, plan: list, results: list,
         "tools_used": tools_used,
         "critique_status": critique.get("status", "unknown"),
     }
+    if parallel and parallel.get("waves"):
+        entry["parallel"] = {
+            "waves": parallel.get("waves", 0),
+            "saved_seconds": round(float(parallel.get("saved_seconds", 0.0)), 2),
+        }
 
     db["executions"].append(entry)
 
