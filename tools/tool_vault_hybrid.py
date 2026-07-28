@@ -500,10 +500,11 @@ def _rank_lists(queries: list, keyword_fn, semantic_fn, per_query_k: int,
     semantic 側の soft-error / 例外は keyword を道連れにしない
     (ImportError=numpy欠落、sqlite3.DatabaseError=index破損、
      ValueError=次元不一致blob のいずれでも継続する)。
-    Returns: (rank_lists, semantic_error) — semantic_error は最初の失敗理由。
+    Returns: (rank_lists, semantic_error, activity_error) — それぞれ最初の失敗理由。
     """
     rank_lists = []
     semantic_error = ""
+    activity_error = ""
     for qi, q in enumerate(queries, start=1):
         rank_lists.append(("keyword", qi, sorted(keyword_fn(q), key=lambda h: -h["score"])))
 
@@ -511,8 +512,13 @@ def _rank_lists(queries: list, keyword_fn, semantic_fn, per_query_k: int,
             try:
                 activity_hits = activity_keyword_fn(q, per_query_k)
             except Exception as e:
-                # 行動ログ側が壊れても Vault 検索は続ける (無言では済ませない)
+                # 行動ログ側が壊れても Vault 検索は続ける。ただし **無言にしない**:
+                # この経路は「Ollama が落ちても行動ログが残る」ための保険なので、
+                # 黙って消えると保険が効いていないことに誰も気付けない。
+                # stdout だけでなく戻り値の note にも載せる (activity_error)。
                 print(f"[Hybrid] ⚠️ 行動ログのキーワード検索に失敗: {e}")
+                if not activity_error:
+                    activity_error = f"[ERROR] activity keyword search failed: {e}"
                 activity_keyword_fn = None
             else:
                 rank_lists.append(("activity", qi,
@@ -538,7 +544,7 @@ def _rank_lists(queries: list, keyword_fn, semantic_fn, per_query_k: int,
                 seen.add(h["rel_path"])
                 deduped.append(h)
         rank_lists.append(("semantic", qi, deduped))
-    return rank_lists, semantic_error
+    return rank_lists, semantic_error, activity_error
 
 
 def _fuse(rank_lists: list) -> list:
@@ -623,10 +629,12 @@ def _hybrid_hits(query: str, top_k: int = 5, keyword_fn=_keyword_hits,
     notes = [expand_note] if expand_note else []
 
     semantic_fn, resolve_error = _resolve_semantic_fn(semantic_fn)
-    activity_keyword_fn, activity_error = _resolve_activity_keyword_fn(activity_keyword_fn)
-    rank_lists, semantic_error = _rank_lists(
+    activity_keyword_fn, act_resolve_error = _resolve_activity_keyword_fn(
+        activity_keyword_fn)
+    rank_lists, semantic_error, act_runtime_error = _rank_lists(
         queries, keyword_fn, semantic_fn, per_query_k=top_k * 2,
         activity_keyword_fn=activity_keyword_fn)
+    activity_error = act_resolve_error or act_runtime_error
 
     sem_error = resolve_error or semantic_error
     if sem_error:

@@ -165,9 +165,19 @@ def collect_documents() -> tuple:
         except (OSError, ValueError, FileLockTimeout) as e:
             errors.append(f"{source}: 読み込み失敗 ({type(e).__name__}: {e})")
             continue
-        docs = []
-        for render in renderers:
-            docs.extend(render(records))
+        try:
+            docs = []
+            for render in renderers:
+                docs.extend(render(records))
+        except Exception as e:
+            # レンダリングも try の中に入れる。ここを外に出していたせいで、
+            # 壊れた1レコードの KeyError がソフトエラー規約を破って外へ漏れ、
+            # **全ソースの索引付けが丸ごと止まっていた** (crypto の1件で
+            # agent_exec も agent_skill も更新されない)。
+            # loader と違い自作コードなので例外種別を絞らない — 絞ると
+            # 「想定した種類しか守れない」防御になり、想定外で規約が破れる。
+            errors.append(f"{source}: ドキュメント生成に失敗 ({type(e).__name__}: {e})")
+            continue
         docs_by_source[source] = docs
     return docs_by_source, errors
 
@@ -216,7 +226,7 @@ def update_activity_index(embed_fn=_call_ollama_embed, db_path: str = DB_PATH,
             "SELECT filepath, fingerprint FROM files WHERE source IN "
             f"({','.join('?' * len(ACTIVITY_SOURCES))})", ACTIVITY_SOURCES).fetchall())
 
-        updated = skipped = failed = removed = 0
+        updated = skipped = failed = removed = emptied = 0
 
         for source, docs in docs_by_source.items():
             for doc in docs:
@@ -227,6 +237,16 @@ def update_activity_index(embed_fn=_call_ollama_embed, db_path: str = DB_PATH,
                 try:
                     chunks = _chunk_markdown(doc["text"])
                     if not chunks:
+                        # チャンク0件 (本文が CHUNK_MIN_CHARS 未満に縮んだ等) で
+                        # `continue` すると、**古いチャンクが残ったまま**になり
+                        # 検索が旧内容を出し続ける。しかも updated/skipped/failed の
+                        # どれにも数えられないのでサマリーにもログにも出ない。
+                        # 空になったなら空にする、を明示的にやる。
+                        _clear_doc(conn, doc, fp)
+                        conn.commit()
+                        emptied += 1
+                        print(f"[ActivityIndex] ⚠️ {doc['doc_id']} はチャンク0件 "
+                              f"(本文が短すぎる) → 既存の索引を削除しました")
                         continue
                     vectors = []
                     embed_error = None
@@ -276,11 +296,32 @@ def update_activity_index(embed_fn=_call_ollama_embed, db_path: str = DB_PATH,
 
     summary = (f"Activity index: {updated} docs updated, {skipped} unchanged, "
                f"{removed} removed, {failed} failed, {total} chunks total.")
+    if emptied:
+        summary += f" ({emptied} docs emptied — 本文が短すぎて索引から外した)"
     if errors:
         # 読めなかったソースは必ず戻り値に出す。ログだけに出すと
         # 「更新0件＝変化なし」と読まれて、壊れていることに気付けない。
         summary += " ⚠️ 読み込めなかったソース: " + " / ".join(errors)
     return summary
+
+
+def _clear_doc(conn, doc: dict, fp: str):
+    """チャンクを持てなくなったドキュメントを索引から外す。
+
+    files 行は fingerprint 付きで残す: 消してしまうと次回また
+    「未登録だから作ろう」と試みて毎晩同じ警告を出す。本文が変われば
+    fingerprint が変わるので、そのときは通常経路で作り直される。
+    """
+    doc_id, source = doc["doc_id"], doc["source"]
+    conn.execute("DELETE FROM chunks WHERE filepath=? AND source=?", (doc_id, source))
+    conn.execute(
+        "INSERT INTO files(filepath, mtime, chunk_count, source, fingerprint) "
+        "VALUES(?, ?, ?, ?, ?) "
+        "ON CONFLICT(filepath) DO UPDATE SET mtime=excluded.mtime, "
+        "chunk_count=excluded.chunk_count, source=excluded.source, "
+        "fingerprint=excluded.fingerprint",
+        (doc_id, 0.0, 0, source, fp),
+    )
 
 
 def _write_doc(conn, doc: dict, chunks: list, vectors: list, dim: int, fp: str):
@@ -333,16 +374,15 @@ def _activity_keyword_hits(keywords: str, max_hits: int = 10,
     if not kw_list or not os.path.exists(db_path):
         return []
 
-    try:
-        conn = _connect(db_path)
-    except Exception:
-        return []  # 検索は落とさない (キーワード側が消えるだけ)
+    # DB が壊れた/ロックされたときに黙って [] を返してはいけない。
+    # この経路は「Ollama が落ちても行動ログが残る」ための保険 (D4) なので、
+    # ここが無言で死ぬと保険が効いていないことに誰も気付けない。
+    # 例外は握らず投げ、呼び出し側 (_rank_lists) が理由を note に載せる。
+    conn = _connect(db_path)
     try:
         rows = conn.execute(
             "SELECT filepath, heading, text, source FROM chunks WHERE source IN "
             f"({','.join('?' * len(ACTIVITY_SOURCES))})", ACTIVITY_SOURCES).fetchall()
-    except Exception:
-        return []
     finally:
         conn.close()
 

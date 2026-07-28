@@ -445,6 +445,85 @@ def test_activity_keyword_hits_only_returns_activity_rows():
 
 
 # ---------------------------------------------------------
+# [9] /grill で見つかった3件
+# ---------------------------------------------------------
+
+def test_emptied_document_does_not_keep_stale_chunks():
+    """本文がチャンクを持てない長さに縮んだら、古いチャンクを残さない。
+
+    /grill 指摘 C1。`if not chunks: continue` で素通りしていたため、
+    古い本文が索引に残り続けて検索が旧内容を返していた。しかも
+    updated/skipped/failed のどれにも数えられずサマリーにも出なかった
+    (= 気付けない)。空になったなら空にする、を明示する。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "index.db")
+        full = {"doc_id": "_activity/crypto/x", "source": corpus.SOURCE_CRYPTO,
+                "title": "t", "text": "## タイトル\n" + _BODY}
+        aindex.update_activity_index(
+            embed_fn=_fake_embed, db_path=db,
+            collect_fn=lambda: ({corpus.SOURCE_CRYPTO: [full]}, []))
+
+        tiny = dict(full, text="## 短い")  # CHUNK_MIN_CHARS 未満
+        summary = aindex.update_activity_index(
+            embed_fn=_fake_embed, db_path=db,
+            collect_fn=lambda: ({corpus.SOURCE_CRYPTO: [tiny]}, []))
+
+        conn = sqlite3.connect(db)
+        try:
+            texts = [r[0] for r in conn.execute("SELECT text FROM chunks")]
+        finally:
+            conn.close()
+        assert texts == [], f"古いチャンクが残った: {texts}"
+        assert "emptied" in summary, f"サマリーに出ていない (気付けない): {summary}"
+    print("✅ [9] 空になった文書: 古いチャンクを残さず、件数をサマリーに出す")
+
+
+def test_renderer_exception_becomes_soft_error():
+    """レンダラが例外を投げてもソフトエラー規約を破らない。
+
+    /grill 指摘 C2。try が loader() しか囲っていなかったため、
+    壊れた1レコードの KeyError が外へ漏れ、**全ソースの索引付けが止まった**。
+    """
+    def boom(records):
+        raise KeyError("malformed record")
+
+    original = aindex._SOURCE_SPECS
+    aindex._SOURCE_SPECS = (
+        (corpus.SOURCE_CRYPTO, lambda: [{}], (boom,)),
+        (corpus.SOURCE_AGENT_SKILL, lambda: [_observation()], (corpus.render_skill_rollups,)),
+    )
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "index.db")
+            summary = aindex.update_activity_index(embed_fn=_fake_embed, db_path=db)
+            assert "ドキュメント生成に失敗" in summary and "KeyError" in summary, summary
+            # 巻き添えにしない: 壊れていない source は更新される
+            assert "1 docs updated" in summary, \
+                f"1ソースの失敗が他ソースを巻き添えにした: {summary}"
+    finally:
+        aindex._SOURCE_SPECS = original
+    print("✅ [9] レンダラ例外: ソフトエラーで返し、他ソースを巻き添えにしない")
+
+
+def test_activity_search_failure_reaches_the_note():
+    """行動ログ側のキーワード検索が壊れたら、理由が戻り値の note に残る。
+
+    /grill 指摘 W1。DB エラーを except で握って [] を返していたため、
+    「Ollama が落ちても行動ログが残る」保険 (D4) が無言で死ねる状態だった。
+    """
+    def broken(q, k=None):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    hits, notes, _q = _hybrid_hits(
+        "q", top_k=5, keyword_fn=lambda q: [], semantic_fn=lambda q, k: [],
+        activity_keyword_fn=broken)
+    assert any("行動ログ" in n for n in notes), f"note に出ていない: {notes}"
+    assert any("malformed" in n for n in notes), f"理由が残っていない: {notes}"
+    print("✅ [9] 行動ログ検索の失敗理由が戻り値の note に残る")
+
+
+# ---------------------------------------------------------
 # [8] 行集合に依存しない順位 (Phase B が露出させた既存の脆さ)
 # ---------------------------------------------------------
 
