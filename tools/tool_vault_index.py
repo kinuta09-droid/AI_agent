@@ -31,6 +31,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from lib.lib_shared import VAULT_ROOT, EXCLUDE_DIRS
 from lib.lib_obsidian_utils import format_source_ref
+from lib.concurrency import ollama_slot
 
 # ---------------------------------------------------------
 # Configuration
@@ -137,11 +138,15 @@ def _call_ollama_embed(texts: list, model: str = OLLAMA_EMBED_MODEL,
         # GPU を明け渡したまま常駐させる (毎回ロードし直すと CPU 化の意味が薄れる)
         payload["keep_alive"] = OLLAMA_KEEP_ALIVE
     try:
-        resp = requests.post(
-            f"{OLLAMA_BASE_URL}/api/embed",
-            json=payload,
-            timeout=timeout,
-        )
+        # Phase C0: 埋め込みとリランクは同じ Ollama / 同じ 6GB VRAM を奪い合う。
+        # fan-out (Phase C1) が同時に検索を走らせても、ここを直列に保つ。
+        # 並列していないときは素通り (取得コストは Lock 1回分)。
+        with ollama_slot():
+            resp = requests.post(
+                f"{OLLAMA_BASE_URL}/api/embed",
+                json=payload,
+                timeout=timeout,
+            )
         resp.raise_for_status()
         embeddings = resp.json().get("embeddings")
         if not embeddings or len(embeddings) != len(texts):
