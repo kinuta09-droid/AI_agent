@@ -88,29 +88,64 @@ def score(results: list) -> dict:
 # 実行
 # ---------------------------------------------------------
 
-def _preflight() -> str:
-    """インデックスと Ollama を確認する。問題があれば理由を返す (正常は "")。
+def _preflight(rerank_backend: str = "", rerank_model: str = "") -> str:
+    """インデックス・Ollama・リランクモデルを確認する。問題があれば理由を返す。
 
     キーワード検索だけでも数字は出てしまうが、それは「意味検索の効果を
     測ったつもりで測れていない」状態なので、静かに続行させない。
     """
-    from tools.tool_vault_index import DB_PATH, _semantic_hits
+    from tools.tool_vault_index import DB_PATH, OLLAMA_BASE_URL, _semantic_hits
     if not os.path.exists(DB_PATH):
         return f"[ERROR] semantic index がありません: {DB_PATH} — py tools/tool_vault_index.py を先に実行してください"
     probe = _semantic_hits("疎通確認", top_k=1)
     if isinstance(probe, str):
         return f"[ERROR] semantic search が使えません: {probe}"
+
+    # リランクモデルの実在確認。モデル名を1文字打ち間違えると15問すべてが
+    # 同じフォールバックになり、「ローカルリランクは効果なし」という
+    # 正しく見える嘘の数字が出る。is_clean_arm が後で拾うが、走らせる前に止める。
+    if rerank_backend == "ollama":
+        import requests
+        try:
+            tags = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=10).json()
+        except Exception as e:
+            return f"[ERROR] Ollama に接続できません: {e}"
+        names = {m.get("name", "") for m in tags.get("models", [])}
+        if rerank_model not in names and f"{rerank_model}:latest" not in names:
+            return (f"[ERROR] Ollama にモデル '{rerank_model}' がありません。"
+                    f"利用可能: {sorted(names)}")
     return ""
 
 
-def run(questions: list, multiquery: bool, rerank: bool, only: str = "") -> list:
+def warmup(backend: str, model: str) -> None:
+    """ローカルモデルを1回空打ちして VRAM へ載せる。
+
+    Ollama は初回呼び出しでモデルをロードするため、1問目だけ極端に遅い数字が出る。
+    それを平均に混ぜるとレイテンシ比較が歪むので、計測前に捨て打ちする。
+    """
+    if backend != "ollama":
+        return
+    from tools.tool_vault_hybrid import _call_ollama_llm
+    print(f"[eval] {model} をウォームアップ中...")
+    started = time.time()
+    try:
+        _call_ollama_llm("[1] という配列だけを返してください。", model=model)
+        print(f"[eval] ウォームアップ完了 ({time.time() - started:.1f}s)")
+    except Exception as e:
+        # 失敗しても計測自体は続行する (本番の呼び出しで同じ理由が note に残る)
+        print(f"[eval] ⚠️ ウォームアップ失敗: {e}")
+
+
+def run(questions: list, multiquery: bool, rerank: bool, only: str = "",
+        rerank_backend: str = None) -> list:
     results = []
     for q in questions:
         if only and q["id"] not in {s.strip() for s in only.split(",")}:
             continue
         started = time.time()
         hits, notes, queries = _hybrid_hits(
-            q["query"], top_k=RETRIEVE_K, multiquery=multiquery, rerank=rerank)
+            q["query"], top_k=RETRIEVE_K, multiquery=multiquery, rerank=rerank,
+            rerank_backend=rerank_backend)
         elapsed = time.time() - started
 
         got = [h["rel_path"] for h in hits]
@@ -184,10 +219,28 @@ def compare(before: dict, after: dict) -> str:
         lines.append("")
 
     b_cfg, a_cfg = before.get("config", {}), after.get("config", {})
-    lines.append(f"before: multiquery={b_cfg.get('multiquery')} rerank={b_cfg.get('rerank')} "
-                 f"({before.get('timestamp', '?')})")
-    lines.append(f"after : multiquery={a_cfg.get('multiquery')} rerank={a_cfg.get('rerank')} "
-                 f"({after.get('timestamp', '?')})")
+
+    def _describe(cfg, payload):
+        parts = [f"multiquery={cfg.get('multiquery')}", f"rerank={cfg.get('rerank')}"]
+        if cfg.get("rerank"):
+            parts.append(f"backend={cfg.get('rerank_backend') or '?'}")
+            if cfg.get("rerank_model"):
+                parts.append(f"model={cfg['rerank_model']}")
+            parts.append(f"候補={cfg.get('rerank_candidates', '?')}")
+            parts.append(f"スニペット={cfg.get('rerank_snippet_chars', '?')}")
+        return " ".join(parts) + f" ({payload.get('timestamp', '?')})"
+
+    lines.append(f"before: {_describe(b_cfg, before)}")
+    lines.append(f"after : {_describe(a_cfg, after)}")
+
+    # 候補数/スニペット長が違うアーム同士を並べても比較にならない。
+    # 気付かず表だけコピーされると、条件の違いが原因の差を施策の効果と読む。
+    for key, label in (("rerank_candidates", "候補件数"),
+                       ("rerank_snippet_chars", "スニペット長"),
+                       ("retrieve_k", "採点深さ")):
+        if key in b_cfg and key in a_cfg and b_cfg[key] != a_cfg[key]:
+            lines.append(f"⚠️ {label}が違います ({b_cfg[key]} → {a_cfg[key]})。"
+                         "施策の効果と条件差が混ざっています")
     lines.append("")
     lines.append("| 指標 | before | after | 差分 |")
     lines.append("|------|--------|-------|------|")
@@ -229,13 +282,37 @@ def main() -> int:
                         help="クエリ書き換えの有無 (.env より優先)")
     parser.add_argument("--rerank", default="on", choices=["on", "off"],
                         help="LLMリランクの有無 (.env より優先)")
+    parser.add_argument("--rerank-backend", default="", choices=["", "gemini", "ollama"],
+                        help="リランクを回す場所 (未指定は .env / コード既定)")
+    parser.add_argument("--rerank-model", default="",
+                        help="--rerank-backend ollama のときのモデル名")
+    parser.add_argument("--rerank-candidates", type=int, default=0,
+                        help="リランクに渡す候補件数 (0=既定20)")
+    parser.add_argument("--rerank-snippet-chars", type=int, default=0,
+                        help="1候補あたりのスニペット長 (0=既定600)")
     parser.add_argument("--only", default="", help="評価するIDをカンマ区切りで限定 (例: R01,R04)")
     parser.add_argument("--label", default="", help="出力ファイル名に付ける識別子")
     parser.add_argument("--compare", default="", help="比較対象の過去JSON")
     parser.add_argument("--fixture", default=FIXTURE_PATH)
     args = parser.parse_args()
 
-    problem = _preflight()
+    from tools import tool_vault_hybrid as hybrid
+
+    multiquery, rerank = _flag(args.multiquery), _flag(args.rerank)
+    # 実際に使われる値まで解決してから記録する。"未指定" のまま JSON に残すと
+    # 後で「どの条件で出た数字か」を復元できず、比較表が意味を失う。
+    backend = (args.rerank_backend
+               or os.getenv("VAULT_SEARCH_RERANK_BACKEND")
+               or hybrid.RERANK_BACKEND_DEFAULT).strip().lower()
+    model = (args.rerank_model
+             or os.getenv("VAULT_SEARCH_RERANK_OLLAMA_MODEL")
+             or hybrid.RERANK_OLLAMA_MODEL) if backend == "ollama" else ""
+    n_cand = args.rerank_candidates or hybrid._env_int(
+        "VAULT_SEARCH_RERANK_CANDIDATES", hybrid.RERANK_CANDIDATES)
+    n_chars = args.rerank_snippet_chars or hybrid._env_int(
+        "VAULT_SEARCH_RERANK_SNIPPET_CHARS", hybrid.RERANK_SNIPPET_CHARS)
+
+    problem = _preflight(backend if rerank else "", model)
     if problem:
         print(problem)
         return 1
@@ -243,17 +320,37 @@ def main() -> int:
     with open(args.fixture, encoding='utf-8') as f:
         questions = json.load(f)["questions"]
 
-    multiquery, rerank = _flag(args.multiquery), _flag(args.rerank)
     print("=" * 62)
     print(f" 検索評価: multiquery={'ON' if multiquery else 'OFF'} / "
           f"rerank={'ON' if rerank else 'OFF'} / {len(questions)}問")
+    if rerank:
+        print(f" リランク: backend={backend}"
+              + (f" model={model}" if model else "")
+              + f" 候補={n_cand}件 スニペット={n_chars}文字")
     print("=" * 62)
 
+    # CLI で指定された候補数/スニペット長は _hybrid_hits に引数の口が無いので
+    # このプロセスの env に載せる。子プロセスを起こさないスクリプトなので
+    # CLAUDE.md の LEVEL 2 (子まで汚す) には当たらない。
+    if args.rerank_candidates:
+        os.environ["VAULT_SEARCH_RERANK_CANDIDATES"] = str(args.rerank_candidates)
+    if args.rerank_snippet_chars:
+        os.environ["VAULT_SEARCH_RERANK_SNIPPET_CHARS"] = str(args.rerank_snippet_chars)
+    if model:
+        os.environ["VAULT_SEARCH_RERANK_OLLAMA_MODEL"] = model
+
+    if rerank:
+        warmup(backend, model)
+
     started = time.time()
-    results = run(questions, multiquery, rerank, only=args.only)
+    results = run(questions, multiquery, rerank, only=args.only,
+                  rerank_backend=backend if rerank else None)
     metrics = score(results)
 
     config = {"multiquery": multiquery, "rerank": rerank,
+              "rerank_backend": backend if rerank else None,
+              "rerank_model": model or None,
+              "rerank_candidates": n_cand, "rerank_snippet_chars": n_chars,
               "retrieve_k": RETRIEVE_K, "fixture": os.path.basename(args.fixture)}
     payload = {
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
