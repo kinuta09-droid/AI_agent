@@ -277,18 +277,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
     `CREATE TABLE IF NOT EXISTS` は既存テーブルを一切変更しないので、
     スキーマを増やしたときはここで明示的に ALTER する必要がある。
 
-    source 列は **additive**: `DEFAULT 'vault'` を付けるので既存行の
-    embedding には触れない = 5000件規模の再埋め込みが発生しない
+    追加する列は全て **additive** (NULL 可 or DEFAULT 付き) にする。既存行の
+    embedding に触れないので 5000件規模の再埋め込みが発生しない
     (Phase B の設計判断 D1)。列を増やす以外の移行は行わないこと —
     PK の作り直しはテーブル再構築になり、その瞬間に埋め込みを失う。
+
+    fingerprint は行動ログ側 (tool_activity_index) の変更検知に使う。
+    Vault は mtime で差分を取れるが、行動ログのドキュメントは JSON から
+    毎回組み立てるので mtime に相当するものが無い。本文のハッシュを持たせて
+    「中身が変わったものだけ再埋め込み」を成立させる。
     """
-    for table in ("files", "chunks"):
+    migrations = (
+        ("files", "source", f"TEXT NOT NULL DEFAULT '{SOURCE_VAULT}'"),
+        ("chunks", "source", f"TEXT NOT NULL DEFAULT '{SOURCE_VAULT}'"),
+        ("files", "fingerprint", "TEXT"),
+    )
+    for table, column, decl in migrations:
         cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-        if "source" not in cols:
-            conn.execute(
-                f"ALTER TABLE {table} ADD COLUMN source TEXT NOT NULL "
-                f"DEFAULT '{SOURCE_VAULT}'")
-            print(f"[VaultIndex] 🔧 migrate: {table}.source を追加しました")
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            print(f"[VaultIndex] 🔧 migrate: {table}.{column} を追加しました")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source)")
     conn.commit()
 
