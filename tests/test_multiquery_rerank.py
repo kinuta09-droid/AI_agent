@@ -128,7 +128,7 @@ def test_variant_only_hit_enters_candidates():
 
 def test_rerank_reorders():
     cands = [_cand("a.md", 0.03), _cand("b.md", 0.02), _cand("c.md", 0.01)]
-    ordered, note = _llm_rerank("質問", cands, llm_fn=lambda p: "[3, 1, 2]", enabled=True)
+    ordered, note, _verdict = _llm_rerank("質問", cands, llm_fn=lambda p: "[3, 1, 2]", enabled=True)
     assert [h["rel_path"] for h in ordered] == ["c.md", "a.md", "b.md"], ordered
     assert ordered[0]["rerank_pos"] == 1 and ordered[1]["rerank_pos"] == 2
     assert note == "", note
@@ -138,7 +138,7 @@ def test_rerank_reorders():
 def test_rerank_does_not_drop_candidates():
     """LLM が挙げなかった候補は捨てない (並べ替えであって足切りではない)"""
     cands = [_cand("a.md", 0.03), _cand("b.md", 0.02), _cand("c.md", 0.01)]
-    ordered, note = _llm_rerank("質問", cands, llm_fn=lambda p: "[2]", enabled=True)
+    ordered, note, _verdict = _llm_rerank("質問", cands, llm_fn=lambda p: "[2]", enabled=True)
     assert len(ordered) == 3, f"候補が削られた: {ordered}"
     assert ordered[0]["rel_path"] == "b.md", ordered
     # 選から漏れた分は RRF 順のまま後ろに付く
@@ -150,19 +150,19 @@ def test_rerank_does_not_drop_candidates():
 def test_rerank_survives_garbage_indices():
     """存在しない番号・重複・非数値・0/負数を返されても落ちない"""
     cands = [_cand("a.md", 0.03), _cand("b.md", 0.02)]
-    ordered, note = _llm_rerank("質問", cands, llm_fn=lambda p: '[99, 2, 2, "三位", 0, -1]', enabled=True)
+    ordered, note, _verdict = _llm_rerank("質問", cands, llm_fn=lambda p: '[99, 2, 2, "三位", 0, -1]', enabled=True)
     assert [h["rel_path"] for h in ordered] == ["b.md", "a.md"], ordered
     assert note == "", note
 
     # 有効な番号が1つも無ければ RRF 順のまま + 理由を残す
-    ordered, note = _llm_rerank("質問", cands, llm_fn=lambda p: "[99, 100]", enabled=True)
+    ordered, note, _verdict = _llm_rerank("質問", cands, llm_fn=lambda p: "[99, 100]", enabled=True)
     assert [h["rel_path"] for h in ordered] == ["a.md", "b.md"], ordered
     assert note, "有効番号ゼロなのに理由が残っていない"
 
     # 例外・非JSONでも同じ
     def boom(p):
         raise ValueError("bad")
-    ordered, note = _llm_rerank("質問", cands, llm_fn=boom, enabled=True)
+    ordered, note, _verdict = _llm_rerank("質問", cands, llm_fn=boom, enabled=True)
     assert [h["rel_path"] for h in ordered] == ["a.md", "b.md"], ordered
     assert note, "例外なのに理由が残っていない"
     print("✅ rerank: 不正な番号・例外でも RRF 順にフォールバック")
