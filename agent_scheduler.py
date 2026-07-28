@@ -70,6 +70,14 @@ except ImportError as _e:
     def update_vault_index():
         return f"Vault Semantic Index: tool_vault_index not available ({_vault_index_err})"
 
+# Activity Index (optional — Vault Semantic Index と同じ扱い)
+try:
+    from tools.tool_activity_index import update_activity_index
+except ImportError as _e:
+    _activity_index_err = str(_e)
+    def update_activity_index():
+        return f"Activity Index: tool_activity_index not available ({_activity_index_err})"
+
 # User Memory Distillation (optional)
 try:
     from tools.tool_user_memory import distill_daily_memory
@@ -375,6 +383,21 @@ SCHEDULE = [
         "time": "03:15",
         "name": "Vault Semantic Index",
         "func": update_vault_index,
+    },
+    # Activity Index (エージェントの行動ログを同じインデックスへ。Phase B)
+    #
+    # 03:25 にしてある理由は2つ:
+    #  1. 03:15 の Vault Index が埋め込みモデル/次元の整合を先に確定させる
+    #     (食い違うと Activity 側は書かずにエラーを返す設計)
+    #  2. **VRAM**。リランカ (qwen2.5-coder:7b・4.68GB) と bge-m3 (1.16GB) は
+    #     6GB GPU に同居できない。検索を打つと OLLAMA_KEEP_ALIVE (既定10分) の間
+    #     リランカが VRAM に居座るので、そこへ埋め込みバッチをぶつけると
+    #     互いに追い出し合って両方遅くなる。**遅くなるだけで動く**ので誰も
+    #     気付けない。検索が走らない深夜に寄せるのはこのため。
+    {
+        "time": "03:25",
+        "name": "Activity Index (行動ログ)",
+        "func": update_activity_index,
     },
     {
         "time": "23:30",

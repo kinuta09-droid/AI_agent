@@ -512,9 +512,12 @@ def _semantic_hits(query: str, top_k: int = 5,
 
     conn = _connect(db_path)
     try:
-        # source は末尾に足す: r[3] (embedding) など既存の位置参照を動かさない
+        # source は末尾に足す: r[3] (embedding) など既存の位置参照を動かさない。
+        # ORDER BY は「同点のときの順序」を行の物理配置から切り離すために要る
+        # (下の argsort と対で意味を持つ — 片方だけでは決定的にならない)。
         rows = conn.execute(
-            "SELECT filepath, heading, text, embedding, chunk_index, source FROM chunks"
+            "SELECT filepath, heading, text, embedding, chunk_index, source "
+            "FROM chunks ORDER BY filepath, chunk_index"
         ).fetchall()
     finally:
         conn.close()
@@ -528,7 +531,14 @@ def _semantic_hits(query: str, top_k: int = 5,
         return ("[ERROR] インデックスの埋め込み次元がクエリと一致しません。"
                 "update_vault_index() で再構築してください。")
     scores = matrix @ query_vec
-    top_indices = np.argsort(-scores)[:top_k]
+    # kind="stable" は必須。既定の quicksort は不安定なので、**同点のチャンクの
+    # 順序が配列の中身に依存する**。実際 Phase B で行動ログ 178 行を同じテーブルに
+    # 足したとき、無関係なはずの R03 (「使う人に合わせて賢くなるエージェント」) で
+    # スコアが完全同値 (0.5807) の2ノートが入れ替わり、それがリランカに渡す
+    # 候補の番号を1つずらして最終順位を 4位→7位 に落とした。
+    # 行が増えただけで既存の順位が動くのは、それ自体が欠陥。
+    # 上の ORDER BY と対で「行集合に依存しない決定的な順序」を作る。
+    top_indices = np.argsort(-scores, kind="stable")[:top_k]
 
     hits = []
     for i in top_indices:
