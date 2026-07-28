@@ -13,6 +13,18 @@ TOOL_ENTRIES の並び順は planner プロンプトの表示順そのもの(並
     attr        : module 内の属性名 (エイリアス用、例: tool_gmail_check → get_gmail_summary)
     func        : module の代わりに callable を直接指定 (lazy wrapper 用)
     optional    : True なら ImportError 時に警告してスキップ (calendar / semantic search)
+    parallel_safe : True なら fan-out (Phase C1) で他ステップと同時に実行してよい
+
+parallel_safe の判定基準 (opt-in・既定は逐次):
+    「他の parallel_safe ツールと同時に走らせても、副作用が壊れないこと」。
+    読み取り専用であることが実質の条件で、以下のどれかに当たるツールは付けない。
+      - ファイル/DB へ書き込む (Obsidian 保存・trade_log 追記・token.json 更新)
+      - 対話を要求しうる (OAuth の run_local_server)
+      - 外部の状態を変える (メール送信・カレンダー登録)
+    **付け忘れは安全側に倒れる** (逐次のまま) のに対し、誤って付けると
+    データ競合が黙って起きるので、既定を「付いていない」にしてある。
+    集合は tests/test_tool_registry.py がピン留めしているので、
+    足すときはテストも一緒に直すことになる (黙って増やせない)。
 """
 import importlib
 
@@ -92,13 +104,15 @@ def _tool_curate_wrapper() -> str:
 
 TOOL_ENTRIES = [
     {"name": "tool_web_search", "usage": "tool_web_search(query)", "description": "Web検索 (Tavily)",
-     "module": "tools.tool_web"},
+     "module": "tools.tool_web", "parallel_safe": True},
+    # SQLite は _connect() が呼び出し毎に開いて finally で閉じる (WAL・読み取りのみ)。
+    # Ollama を最大3回叩くが、そちらは lib.concurrency.ollama_slot が直列化する。
     {"name": "tool_vault_hybrid_search", "usage": "tool_vault_hybrid_search(query, top_k=5)", "description": "Vault内検索 (キーワード+意味検索のハイブリッド)。過去のメモ・ノート・文脈を探す場合は常にこれを使う",
-     "module": "tools.tool_vault_hybrid"},
+     "module": "tools.tool_vault_hybrid", "parallel_safe": True},
     {"name": "tool_create_note", "usage": "tool_create_note(filename, content, summary)", "description": "ファイル作成",
      "module": "tools.tool_obsidian"},
     {"name": "tool_read_note", "usage": "tool_read_note(filename)", "description": "ファイル読込",
-     "module": "tools.tool_obsidian"},
+     "module": "tools.tool_obsidian", "parallel_safe": True},
     # description は Planner の唯一のツール選択根拠。"追記" の2文字だった頃は
     # 「既存のデイリーノートに追記して」が tool_sync_to_daily_note (説明文に
     # 「デイリーノート」を含む) に語彙一致で奪われていた (eval T09・2026-07-28)。
@@ -106,7 +120,7 @@ TOOL_ENTRIES = [
      "description": "既存ノートの末尾にテキストを追記する（新規ファイルは作らない）。デイリーノート(YYYY-MM-DD.md)への任意の文章の追記もこれを使う",
      "module": "tools.tool_obsidian"},
     {"name": "tool_get_youtube_transcript", "usage": "tool_get_youtube_transcript(url='URL')", "description": "YouTube文字起こし取得",
-     "module": "tools.tool_web"},
+     "module": "tools.tool_web", "parallel_safe": True},
     {"name": "tool_merge_weekly_reports", "usage": "tool_merge_weekly_reports(source='30_Main')", "description": "指定フォルダの週次レポートをマージ・アーカイブ",
      "module": "tools.tool_obsidian"},
     {"name": "tool_merge_all_weekly_reports", "usage": "tool_merge_all_weekly_reports()", "description": "全日次フォルダ(30_Main/02_News/03_Crypto/40_Report/XTrend)を一括週次アーカイブ",
@@ -114,7 +128,7 @@ TOOL_ENTRIES = [
     {"name": "tool_fetch_daily_news", "usage": "tool_fetch_daily_news()", "description": "ニュース収集・編集・保存",
      "module": "tools.tool_web"},
     {"name": "tool_fetch_url", "usage": "tool_fetch_url(url)", "description": "Webページのテキスト取得",
-     "module": "tools.tool_web"},
+     "module": "tools.tool_web", "parallel_safe": True},
     {"name": "tool_analyze_crypto", "usage": "tool_analyze_crypto(symbol='BTC/USDT')", "description": "仮想通貨クオンツ分析",
      "module": "tools.tool_crypto"},
     {"name": "tool_scan_crypto_market", "usage": "tool_scan_crypto_market()", "description": "主要20銘柄一括スキャン",
@@ -130,7 +144,7 @@ TOOL_ENTRIES = [
     {"name": "tool_gmail_check", "usage": "tool_gmail_check(hours=12)", "description": "直近の重要メール要約（AIトリアージ + Obsidian保存）",
      "module": "tools.tool_gmail_manager", "attr": "get_gmail_summary"},
     {"name": "tool_fetch_context", "usage": "tool_fetch_context(filenames_comma_separated)", "description": "複数ファイルの文書をまとめて読み込む(カンマ区切り)",
-     "module": "tools.tool_obsidian"},
+     "module": "tools.tool_obsidian", "parallel_safe": True},
     {"name": "tool_move_note", "usage": "tool_move_note(old_filename, new_dir_or_filename)", "description": "ノートを別フォルダに移動・リネーム",
      "module": "tools.tool_obsidian"},
     {"name": "tool_refactor_note", "usage": "tool_refactor_note(filename, instructions)", "description": "指示に基づいて既存のノート全体の内容を再構築・上書きする",
@@ -144,14 +158,22 @@ TOOL_ENTRIES = [
     {"name": "tool_xtrend_prompt", "usage": "tool_xtrend_prompt(feature_index=1)", "description": "XTrend分析済み機能(1始まりの番号)のClaude Code実装指示書をGeminiで生成してlogsに保存",
      "func": _tool_xtrend_prompt_wrapper},
     # Calendar/Task (optional — 認証情報や依存パッケージ欠落時はスキップ)
+    # tool_get_calendar に parallel_safe を付けない理由 (取得系なのに例外扱い):
+    #   主経路は gws CLI だが、失敗時のフォールバック _tool_get_calendar_legacy →
+    #   _get_calendar_service() が (a) token.json を書き換え、
+    #   (b) 期限切れ時に InstalledAppFlow.run_local_server() でブラウザ認証を待つ。
+    #   ワーカースレッドでこれが起きると、無言でウェーブ全体が止まる。
+    #   「読み取りツールだから安全」は呼び出し口の名前で判断した結果であって、
+    #   実装を読んだ結果ではない。
     {"name": "tool_get_calendar", "usage": "tool_get_calendar(date='today', days=1)", "description": "Google Calendarから予定を取得",
      "module": "tools.tool_calendar", "optional": True},
     {"name": "tool_add_event", "usage": "tool_add_event(title, start_time, end_time='', description='')", "description": "Google Calendarに予定を追加",
      "module": "tools.tool_calendar", "optional": True},
     {"name": "tool_create_task", "usage": "tool_create_task(title, due_date='', priority=1, project='Inbox')", "description": "Todoistにタスクを追加",
      "module": "tools.tool_calendar", "optional": True},
+    # Todoist 側は認証がAPIキー1本 (トークンファイルの更新が無い) ので取得は純粋。
     {"name": "tool_get_tasks", "usage": "tool_get_tasks(filter='today')", "description": "Todoistからタスク一覧を取得",
-     "module": "tools.tool_calendar", "optional": True},
+     "module": "tools.tool_calendar", "optional": True, "parallel_safe": True},
     # 起動条件 (予定/タスクの同期) と非対象 (任意テキスト) の両方を書く。
     # tool_update_note 側に「デイリーノート」を書いた分、こちらの縄張りを
     # 明示しないと逆に同期要求を奪われる。
@@ -205,6 +227,20 @@ def get_tool_descriptions() -> dict:
     入れて初めて意味検索で引ける。
     """
     return {e["name"]: e["description"] for e in TOOL_ENTRIES}
+
+
+def get_parallel_safe_tools() -> frozenset:
+    """fan-out で同時実行してよいツール名の集合を返す。**ツールを import しない**。
+
+    get_tool_descriptions() と同じ理由でアクセサを分けている: 呼び出し元
+    (engine_plan_execute の計画走査) が欲しいのは名前だけで、callable の解決
+    (tools/* の全 import) の代償を払う理由がない。
+
+    optional なツールも含む: ここは「並列にしてよいか」の宣言であって
+    「今この環境で使えるか」ではない。使えるかどうかは get_tools_config() の
+    tools_map に居るかで決まり、居なければそもそも計画に現れない。
+    """
+    return frozenset(e["name"] for e in TOOL_ENTRIES if e.get("parallel_safe"))
 
 
 def get_tools_config():

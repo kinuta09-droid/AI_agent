@@ -50,6 +50,7 @@ import os
 import re
 import time
 
+from lib.concurrency import ollama_slot
 from lib.lib_obsidian_utils import format_source_ref
 from tools.tool_obsidian import _keyword_hits
 
@@ -354,11 +355,15 @@ def _call_ollama_llm(prompt: str, model: str = None, timeout: int = None,
     if no_think:
         payload["think"] = False
     try:
-        resp = requests.post(
-            f"{OLLAMA_BASE_URL}/api/generate",
-            json=payload,
-            timeout=timeout,
-        )
+        # Phase C0: 埋め込み (bge-m3) とこのモデルは同じ 6GB VRAM に同居できず、
+        # 同時に叩くとロードで追い出し合う。fan-out (Phase C1) が検索を
+        # 同時に走らせても、Ollama 部分だけは直列に保つ。
+        with ollama_slot():
+            resp = requests.post(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                json=payload,
+                timeout=timeout,
+            )
         resp.raise_for_status()
         raw = resp.json().get("response", "") or ""
     except requests.exceptions.ConnectionError:

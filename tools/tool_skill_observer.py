@@ -13,8 +13,19 @@ import os
 import json
 import time
 import datetime
+import threading
 
 LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs", "skill_observations.jsonl")
+
+# Phase C0: fan-out で observe() が同一プロセスの複数スレッドから同時に呼ばれる。
+# open(append) → write → close の間に別スレッドが割り込むと行が混ざりうるので、
+# 書き込みを直列化する。
+#
+# **プロセスをまたぐ重複は別の話**: 過去に同ファイルで起きた「同一秒の重複エントリ」は
+# Discord Bot が二重起動していた (= 別プロセスが2つ) のが原因で、lib.pid_guard の
+# 担当。このロックはそれを直さないし、直すつもりもない。
+# 今回**新たに**持ち込むプロセス内並列の分だけを塞ぐ。
+_WRITE_LOCK = threading.Lock()
 
 
 def _task_summary(kwargs: dict, max_len: int = 80) -> str:
@@ -41,8 +52,10 @@ def _write_log(tool_name: str, kwargs: dict, success: bool,
     }
     try:
         os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-        with open(LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
+        with _WRITE_LOCK:
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(line)
     except Exception:
         pass  # ログ失敗でエージェントを止めない
 

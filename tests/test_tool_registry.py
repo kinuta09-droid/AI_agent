@@ -57,6 +57,93 @@ def test_prompt_ordering():
     print("✅ registry: prompt ordering preserved")
 
 
+# ---------------------------------------------------------
+# Phase C0: parallel_safe の集合をピン留めする
+# ---------------------------------------------------------
+
+# fan-out で同時実行してよいツール。**新しいツールに黙って付けられない**ように
+# ここに書き写す形にしてある (付け忘れは逐次のまま＝安全、誤って付けると
+# データ競合が黙って起きる、という非対称性があるため)。
+# 足すときは lib/tool_registry.py の判定基準を読み、実装に書き込みが無いことを
+# 確かめてからこの集合を更新すること。
+EXPECTED_PARALLEL_SAFE = {
+    "tool_web_search",
+    "tool_vault_hybrid_search",
+    "tool_read_note",
+    "tool_get_youtube_transcript",
+    "tool_fetch_url",
+    "tool_fetch_context",
+    "tool_get_tasks",
+}
+
+# 逆方向の固定: 書き込み/対話を伴うのに parallel_safe が付いたら落とす。
+# 「集合が一致すること」だけだと、期待値の側を一緒に書き換えた変更が素通りする。
+MUST_NOT_BE_PARALLEL_SAFE = {
+    "tool_create_note", "tool_update_note", "tool_move_note", "tool_refactor_note",
+    "tool_merge_weekly_reports", "tool_merge_all_weekly_reports",
+    "tool_sync_to_daily_note", "tool_fetch_daily_news",
+    "tool_analyze_crypto", "tool_scan_crypto_market", "tool_audit_predictions",
+    "tool_crypto_stats",     # 03_Crypto にレポートを保存する
+    "tool_gmail_check",      # Obsidian へ保存する
+    "tool_get_calendar",     # token.json 更新 + OAuth の run_local_server
+    "tool_curate_topics", "tool_xtrend", "tool_xtrend_prompt",
+    "tool_future_search", "tool_browser_use", "tool_generate_briefing",
+    "tool_add_event", "tool_create_task",
+}
+
+
+def test_parallel_safe_set_is_pinned():
+    actual = set(registry.get_parallel_safe_tools())
+    assert actual == EXPECTED_PARALLEL_SAFE, (
+        f"parallel_safe の集合が変わった: 追加 {sorted(actual - EXPECTED_PARALLEL_SAFE)} / "
+        f"削除 {sorted(EXPECTED_PARALLEL_SAFE - actual)}"
+    )
+    print("✅ registry: parallel_safe set pinned")
+
+
+def test_write_tools_are_never_parallel_safe():
+    actual = set(registry.get_parallel_safe_tools())
+    violations = sorted(actual & MUST_NOT_BE_PARALLEL_SAFE)
+    assert not violations, f"副作用のあるツールに parallel_safe が付いている: {violations}"
+    print("✅ registry: side-effecting tools are not parallel_safe")
+
+
+def test_parallel_safe_covers_every_entry():
+    """許可/禁止のどちらにも載っていないツールが無いこと。
+
+    これが無いと、新しいツールを足した人がどちらのリストも触らずに済んでしまい、
+    「判断されていない」状態が黙って生まれる。
+    """
+    known = EXPECTED_PARALLEL_SAFE | MUST_NOT_BE_PARALLEL_SAFE
+    all_names = {e["name"] for e in registry.TOOL_ENTRIES}
+    unclassified = sorted(all_names - known)
+    assert not unclassified, (
+        f"並列可否が未分類のツール: {unclassified} — "
+        f"tests/test_tool_registry.py のどちらかの集合に足すこと"
+    )
+    print("✅ registry: every tool is classified for fan-out")
+
+
+def test_parallel_safe_accessor_does_not_import_tools():
+    """get_parallel_safe_tools() が tools/* を import しないこと。
+
+    get_tool_descriptions() と同じ契約。壊れると計画走査のたびに
+    Tavily/genai のクライアント初期化を引きずる。
+    """
+    import ast
+    src = os.path.join(_PROJECT_ROOT, "lib", "tool_registry.py")
+    with open(src, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    func = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "get_parallel_safe_tools")
+    calls = [n.func.id for n in ast.walk(func)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    assert "_build" not in calls and "get_tools_config" not in calls, (
+        f"get_parallel_safe_tools が callable 解決を呼んでいる: {calls}"
+    )
+    print("✅ registry: parallel_safe accessor stays import-free")
+
+
 def test_engine_delegation_and_react_removed():
     import engine_plan_execute as engine
     e_config, e_map = engine._get_tools_config()
