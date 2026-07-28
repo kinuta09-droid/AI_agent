@@ -19,6 +19,12 @@ import json
 import os
 import sys
 
+# 他のテストと同じく LEVEL 0 (このスクリプトの stdout だけ) で UTF-8 に寄せる。
+# これが無いと cp932 コンソールで ✅ の print 自体が UnicodeEncodeError になり、
+# **中身が全部通っていてもテストが落ちる** (2026-07-28 に実際に踏んだ)。
+# 落ちた理由が本物の不合格なのか文字化けなのか区別できないのが一番まずい。
+sys.stdout.reconfigure(encoding='utf-8')
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from lib.verifier import (  # noqa: E402
