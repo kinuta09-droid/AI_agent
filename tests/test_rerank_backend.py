@@ -366,6 +366,52 @@ def test_embed_device_follows_the_backend():
     print("✅ 連動: 埋め込みデバイスがリランクのバックエンドに追従する")
 
 
+def test_reasoning_model_options_are_opt_in():
+    """format スキーマ / think:false は既定 OFF で、env で入れられること。
+
+    2026-07-28 の実測で、この2つはモデルによって効果が正反対だった:
+      qwen3:4b  — 無しだと /no_think を無視して1万文字思考し137秒。
+                  スキーマ強制で 5.5秒に落ちる (ただし順位は素通しで無意味)
+      coder7b   — スキーマを付けても品質は同じ (0.8722) で 5.73→8.38秒と遅くなるだけ
+    採用モデル (coder7b) の実測条件を勝手に変えないよう既定は OFF。
+    """
+    saved = _save_env()
+    saved["VAULT_SEARCH_RERANK_JSON_SCHEMA"] = os.environ.get("VAULT_SEARCH_RERANK_JSON_SCHEMA")
+    saved["VAULT_SEARCH_RERANK_NO_THINK"] = os.environ.get("VAULT_SEARCH_RERANK_NO_THINK")
+    try:
+        for key in ("VAULT_SEARCH_RERANK_JSON_SCHEMA", "VAULT_SEARCH_RERANK_NO_THINK"):
+            os.environ.pop(key, None)
+
+        spy = _PostSpy(_FakeResponse({"response": "[1]"}))
+        with _patched_post(spy):
+            _call_ollama_llm("q")
+        body = spy.calls[0]["json"]
+        assert "format" not in body and "think" not in body, body
+
+        os.environ["VAULT_SEARCH_RERANK_JSON_SCHEMA"] = "1"
+        os.environ["VAULT_SEARCH_RERANK_NO_THINK"] = "1"
+        spy2 = _PostSpy(_FakeResponse({"response": "[1]"}))
+        with _patched_post(spy2):
+            _call_ollama_llm("q")
+        body2 = spy2.calls[0]["json"]
+        assert body2["format"] == hybrid.RERANK_JSON_SCHEMA, body2
+        assert body2["think"] is False, body2
+
+        # 明示引数は env より強い
+        spy3 = _PostSpy(_FakeResponse({"response": "[1]"}))
+        with _patched_post(spy3):
+            _call_ollama_llm("q", json_schema=False, no_think=False)
+        assert "format" not in spy3.calls[0]["json"], spy3.calls[0]["json"]
+        assert "think" not in spy3.calls[0]["json"], spy3.calls[0]["json"]
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    print("✅ options: format / think は既定 OFF・env と明示引数で入れられる")
+
+
 def test_embed_payload_carries_cpu_and_keep_alive():
     """prefer_cpu=True のとき num_gpu:0 と keep_alive が実際に送られること。
 

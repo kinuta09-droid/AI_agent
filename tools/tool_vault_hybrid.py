@@ -200,7 +200,15 @@ _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 _SPECIAL_TOKEN_RE = re.compile(r"<\|[^|>]+\|>")
 
 
-def _call_ollama_llm(prompt: str, model: str = None, timeout: int = None) -> str:
+# リランクの答えは「候補番号の配列」なので、対応モデルには構造を強制できる。
+# 効果は劇的で、qwen3:4b は思考の垂れ流しが止まって 143秒 → 5.5秒になった
+# (2026-07-28 実測)。ただし qwen2.5-coder:7b は同じ強制で [] を返したため、
+# 既定は OFF。モデルごとに実測して決める。
+RERANK_JSON_SCHEMA = {"type": "array", "items": {"type": "integer"}}
+
+
+def _call_ollama_llm(prompt: str, model: str = None, timeout: int = None,
+                     json_schema=None, no_think: bool = None) -> str:
     """ローカル Ollama を1回呼んで生テキストを返す。
 
     tool_future_search._call_ollama を再利用しない理由:
@@ -221,16 +229,28 @@ def _call_ollama_llm(prompt: str, model: str = None, timeout: int = None) -> str
 
     model = model or os.getenv("VAULT_SEARCH_RERANK_OLLAMA_MODEL") or RERANK_OLLAMA_MODEL
     timeout = timeout or RERANK_OLLAMA_TIMEOUT
+    if json_schema is None and _enabled("VAULT_SEARCH_RERANK_JSON_SCHEMA", None, default=False):
+        json_schema = RERANK_JSON_SCHEMA
+    if no_think is None:
+        no_think = _enabled("VAULT_SEARCH_RERANK_NO_THINK", None, default=False)
+
+    # /no_think 前置: 旧 Qwen3 系 (1.7b 等) の thinking を止める。
+    # ただし新世代の qwen3:4b/8b はこの前置を**無視して**1万文字以上思考し、
+    # 137秒かけて空配列を返した (2026-07-28 実測)。あちらには API の
+    # think=false と format スキーマが要る。
+    # keep_alive: モデルの再ロードがレイテンシの主因 (実測 +3.9秒/回)。
+    # 埋め込みを CPU に逃がす (VAULT_QUERY_EMBED_DEVICE=cpu) と併せて
+    # 初めて VRAM に居座れる。
+    payload = {"model": model, "prompt": "/no_think\n\n" + prompt, "stream": False,
+               "options": {"temperature": 0}, "keep_alive": OLLAMA_KEEP_ALIVE}
+    if json_schema:
+        payload["format"] = json_schema
+    if no_think:
+        payload["think"] = False
     try:
         resp = requests.post(
             f"{OLLAMA_BASE_URL}/api/generate",
-            # /no_think: Qwen3 の thinking を止める。思考させると
-            # 数千トークン吐いてタイムアウトし、リランクが常時フォールバックする。
-            # keep_alive: モデルの再ロードがレイテンシの主因 (実測 +3.9秒/回)。
-            # 埋め込みを CPU に逃がす (VAULT_QUERY_EMBED_DEVICE=cpu) と併せて
-            # 初めて VRAM に居座れる。
-            json={"model": model, "prompt": "/no_think\n\n" + prompt, "stream": False,
-                  "options": {"temperature": 0}, "keep_alive": OLLAMA_KEEP_ALIVE},
+            json=payload,
             timeout=timeout,
         )
         resp.raise_for_status()
