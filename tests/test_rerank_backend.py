@@ -237,7 +237,7 @@ def test_failure_reason_reaches_the_note():
         cands = [_cand("a.md", 0.03), _cand("b.md", 0.02)]
         spy = _PostSpy(raises=requests.exceptions.ConnectionError("refused"))
         with _patched_post(spy):
-            ordered, note = _llm_rerank("質問", cands, enabled=True)
+            ordered, note, _verdict = _llm_rerank("質問", cands, enabled=True)
 
         assert [h["rel_path"] for h in ordered] == ["a.md", "b.md"], ordered
         assert "ollama" in note, note
@@ -287,7 +287,7 @@ def test_rerank_off_never_calls_any_backend():
             spy = _PostSpy(_FakeResponse({"response": "[1]"}))
             with _patched_post(spy):
                 cands = [_cand("a.md", 0.03)]
-                ordered, note = _llm_rerank("質問", cands)
+                ordered, note, _verdict = _llm_rerank("質問", cands)
             assert spy.calls == [], f"{backend}: OFF なのに呼ばれた"
             assert note == "", note
     finally:

@@ -137,7 +137,7 @@ def warmup(backend: str, model: str) -> None:
 
 
 def run(questions: list, multiquery: bool, rerank: bool, only: str = "",
-        rerank_backend: str = None) -> list:
+        rerank_backend: str = None, loop: bool = None) -> list:
     results = []
     for q in questions:
         if only and q["id"] not in {s.strip() for s in only.split(",")}:
@@ -145,7 +145,7 @@ def run(questions: list, multiquery: bool, rerank: bool, only: str = "",
         started = time.time()
         hits, notes, queries = _hybrid_hits(
             q["query"], top_k=RETRIEVE_K, multiquery=multiquery, rerank=rerank,
-            rerank_backend=rerank_backend)
+            rerank_backend=rerank_backend, loop=loop)
         elapsed = time.time() - started
 
         got = [h["rel_path"] for h in hits]
@@ -161,12 +161,18 @@ def run(questions: list, multiquery: bool, rerank: bool, only: str = "",
             ],
             "rank": rank,
             "queries_used": queries,
+            # Retriever ループの周回数 (1 = 引き直していない)。ループはクエリを
+            # 1本ずつ足すので len(queries) がそのまま周回数になるが、multiquery が
+            # ON だと初期変種と区別が付かないので None (計測不能) にする。
+            # 数字を出せない条件で 1 を書くと「発火していない」と読み違える。
+            "retriever_iterations": len(queries) if not multiquery else None,
             "notes": notes,
             "latency_sec": round(elapsed, 2),
         })
         mark = "✅" if (rank and rank <= HIT_K) else "❌"
+        loop_mark = "" if multiquery or len(queries) == 1 else f" 🔁{len(queries)}周"
         print(f"  {mark} {q['id']} rank={rank if rank else '-'} "
-              f"({elapsed:.1f}s, {len(queries)}クエリ) {q['query'][:34]}")
+              f"({elapsed:.1f}s, {len(queries)}クエリ{loop_mark}) {q['query'][:34]}")
         if notes:
             for note in notes:
                 print(f"       ⚠️ {note[:110]}")
@@ -185,7 +191,8 @@ def is_clean_arm(config: dict, results: list) -> bool:
     それを普通の数値として出すと、このプロジェクトが繰り返し踏んできた
     「表示と実態の食い違い」そのものになるので、計測の汚染をフラグで持ち回る。
     """
-    requested = config.get("multiquery") or config.get("rerank")
+    requested = (config.get("multiquery") or config.get("rerank")
+                 or config.get("loop"))
     if not requested:
         return True  # OFF アームはフォールバックしようがない
     return not any(r["notes"] for r in results)
@@ -221,7 +228,8 @@ def compare(before: dict, after: dict) -> str:
     b_cfg, a_cfg = before.get("config", {}), after.get("config", {})
 
     def _describe(cfg, payload):
-        parts = [f"multiquery={cfg.get('multiquery')}", f"rerank={cfg.get('rerank')}"]
+        parts = [f"multiquery={cfg.get('multiquery')}", f"rerank={cfg.get('rerank')}",
+                 f"loop={cfg.get('loop')}"]
         if cfg.get("rerank"):
             parts.append(f"backend={cfg.get('rerank_backend') or '?'}")
             if cfg.get("rerank_model"):
@@ -282,6 +290,8 @@ def main() -> int:
                         help="クエリ書き換えの有無 (.env より優先)")
     parser.add_argument("--rerank", default="on", choices=["on", "off"],
                         help="LLMリランクの有無 (.env より優先)")
+    parser.add_argument("--loop", default="on", choices=["on", "off"],
+                        help="Retriever ループ (薄い結果を自力で引き直す) の有無")
     parser.add_argument("--rerank-backend", default="", choices=["", "gemini", "ollama"],
                         help="リランクを回す場所 (未指定は .env / コード既定)")
     parser.add_argument("--rerank-model", default="",
@@ -299,6 +309,10 @@ def main() -> int:
     from tools import tool_vault_hybrid as hybrid
 
     multiquery, rerank = _flag(args.multiquery), _flag(args.rerank)
+    # ループは LLM を使う機能なのでリランクOFFでは動かない (_retrieve_loop 参照)。
+    # --rerank off --loop on を黙って「loop=on」と記録すると、効いていない施策を
+    # ONとして比較表に残すことになる。実際に効く条件まで解決してから記録する。
+    loop = _flag(args.loop) and rerank
     # 実際に使われる値まで解決してから記録する。"未指定" のまま JSON に残すと
     # 後で「どの条件で出た数字か」を復元できず、比較表が意味を失う。
     backend = (args.rerank_backend
@@ -322,7 +336,10 @@ def main() -> int:
 
     print("=" * 62)
     print(f" 検索評価: multiquery={'ON' if multiquery else 'OFF'} / "
-          f"rerank={'ON' if rerank else 'OFF'} / {len(questions)}問")
+          f"rerank={'ON' if rerank else 'OFF'} / "
+          f"loop={'ON' if loop else 'OFF'} / {len(questions)}問")
+    if _flag(args.loop) and not rerank:
+        print(" ⚠️ --loop on を指定しましたが、リランクOFFではループは動きません (loop=OFF として記録)")
     if rerank:
         print(f" リランク: backend={backend}"
               + (f" model={model}" if model else "")
@@ -344,10 +361,10 @@ def main() -> int:
 
     started = time.time()
     results = run(questions, multiquery, rerank, only=args.only,
-                  rerank_backend=backend if rerank else None)
+                  rerank_backend=backend if rerank else None, loop=loop)
     metrics = score(results)
 
-    config = {"multiquery": multiquery, "rerank": rerank,
+    config = {"multiquery": multiquery, "rerank": rerank, "loop": loop,
               "rerank_backend": backend if rerank else None,
               "rerank_model": model or None,
               "rerank_candidates": n_cand, "rerank_snippet_chars": n_chars,
@@ -371,6 +388,11 @@ def main() -> int:
     print(f" Hit@{HIT_K}  : {metrics[f'hit@{HIT_K}']}  ({metrics['hits']}/{metrics['total']})")
     print(f" MRR@{MRR_K} : {metrics[f'mrr@{MRR_K}']}")
     print(f" 平均秒   : {metrics['mean_latency_sec']}  (総 {time.time() - started:.1f}s)")
+    iters = [r["retriever_iterations"] for r in results
+             if r["retriever_iterations"] is not None]
+    if iters:
+        fired = sum(1 for n in iters if n > 1)
+        print(f" 引き直し : {fired}/{len(iters)}問 (発火しなかった問は 1周のまま)")
     print(f" 劣化あり : {metrics['degraded']}問")
     print(f" → {out_path}")
 

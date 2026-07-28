@@ -16,6 +16,13 @@ Phase A2 で3段重ねた:
   3. 出典 (chunk_id 貫通) — 出力を [[ファイル名#見出し]] にする。これが無いと
      回答が正しいかをユーザーが検証できない。
 
+Phase D1 で4段目を足した:
+  4. Retriever ループ — 結果が薄いときだけクエリを変えて自力で引き直す。**既定 ON**。
+     十分性の判定はリランク呼び出しに相乗りさせるので、発火しない検索の
+     コストはゼロ (RETRIEVER_LOOP_DEFAULT のコメント参照)。
+     実測: 既存15問 Hit@5 0.9333→1.0 / MRR@10 0.8651→0.90、
+     第2セット16問 MRR@10 0.6875→0.7292。代償は平均 +4秒 (3〜4割の問で発火)。
+
 いずれも **失敗したら黙って元の挙動に戻る** (例外を投げない) が、
 戻った理由は必ず戻り値と stdout の両方に残す。無言で劣化すると
 「壊れていても誰も気付けない」状態になる (CLAUDE.md /curate の教訓)。
@@ -31,6 +38,8 @@ import するため、同居させると numpy 欠落環境で検索ツールが
   VAULT_SEARCH_RERANK_OLLAMA_MODEL — ollama のときのモデル名
   VAULT_SEARCH_RERANK_CANDIDATES   — リランクに渡す件数 (速度/精度の調整用)
   VAULT_SEARCH_RERANK_SNIPPET_CHARS — 1候補あたりのスニペット長 (同上)
+  VAULT_SEARCH_RETRIEVER_LOOP=0    — 薄い結果の引き直しを止める (既定 ON)。
+                                     リランクOFF のときは無関係 (ループも走らない)
 
 コスト: backend=gemini のときリランク1回につき Light Gemini を1回叩く
 (cost_guard の日次上限を共有する)。backend=ollama なら課金ゼロ。
@@ -39,6 +48,7 @@ import するため、同居させると numpy 欠落環境で検索ツールが
 import json
 import os
 import re
+import time
 
 from lib.lib_obsidian_utils import format_source_ref
 from tools.tool_obsidian import _keyword_hits
@@ -107,6 +117,43 @@ RERANK_SNIPPET_CHARS = 600
 
 
 # ---------------------------------------------------------
+# Phase D1: Retriever Agent (適応リトライループ) の予算
+# ---------------------------------------------------------
+#
+# 「1回検索して薄くてもそのまま次へ」という構造的な穴を、検索ツールの内側で塞ぐ。
+#
+# **レジストリに新ツールを足さない理由**: Planner のツール選択根拠は description
+# だけなので、検索ツールが2つ並ぶと語彙の近い方に奪われる (tool_update_note が
+# tool_sync_to_daily_note に奪われた eval T09 と同じ構造)。ループを既存ツールの
+# 内側に置けば、レジストリ・Planner・既存の評価ベースラインを一切触らずに済む。
+#
+# **十分性の判定はリランク呼び出しに相乗りさせる** (_RERANK_PROMPT 参照):
+# リランカは既に「質問 + 上位候補の本文」を読んでいるので、判定行を1行足す分の
+# 追加コストはゼロ。素直に「検索→十分か判定→書き換え→再検索」と書くと
+# ローカル7B (1回約8秒) の呼び出しが毎回増え、**うまくいっている検索まで遅くなる**。
+RETRIEVER_LOOP_DEFAULT = True
+# 追加で回れる周回数。2 = 最大1回だけ引き直す。
+RETRIEVER_MAX_ITERS = 2
+# 1検索あたりの LLM 呼び出し上限 (リランク2 + 書き換え1 + 余裕1)。
+RETRIEVER_MAX_LLM_CALLS = 4
+# 経過時間の打ち切り。/agent は対話的なので、7B を4回まで回すと体感で許容外になる。
+RETRIEVER_DEADLINE_SEC = 45
+
+# 十分性判定を **LLM 不要の条件で打ち消す** ための閾値。
+#
+# 実測 (15問・2026-07-28): リランカの SUFFICIENT 判定は出やすすぎた。
+# 6〜7/15 で no を返し、そのうち R09/R10/R15 は **正解が既に1位** だったので
+# 1問あたり約13秒を捨てていた。プロンプトで「yes を既定に」と縛ると今度は
+# 0/15 になり (判定が二値的に振れる)、文言調整では中間が作れなかった。
+#
+# そこで「RRF (キーワード+意味検索の融合) とリランカが**独立に同じ文書を1位に
+# 選んだ**」を確信の代理にする。2つのランカーが一致しているなら、判定が no でも
+# 引き直さない。R03 のように正解が RRF 7位に沈んでいた問では一致しないので、
+# 効いてほしい場面は残る。
+RETRIEVER_MIN_PICKED = 2
+
+
+# ---------------------------------------------------------
 # 設定・LLM 呼び出し
 # ---------------------------------------------------------
 
@@ -168,6 +215,65 @@ def _parse_json_array(raw) -> list:
         if isinstance(parsed, list):
             return parsed
     return []
+
+
+# リランク応答に相乗りさせる十分性の判定行。
+# 全角コロンも許すのは、日本語プロンプトに答えるモデルが素で「SUFFICIENT： no」と
+# 書くことがあるため (判定が読めないと安全側=十分に倒れ、ループが黙って死ぬ)。
+_SUFFICIENT_RE = re.compile(r"^[\s>*-]*SUFFICIENT\s*[:：]\s*(\S+)", re.MULTILINE | re.IGNORECASE)
+_MISSING_RE = re.compile(r"^[\s>*-]*MISSING\s*[:：]\s*(.+)$", re.MULTILINE | re.IGNORECASE)
+_AFFIRMATIVE = ("yes", "true", "y", "ok", "sufficient", "十分", "はい")
+_NEGATIVE = ("no", "false", "n", "insufficient", "不十分", "いいえ")
+
+
+def _split_verdict(raw: str):
+    """リランク応答を「番号配列の領域」と「判定行の領域」に切り分ける。
+
+    Returns:
+        (array_part, verdict_part) — SUFFICIENT 行が無ければ (raw, "")。
+
+    切り分けてから配列を抜く理由:
+      _parse_json_array は非貪欲マッチを **後ろから** 優先する (前置きの [1] より
+      末尾の本命 [1, 3] を採りたいため)。判定行の MISSING に角括弧が混ざると
+      ―「MISSING: [重要]な条文名」― そちらを候補配列として拾ってしまう。
+      配列は必ず判定行より前に出させる仕様なので、SUFFICIENT 行から後ろを
+      切り落としてから渡せばこの経路自体が消える。
+    """
+    if not isinstance(raw, str):
+        return "", ""
+    m = _SUFFICIENT_RE.search(raw)
+    if not m:
+        return raw, ""
+    return raw[:m.start()], raw[m.start():]
+
+
+def _parse_sufficiency(raw: str):
+    """判定行から (sufficient, missing) を取り出す。
+
+    Returns:
+        sufficient は True / False / **None (判定行が無い・語彙が読めない)**。
+        missing は不足内容の文字列 ("" もありうる)。
+
+    None を False (=引き直す) に倒さない理由:
+      判定行はリランカへの後付けの要求であり、モデルが従うとは限らない。
+      読めなかったときに引き直すと、**判定できていないだけの検索を毎回2周**して
+      黙って倍遅くなる。読めない = 旧挙動 (1周で返す) に縮退させ、
+      「判定行が読めなかった」事実は notes に残して気付けるようにする。
+    """
+    _, verdict_part = _split_verdict(raw)
+    if not verdict_part:
+        return None, ""
+    m = _SUFFICIENT_RE.search(verdict_part)
+    token = (m.group(1) if m else "").strip().strip('.,;:"\'`').lower()
+    if any(token.startswith(a) for a in _AFFIRMATIVE):
+        sufficient = True
+    elif any(token.startswith(n) for n in _NEGATIVE):
+        sufficient = False
+    else:
+        sufficient = None
+    missing_match = _MISSING_RE.search(verdict_part)
+    missing = missing_match.group(1).strip() if missing_match else ""
+    return sufficient, missing
 
 
 def _env_int(name: str, default: int) -> int:
@@ -372,7 +478,15 @@ _RERANK_PROMPT = """あなたは検索結果の適合性を判定する係です
 - 明らかに無関係な候補は含めない (全部並べる必要はない)
 - 番号は候補に実在するものだけを使う。説明・コードブロックは書かない
 
-出力例: [3, 1, 7]"""
+出力例: [3, 1, 7]
+
+配列を出力したら、改行して次の行に判定を1行だけ足してください
+(候補全体で質問に答えきれるなら yes、情報が足りないなら no):
+SUFFICIENT: yes
+
+no のときだけ、さらに次の行に不足している情報を10〜30字で書いてください
+(質問の言い換えではなく、**候補に載っていなかった情報**):
+MISSING: 導入コストの具体的な金額"""
 
 
 def _format_rerank_candidates(candidates: list) -> str:
@@ -398,22 +512,27 @@ def _format_rerank_candidates(candidates: list) -> str:
 
 
 def _llm_rerank(query: str, candidates: list, llm_fn=None, enabled=None, backend=None):
-    """RRF 上位候補を LLM の判断で並べ替える。
+    """RRF 上位候補を LLM の判断で並べ替え、候補全体の十分性も受け取る。
 
     Returns:
-        (ordered, note) — ordered は candidates の並べ替え。note は "" か理由文字列。
+        (ordered, note, verdict) — ordered は candidates の並べ替え。note は ""
+        か理由文字列。verdict は (sufficient, missing) で、sufficient は
+        True / False / None (判定不能・リランクOFF・フォールバック)。
 
     **足切りではなく並べ替え**である点が重要: LLM が挙げなかった候補は捨てず、
     RRF 順のまま末尾に連結する。LLM は再現性が無いので、選から漏れた=無関係とは
     断定できない。捨ててよいのは top_k による打ち切りだけ。
+
+    十分性をここで取るのは、リランカが既に「質問 + 上位候補の本文」を読んでいて
+    追加の LLM 呼び出しが要らないから (_RERANK_PROMPT のコメント参照)。
     """
     if not candidates:
-        return candidates, ""
+        return candidates, "", (None, "")
     if not _enabled("VAULT_SEARCH_RERANK", enabled, default=RERANK_DEFAULT):
         # OFF は既知の設定なのでログのみ。note は事故 (フォールバック) 専用
         # — _expand_queries の docstring 参照。
         print("[Hybrid] LLMリランクは無効 (VAULT_SEARCH_RERANK=0)")
-        return candidates, ""
+        return candidates, "", (None, "")
 
     if llm_fn is None:
         llm_fn, backend_name = _resolve_rerank_llm(backend)
@@ -423,11 +542,14 @@ def _llm_rerank(query: str, candidates: list, llm_fn=None, enabled=None, backend
     try:
         prompt = _RERANK_PROMPT.format(
             query=str(query).strip(), candidates=_format_rerank_candidates(candidates))
-        order = _parse_json_array(llm_fn(prompt))
+        raw = llm_fn(prompt)
+        array_part, _ = _split_verdict(raw)
+        order = _parse_json_array(array_part)
+        verdict = _parse_sufficiency(raw)
     except Exception as e:
         print(f"[Hybrid] ⚠️ LLMリランク({backend_name})に失敗、RRF順のまま返します: {e}")
         return candidates, (f"LLMリランク({backend_name}): "
-                            f"フォールバック ({type(e).__name__}: {e})")
+                            f"フォールバック ({type(e).__name__}: {e})"), (None, "")
 
     picked = []
     seen = set()
@@ -443,10 +565,12 @@ def _llm_rerank(query: str, candidates: list, llm_fn=None, enabled=None, backend
 
     if not picked:
         print("[Hybrid] ⚠️ LLMリランクが有効な番号を返しませんでした、RRF順のまま返します")
-        return candidates, f"LLMリランク({backend_name}): フォールバック (有効な番号が0件)"
+        return (candidates,
+                f"LLMリランク({backend_name}): フォールバック (有効な番号が0件)",
+                (None, ""))
 
     rest = [h for i, h in enumerate(candidates) if i not in seen]
-    return picked + rest, ""
+    return picked + rest, "", verdict
 
 
 # ---------------------------------------------------------
@@ -484,8 +608,12 @@ def _resolve_activity_keyword_fn(activity_keyword_fn):
 
 
 def _rank_lists(queries: list, keyword_fn, semantic_fn, per_query_k: int,
-                activity_keyword_fn=None):
+                activity_keyword_fn=None, qi_offset: int = 0):
     """各クエリ変種について (origin, query_index, ランク済みヒット列) を列挙する。
+
+    qi_offset は Retriever ループの2周目用。query_ids は「何本目のクエリで
+    引けたか」を表示する値なので、2周目のクエリを 1 から数え直すと
+    1周目の q1 と区別が付かなくなる。
 
     origin は「どの経路が見つけたか」("keyword" / "semantic" / "activity")。
     ドキュメント自体の出所 (vault / crypto / agent_exec …) は各ヒットの
@@ -505,7 +633,7 @@ def _rank_lists(queries: list, keyword_fn, semantic_fn, per_query_k: int,
     rank_lists = []
     semantic_error = ""
     activity_error = ""
-    for qi, q in enumerate(queries, start=1):
+    for qi, q in enumerate(queries, start=1 + qi_offset):
         rank_lists.append(("keyword", qi, sorted(keyword_fn(q), key=lambda h: -h["score"])))
 
         if activity_keyword_fn is not None:
@@ -599,12 +727,258 @@ def _fuse(rank_lists: list) -> list:
 
 
 # ---------------------------------------------------------
+# Phase D1: Retriever Agent (適応リトライループ)
+# ---------------------------------------------------------
+
+_REWRITE_PROMPT = """あなたは個人のObsidianノート(日本語)を検索する係です。
+一度検索しましたが、必要な情報が見つかりませんでした。引き直します。
+
+【元の質問】
+{query}
+
+【すでに試したクエリ】
+{tried}
+
+【1回目の検索で足りなかったもの】
+{missing}
+
+足りなかったものを埋めるための**検索クエリを1本**作ってください。
+
+規則:
+- すでに試したクエリと同じ語の組み合わせにしない
+- ノート本文に実際に書かれていそうな語を使う (質問文の言い換えにしない)
+- 半角スペース区切りの単語2〜5個。文章にしない
+- 表記ゆれを変えてみる (英語表記・カタカナ・略語・固有名詞)
+
+出力は説明なしのJSON配列のみ (1要素):
+["クエリ"]"""
+
+
+def _rewrite_query(query: str, missing: str, tried: list, llm_fn=None, backend=None):
+    """引き直し用のクエリを1本作る。
+
+    Returns:
+        (new_query, note) — 作れなければ ("", 理由)。
+
+    multi-query (並列の変種展開) と別物である点が重要:
+      あちらは実測で有害と分かって既定 OFF になっている (RRF が変種ごとに
+      独立して加点するため、全変種に薄く当たる汎用ノートが本命を押し下げる)。
+      こちらは **逐次かつ条件付き** で、しかも「1回目に何が足りなかったか」を
+      知った上で書く。融合方法も違う (_retrieve_loop のコメント参照)。
+    """
+    if llm_fn is None:
+        llm_fn, _ = _resolve_rerank_llm(backend)
+    prompt = _REWRITE_PROMPT.format(
+        query=str(query).strip(),
+        tried="\n".join(f"- {t}" for t in tried) or "- (なし)",
+        missing=missing.strip() or "(判定なし。別の切り口で引き直す)")
+    try:
+        variants = [str(v).strip() for v in _parse_json_array(llm_fn(prompt))]
+    except Exception as e:
+        return "", f"検索の引き直し: 中止 ({type(e).__name__}: {e})"
+
+    tried_norm = {t.strip() for t in tried}
+    for v in variants:
+        if v and v not in tried_norm:
+            return v, ""
+    return "", "検索の引き直し: 中止 (新しいクエリが得られませんでした)"
+
+
+def _retrieve_once(queries: list, keyword_fn, semantic_fn, activity_keyword_fn,
+                   per_query_k: int, qi_offset: int = 0):
+    """1周分の検索。ランクリスト収集 → RRF 融合まで (リランクは含まない)。
+
+    Returns: (hits, semantic_error, activity_error)
+    """
+    rank_lists, semantic_error, activity_error = _rank_lists(
+        queries, keyword_fn, semantic_fn, per_query_k=per_query_k,
+        activity_keyword_fn=activity_keyword_fn, qi_offset=qi_offset)
+    return _fuse(rank_lists), semantic_error, activity_error
+
+
+def _looks_solid(rrf_ordered: list, reranked: list,
+                 min_picked: int = RETRIEVER_MIN_PICKED) -> bool:
+    """LLM を使わずに「もう引き直さなくてよい」と言い切れるか。
+
+    条件は2つとも満たすこと:
+      1. リランカが min_picked 件以上を「質問に答えている」として選んだ
+         (1件も選べない/1件だけは、候補集合が薄い兆候)
+      2. RRF の1位とリランカの1位が **同じ文書** — 語彙一致 + 意味検索の融合と、
+         本文を読んだ LLM が独立に同じ結論に達した状態
+
+    なぜ確信の代理になるか: 2つのランカーは入力も原理も違う (片方は語の一致と
+    埋め込み距離、もう片方は本文の読解)。それが1位で一致するのは、
+    「たまたま上位に来た」では説明しにくい。逆に正解が RRF 下位に沈んでいる問
+    (R03 は7位だった) では一致しないので、引き直しが要る場面は素通りしない。
+
+    これは**判定を上書きする**ので、リランカが no と言っても引き直さない。
+    リランカの no は実測で出やすすぎ、既に正解が1位の問でも出ていた
+    (RETRIEVER_MIN_PICKED のコメント参照)。
+    """
+    if not rrf_ordered or not reranked:
+        return False
+    picked = [h for h in reranked if h.get("rerank_pos")]
+    if len(picked) < min_picked:
+        return False
+    return reranked[0]["rel_path"] == rrf_ordered[0]["rel_path"]
+
+
+def _should_retry(hits: list, verdict, solid: bool = False) -> bool:
+    """引き直すべきか。
+
+    - ヒット0件: リランクの有無に関係なく成立する決定的な合図 (LLM不要)。
+      solid より優先する — 0件は「一致も何もない」状態
+    - solid (_looks_solid): LLM 判定を打ち消して引き直さない
+    - リランカの十分性判定が no: 候補本文を読んだ上での「答えきれない」
+
+    sufficient が None (判定行なし・読めない・リランクOFF) は **引き直さない**。
+    _parse_sufficiency の docstring 参照 — 判定できていないだけの検索を
+    毎回2周させると、黙って倍遅くなる。
+    """
+    if not hits:
+        return True
+    if solid:
+        return False
+    sufficient, _ = verdict
+    return sufficient is False
+
+
+def _merge_new_hits(base: list, extra: list) -> list:
+    """2周目のヒットを1周目の候補集合に追記する (RRF 融合はしない)。
+
+    **RRF で融合し直さない理由**: multi-query が実測で悪化させたのは
+    「変種ごとに独立して加点する」構造そのもの (定数コメントの表を参照)。
+    2周目のスコアを足すと同じ構造を作り直してしまい、全クエリに薄く当たる
+    汎用ノートが本命を押し下げる。1周目の順位はそのまま保ち、まだ見ていない
+    rel_path だけを末尾に足す。最終的な順位付けはこの後のリランク1回に任せる。
+
+    融合キーが rel_path なのは _fuse と同じ (キーワード検索はチャンクを知らない
+    ので chunk_id は None がありうる)。
+
+    既出の rel_path については **rrf は据え置いたまま query_ids / sources だけ
+    合流させる**。スコアを足さないのが上記の要点だが、「2周目でも見つかった」
+    という事実まで捨てると出力の `q1/2` や `kw+sem` が実態より小さく出る
+    (このプロジェクトが繰り返し踏んできた「表示と実態の食い違い」)。
+    """
+    by_path = {h["rel_path"]: h for h in base}
+    merged = list(base)
+    for h in extra:
+        known = by_path.get(h["rel_path"])
+        if known is None:
+            by_path[h["rel_path"]] = h
+            merged.append(h)
+            continue
+        known["query_ids"] = sorted(set(known.get("query_ids") or [])
+                                    | set(h.get("query_ids") or []))
+        known["sources"] = sorted(set(known.get("sources") or [])
+                                  | set(h.get("sources") or []))
+    return merged
+
+
+def _retrieve_loop(query, reranked, verdict, queries, started,
+                   keyword_fn, semantic_fn, activity_keyword_fn, llm_fn,
+                   rerank, rerank_backend, per_query_k, n_cand, loop=None,
+                   rrf_order=None):
+    """薄い検索結果を、クエリを変えて自力で引き直す。
+
+    Returns:
+        (reranked, notes, queries) — 引き直さなかった場合は入力をそのまま返す。
+
+    **観測の出し分け** (ここを間違えると計測が嘘になる):
+      - 実際に引き直したクエリ → queries に足す。ツール出力の「🔎 検索クエリ」と
+        scripts/eval_retrieval.py の queries_used に自動で乗る通常の記録
+      - 締切超過・書き換え失敗・リランクのフォールバック → notes に足す。
+        実行時にしか起きない事故で、eval_retrieval.is_clean_arm が
+        アームを汚染扱いにするべきもの
+      - 周回数の上限・LLM 呼び出し上限 → **stdout だけ**。これらは固定の設計値で
+        毎回同じ理由で止まるため、note に出しても診断情報が増えない。
+        出すと「答えが Vault に無い問」まで汚染扱いになり ⛔ が出てしまう
+        (tests/test_retriever_loop.py [8] が固定している)
+    """
+    notes = []
+    if not _enabled("VAULT_SEARCH_RETRIEVER_LOOP", loop,
+                    default=RETRIEVER_LOOP_DEFAULT):
+        print("[Hybrid] Retrieverループは無効 (VAULT_SEARCH_RETRIEVER_LOOP=0)")
+        return reranked, notes, queries
+
+    # ループ全体をリランクのフラグに従わせる。ループは LLM を使う機能なので、
+    # 「検索に LLM を使わない」と設定した人が、引き直しでだけ LLM を叩かれるのは
+    # 筋が通らない (リランクOFFで測るベースラインのアームも汚れる)。
+    # 既定はリランクON なので、本番では常にループが効く。
+    if not _enabled("VAULT_SEARCH_RERANK", rerank, default=RERANK_DEFAULT):
+        print("[Hybrid] Retrieverループは行いません (リランクOFF)")
+        return reranked, notes, queries
+
+    llm_calls = 1
+    iterations = 1
+    rrf_order = rrf_order if rrf_order is not None else reranked
+    while _should_retry(reranked, verdict, _looks_solid(rrf_order, reranked)):
+        # 上限・周回数は**固定の設計値**なので stdout だけに出す。毎回同じ理由で
+        # 止まるものを note に出しても診断情報が増えず、eval_retrieval の
+        # is_clean_arm が「答えが Vault に無い問」を汚染扱いにしてしまう。
+        # 締切だけは note に出す — あれは実行時の遅さという毎回変わる事故で、
+        # 「引き直したかったのに時間切れで諦めた」は気付けないと困る。
+        if iterations >= RETRIEVER_MAX_ITERS:
+            print(f"[Hybrid] Retrieverループ: 打ち切り (最大{RETRIEVER_MAX_ITERS}周)")
+            break
+        # 引き直しには書き換え1回 + リランク1回が要る。足りないなら始めない
+        # (途中で切れると、引き直したのに順位付けだけ古い状態になる)。
+        if llm_calls + 2 > RETRIEVER_MAX_LLM_CALLS:
+            print(f"[Hybrid] Retrieverループ: 打ち切り (LLM上限{RETRIEVER_MAX_LLM_CALLS}回)")
+            break
+        elapsed = time.time() - started
+        if elapsed >= RETRIEVER_DEADLINE_SEC:
+            notes.append(f"Retrieverループ: 打ち切り (締切{RETRIEVER_DEADLINE_SEC}秒 / 経過{elapsed:.1f}秒)")
+            break
+
+        _, missing = verdict
+        new_query, rewrite_note = _rewrite_query(
+            query, missing, queries, llm_fn=llm_fn, backend=rerank_backend)
+        llm_calls += 1
+        if not new_query:
+            notes.append(rewrite_note)
+            break
+
+        print(f"[Hybrid] 🔁 引き直し {iterations + 1}周目: {new_query}")
+        extra, _sem_err, _act_err = _retrieve_once(
+            [new_query], keyword_fn, semantic_fn, activity_keyword_fn,
+            per_query_k=per_query_k, qi_offset=len(queries))
+        queries = queries + [new_query]
+        iterations += 1
+
+        # 候補枠 (n_cand) は 1周目で既に埋まっているので、そのまま足して
+        # [:n_cand] で切ると **新しいヒットが1件も入らない**。上位半分だけ残して
+        # 空けた枠に2周目を入れる。枠を単純に倍にしないのは、候補が多いほど
+        # プロンプトが膨れてリランクの精度が落ちるため (RERANK_CANDIDATES 参照)。
+        keep = max(1, n_cand // 2)
+        prompt_set = _merge_new_hits(reranked[:keep], extra)[:n_cand]
+        # 枠から外れた1周目のヒットは **捨てずに** 後ろへ回す。リランクは
+        # 足切りではなく並べ替えという _llm_rerank の契約をループ側でも守る。
+        in_prompt = {h["rel_path"] for h in prompt_set}
+        demoted = [h for h in reranked[keep:] if h["rel_path"] not in in_prompt]
+
+        ordered, rerank_note, verdict = _llm_rerank(
+            query, prompt_set, llm_fn=llm_fn, enabled=rerank, backend=rerank_backend)
+        reranked = ordered + demoted
+        # 次周の一致判定は、今回リランカに渡した並び (1周目の順位 + 新規) を
+        # 構造側の基準にする。RRF 順そのものではないが、「LLM に渡す前の順序」
+        # という役割は同じ。
+        rrf_order = prompt_set
+        llm_calls += 1
+        if rerank_note:
+            notes.append(rerank_note)
+            break  # リランクが落ちた状態でさらに回しても判定材料が増えない
+
+    return reranked, notes, queries
+
+
+# ---------------------------------------------------------
 # 構造化検索 (評価スクリプトとツール本体の共通コア)
 # ---------------------------------------------------------
 
 def _hybrid_hits(query: str, top_k: int = 5, keyword_fn=_keyword_hits,
                  semantic_fn=None, llm_fn=None, multiquery=None, rerank=None,
-                 rerank_backend=None, activity_keyword_fn=None):
+                 rerank_backend=None, activity_keyword_fn=None, loop=None):
     """ハイブリッド検索の構造化結果を返す。
 
     Returns:
@@ -613,8 +987,14 @@ def _hybrid_hits(query: str, top_k: int = 5, keyword_fn=_keyword_hits,
          query_ids / rerank_pos / source)、notes は劣化・フォールバックの理由行、
         queries は実際に検索した全クエリ変種。
 
-    multiquery / rerank に True/False、rerank_backend に "gemini"/"ollama" を
-    渡すと .env より優先される (None なら .env)。scripts/eval_retrieval.py の
+    **queries から Retriever ループの周回数が分かる**: ループは引き直すたびに
+    クエリを1本足すので、multiquery が OFF なら len(queries) がそのまま周回数
+    (1 = 引き直していない)。multiquery が ON だと初期変種と区別が付かないので、
+    周回数を測るときは multiquery を OFF にすること
+    (どのみち multiquery は実測で有害と分かって既定 OFF)。
+
+    multiquery / rerank / loop に True/False、rerank_backend に "gemini"/"ollama"
+    を渡すと .env より優先される (None なら .env)。scripts/eval_retrieval.py の
     A/B 計測用。
 
     **注入の契約**: ランクリストは keyword / semantic / activity の3本ある。
@@ -625,35 +1005,46 @@ def _hybrid_hits(query: str, top_k: int = 5, keyword_fn=_keyword_hits,
     文字列整形と分けてあるのは scripts/eval_retrieval.py が Recall/MRR を
     採点するのに rel_path の並びだけを必要とするため。
     """
+    started = time.time()
     queries, expand_note = _expand_queries(query, llm_fn=llm_fn, enabled=multiquery)
     notes = [expand_note] if expand_note else []
 
     semantic_fn, resolve_error = _resolve_semantic_fn(semantic_fn)
     activity_keyword_fn, act_resolve_error = _resolve_activity_keyword_fn(
         activity_keyword_fn)
-    rank_lists, semantic_error, act_runtime_error = _rank_lists(
-        queries, keyword_fn, semantic_fn, per_query_k=top_k * 2,
-        activity_keyword_fn=activity_keyword_fn)
+    hits, semantic_error, act_runtime_error = _retrieve_once(
+        queries, keyword_fn, semantic_fn, activity_keyword_fn,
+        per_query_k=top_k * 2)
     activity_error = act_resolve_error or act_runtime_error
 
     sem_error = resolve_error or semantic_error
     if sem_error:
         notes.insert(0, f"⚠️ 意味検索は利用できないためキーワード検索のみ ({sem_error})")
+        semantic_fn = None  # 2周目で同じ失敗を繰り返さない
     if activity_error:
         # 行動ログが検索面から消えたことは黙って済ませない。意味検索も同時に
         # 落ちていると、行動ログは**どの経路からも出てこない**状態になる。
         notes.append(f"⚠️ 行動ログのキーワード検索は利用できません ({activity_error})")
-
-    hits = _fuse(rank_lists)
-    if not hits:
-        return [], notes, queries
+        activity_keyword_fn = None
 
     n_cand = _env_int("VAULT_SEARCH_RERANK_CANDIDATES", RERANK_CANDIDATES)
     candidates, tail = hits[:n_cand], hits[n_cand:]
-    reranked, rerank_note = _llm_rerank(
+    reranked, rerank_note, verdict = _llm_rerank(
         query, candidates, llm_fn=llm_fn, enabled=rerank, backend=rerank_backend)
     if rerank_note:
         notes.append(rerank_note)
+
+    reranked, loop_notes, queries = _retrieve_loop(
+        query, reranked, verdict, queries, started,
+        keyword_fn=keyword_fn, semantic_fn=semantic_fn,
+        activity_keyword_fn=activity_keyword_fn, llm_fn=llm_fn,
+        rerank=rerank, rerank_backend=rerank_backend,
+        per_query_k=top_k * 2, n_cand=n_cand, loop=loop,
+        rrf_order=candidates)
+    notes.extend(loop_notes)
+
+    if not reranked:
+        return [], notes, queries
     return (reranked + tail)[:top_k], notes, queries
 
 
