@@ -328,6 +328,68 @@ def test_callback_emitted_once_per_wave():
           all("step" in e and "total" in e for e in exec_events), str(exec_events))
 
 
+def test_wave_error_event_carries_the_failed_observation():
+    """status="error" のイベントが成功ステップの本文を載せていないこと。
+
+    常に results[0] を載せると「失敗と言いながら成功の中身を見せる」になる。
+    今の描画は observation を使わないが、食い違ったデータを流すこと自体が
+    「表示が実態と食い違う」バグの種。
+    """
+    print("\n[18] エラーイベントは失敗したステップの observation を載せる")
+    tools = _fake_map(
+        tool_a=_sleepy(0.01, "Success: 1件目は成功"),
+        tool_b=_sleepy(0.01, "Error: 2件目が失敗"),
+        tool_c=_sleepy(0.01, "Success: 3件目は成功"),
+    )
+    plan = [_step(1, "tool_a"), _step(2, "tool_b"), _step(3, "tool_c")]
+    events = []
+    with _patched(tools), contextlib.redirect_stdout(_io.StringIO()):
+        engine.execute_plan(plan, step_callback=events.append)
+    done = [e for e in events
+            if e.get("phase") == "execute" and e.get("status") in ("done", "error")][0]
+    check("status は error", done["status"] == "error", str(done))
+    check("observation が失敗ステップのもの",
+          "2件目が失敗" in str(done.get("observation")), str(done.get("observation")))
+    check("failed_steps に 2 が入る", done.get("failed_steps") == [2],
+          str(done.get("failed_steps")))
+
+
+def test_broken_worker_contract_does_not_lose_the_wave():
+    """_run_step が契約を破って例外を投げても、ウェーブの他の結果を失わない。
+
+    future.result() をそのまま呼ぶと executor を抜けた時点で execute_plan ごと
+    落ち、既に完了している他ステップの結果まで消える。
+    """
+    print("\n[19] ワーカーが結果を返せなくてもウェーブを道連れにしない")
+    tools = _fake_map()
+    plan = [_step(1, "tool_a"), _step(2, "tool_b"), _step(3, "tool_c")]
+
+    orig = engine._run_step
+    calls = {"n": 0}
+
+    def _flaky(item, tools_map, context, fallback_step=1):
+        if item.get("tool") == "tool_b":
+            raise RuntimeError("_run_step の契約が破れた")
+        return orig(item, tools_map, context, fallback_step)
+
+    engine._run_step = _flaky
+    try:
+        with _patched(tools), contextlib.redirect_stdout(_io.StringIO()):
+            res = engine.execute_plan(plan)
+    finally:
+        engine._run_step = orig
+
+    steps = [r["step"] for r in res["results"]]
+    check("3件とも結果が残る", steps == [1, 2, 3], str(steps))
+    check("壊れたステップは failed", not res["results"][1]["success"],
+          str(res["results"][1]))
+    check("例外本文が残る", "契約が破れた" in str(res["results"][1]["observation"]),
+          str(res["results"][1]["observation"]))
+    check("他2件は成功のまま",
+          res["results"][0]["success"] and res["results"][2]["success"],
+          str(res["results"]))
+
+
 def test_single_step_events_keep_legacy_shape():
     print("\n[13] 単独ステップのイベント形は従来どおり")
     tools = _fake_map()
@@ -369,6 +431,14 @@ def test_render_progress_shared_by_both_entrypoints():
     check("全成功なら ✅", render_progress(done_ok).startswith("✅"),
           str(render_progress(done_ok)))
     check("未知の phase は None", render_progress({"phase": "zzz"}) is None, "")
+
+    # 知らない status を成功に丸めないこと (将来 status を増やしたときに
+    # 未対応の状態が ✅ で出るのがこのプロジェクトの定番バグ)
+    for unknown in ("queued", "", "skipped"):
+        check(f"未知の status '{unknown}' は None (ウェーブ)",
+              render_progress(dict(wave, status=unknown)) is None, "")
+        check(f"未知の status '{unknown}' は None (単独)",
+              render_progress(dict(single, status=unknown)) is None, "")
 
     # bot_discord.py が自前で描いていないこと (入口ごとの写経の再発防止)
     with open(os.path.join(_PROJECT_ROOT, "bot_discord.py"), encoding="utf-8") as f:

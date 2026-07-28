@@ -529,6 +529,14 @@ def _run_wave(wave: list, tools_map: dict, accumulated_context: list) -> tuple:
     取るのは、別実行との A/B にしないため。このプロジェクトでは
     「before を別の日・別の索引状態で取ったせいで施策の効果と混ざった」という
     失敗を既に踏んでいる (Phase B の回帰ゲート)。同一実行内なら土俵が同じ。
+
+    **この数字の既知のバイアス** (数値と一緒に持ち回ること):
+      各ステップの duration_seconds には、共有資源の待ち時間が含まれる。
+      特に lib.concurrency.ollama_slot は Ollama 呼び出しを直列化するので、
+      Vault 検索を2本同時に流すと後発の待ち時間が自分の所要時間として計上され、
+      「逐次なら」が実際より大きく出る (= saved_seconds は過大評価)。
+      資源を奪い合わないステップ (Web検索×3 など) では正確。
+      **この値を「最低でもこれだけ速くなった」と読んではいけない。**
     """
     if len(wave) == 1:
         return [_run_step(wave[0], tools_map, accumulated_context)], 0.0
@@ -549,7 +557,25 @@ def _run_wave(wave: list, tools_map: dict, accumulated_context: list) -> tuple:
             for pos, item in enumerate(wave)
         }
         for fut in as_completed(futures):
-            indexed[futures[fut]] = fut.result()
+            pos = futures[fut]
+            try:
+                indexed[pos] = fut.result()
+            except BaseException as e:
+                # _run_step は例外を外へ出さない契約だが、契約が破れたときに
+                # **ウェーブ全体の結果を道連れにしない**。ここで再送出すると
+                # executor の __exit__ を抜けた時点で execute_plan ごと落ち、
+                # 既に完了している他ステップの結果まで消える。
+                item = wave[pos]
+                indexed[pos] = {
+                    "step": item.get("step", pos + 1),
+                    "task": item.get("task", ""),
+                    "tool": item.get("tool", ""),
+                    "args": {},
+                    "observation": f"Error ({type(e).__name__}): {e}",
+                    "success": False,
+                    "duration_seconds": 0.0,
+                }
+                print(f"[P&E] ❌ ワーカーが結果を返せませんでした: {indexed[pos]['observation']}")
 
     wall = time.time() - started
     ordered = [indexed[pos] for pos in range(len(wave))]
@@ -587,7 +613,13 @@ def _emit_wave_event(step_callback, wave: list, total: int, status: str,
         # 「一部失敗を ✅ で表示しない」という既存の規約をここでも守る。
         failed = [r for r in results if not r.get("success")]
         event["status"] = "error" if failed else "done"
-        event["observation"] = str(results[0].get("observation", ""))[:500]
+        # observation は **status と同じステップのもの** を載せる。
+        # 常に results[0] にすると、status="error" のイベントが成功した
+        # 1件目の本文を持つ = 「失敗と言いながら成功の中身を見せる」ことになる。
+        # 今の描画は observation を使わないが、食い違ったデータを流すこと自体が
+        # このプロジェクトが何度も潰してきた「表示が実態と食い違う」の種になる。
+        source = failed[0] if failed else (results[0] if results else {})
+        event["observation"] = str(source.get("observation", ""))[:500]
         event["failed_steps"] = [r.get("step") for r in failed]
     step_callback(event)
 
@@ -985,9 +1017,14 @@ def _final_report(user_query: str, results: list, critique: dict) -> str:
       ✅ Mission Complete で出る。評価ハーネスの failure_report がこれを実測した
       (T18/T19: 注入した失敗が2回とも needs_revision で終わり、for を抜けた)。
 
-    全ステップ失敗 = 目標未達とみなしてよい理由:
-      execute_plan は最初の失敗で break するので、成功が1件もないということは
-      どの修正計画も1歩目から進めなかったということ。
+    全ステップ失敗 = 目標未達とみなしてよい理由 (Phase C1 で根拠が変わった):
+      以前は「execute_plan は最初の失敗で break するので、成功0件＝どの修正計画も
+      1歩目から進めなかった」と書いていた。fan-out 導入後、break は
+      **ウェーブ境界** で起きるので「1歩目」は正しくない — 同時実行した3件が
+      全部失敗して止まる、という形もある。
+      それでも結論は変わらない: 実行されたステップが1件も成功していない以上、
+      計画は最初の関門を越えていない。**理由の方だけが古くなった**ので書き換える
+      (根拠が実態と食い違ったまま残っているコメントは、次に読む人を誤らせる)。
 
     部分失敗 (成功と失敗が混ざる) を別扱いにする理由 (2026-07-27 追記):
       全滅だけを直した時点では、3ステップ中2つ成功・保存だけ失敗のような実行が

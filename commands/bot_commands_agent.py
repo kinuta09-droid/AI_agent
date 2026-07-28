@@ -96,6 +96,12 @@ def _render_execute(step_data: dict):
     status = step_data.get("status", "")
     total = step_data.get("total", "?")
 
+    # 知らない status を「完了」に丸めない。else に落として ✅ を出すと、
+    # 将来 status を増やしたときに未対応の状態が成功として表示される
+    # (このプロジェクトが繰り返し潰してきた形)。
+    if status not in ("running", "done", "error"):
+        return None
+
     if len(wave) > 1:
         labels = " / ".join(
             f"Step {w.get('step', '?')} {w.get('task', '')}" for w in wave
@@ -113,10 +119,8 @@ def _render_execute(step_data: dict):
     task = step_data.get("task", "")
     if status == "running":
         return f"▶️ **実行中:** Step {step}/{total} - {task}..."
-    if status in ("done", "error"):
-        icon = "✅" if status == "done" else "❌"
-        return f"{icon} Step {step}/{total} - {task}\n\n⏳ 次のステップへ..."
-    return None
+    icon = "✅" if status == "done" else "❌"
+    return f"{icon} Step {step}/{total} - {task}\n\n⏳ 次のステップへ..."
 
 
 def render_progress(step_data: dict):
