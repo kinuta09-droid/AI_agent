@@ -842,7 +842,7 @@ def _final_report(user_query: str, results: list, critique: dict) -> str:
         print("[P&E] ❌ 成功したステップが1件も無いため、失敗として報告します")
         return f"タスク失敗: {reason}" + (f"\n\n最後のエラー: {detail}" if detail else "")
 
-    summary = _generate_final_summary(user_query, results)
+    summary = _verify_summary(_generate_final_summary(user_query, results), results)
     if not failed:
         return summary
 
@@ -852,6 +852,25 @@ def _final_report(user_query: str, results: list, critique: dict) -> str:
                       for r in failed[:3])
     print(f"[P&E] ⚠️ {len(failed)}/{len(results)} ステップが失敗 → 部分完了として報告します")
     return f"{PARTIAL_PREFIX}\n失敗したステップ: {steps}\n\n{summary}"
+
+
+def _verify_summary(summary: str, results: list) -> str:
+    """要約の各文が観測に支持されているかを検査し、支持の無い文に印を付ける。
+
+    ここに挟む理由 (Phase D2):
+      _final_report は /agent・/chat agent・main.py CLI の3経路が合流する唯一の
+      地点。入口ごとに書くと「/agent だけ直して /chat agent を取り残す」という
+      このプロジェクトの既知の失敗をなぞる (CLAUDE.md の ✅ ハードコード事件)。
+
+    lib.verifier を遅延 import するのは、フラグ OFF のときに requests の
+    import 代を払わせないため。import 自体の失敗でも要約は必ず返す。
+    """
+    try:
+        from lib.verifier import verify_report
+        return verify_report(summary, results)
+    except Exception as e:
+        print(f"[P&E] ⚠️ 根拠検査を実施できませんでした: {e}")
+        return summary
 
 
 def _build_capability_block() -> str:
