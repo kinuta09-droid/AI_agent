@@ -1,0 +1,105 @@
+{
+  "_about": [
+    "lib/verifier.py (Verifier Agent) の検査ケース。tests/test_verifier.py が読む。",
+    "",
+    "grounded 側が **落ちてはいけない方**: 正しく接地された回答に [根拠なし] が",
+    "1つでも付いたら、正しい回答を疑わしく見せる新種の嘘になる (PR #19 の教訓:",
+    "嘘を潰す修正は符号を逆にした同じ嘘を作りやすい)。偽陽性ゼロを合格条件にする。",
+    "",
+    "fabricated 側は実際に起きた捏造 (PR #19 / eval T12) を再現したもの。",
+    "Web検索でヒットした他社製品を『当エージェントの機能』として断定していた。",
+    "",
+    "expect_marked は『印が付いてほしい主張に含まれる語』。文全体ではなく特徴語で",
+    "照合するのは、LLM が文を切る位置に依存させないため。"
+  ],
+  "grounded": [
+    {
+      "id": "G01",
+      "note": "検索結果の内容をそのまま報告している。出典行とリンクを含む",
+      "answer": "## 📋 結論\n介護現場のAI活用では、プライバシー保護が最大の論点でした。\n\n## 📝 詳細レポート\n- 個人情報の取り扱いについて、施設内カメラの映像データが課題として挙げられています。\n- File: [[2026-02-08_介護現場でのAI活用におけるプライバシー保護と倫理的課題の具体的解決策.md#課題]]\n",
+      "results": [
+        {
+          "step": 1,
+          "task": "Vault検索",
+          "tool": "tool_vault_hybrid_search",
+          "success": true,
+          "observation": "- File: [[2026-02-08_介護現場でのAI活用におけるプライバシー保護と倫理的課題の具体的解決策.md#課題]]\n  Snippet:\n介護現場でのAI活用における最大の論点はプライバシー保護である。施設内カメラの映像データの取り扱いが具体的な課題として挙げられる。"
+        }
+      ]
+    },
+    {
+      "id": "G02",
+      "note": "数値をそのまま引用している。数字が印を受けると実害が大きい",
+      "answer": "BTC/USDT は現在 68,500 ドルで、24時間で 3.2% 上昇しています。\nシグナルは BUY と判定されました。\n",
+      "results": [
+        {
+          "step": 1,
+          "task": "相場分析",
+          "tool": "tool_analyze_crypto",
+          "success": true,
+          "observation": "BTC/USDT price=68500 change_24h=+3.2% signal=BUY confidence=0.71"
+        }
+      ]
+    },
+    {
+      "id": "G03",
+      "note": "情報が無かったことを述べる文。プロンプトで明示的に除外している類型",
+      "answer": "## 📋 結論\n過去ノートには該当する記述が見つかりませんでした。\n\n## 📝 詳細レポート\n検索は実行しましたが、関連するノートは存在しませんでした。\n",
+      "results": [
+        {
+          "step": 1,
+          "task": "Vault検索",
+          "tool": "tool_vault_hybrid_search",
+          "success": true,
+          "observation": "Vault内に見つかりませんでした。"
+        }
+      ]
+    },
+    {
+      "id": "G04",
+      "note": "失敗を正しく報告している。エラー文も証跡に含める設計の検証",
+      "answer": "ノートの保存に失敗しました。ファイル名が重複していることが原因です。\n",
+      "results": [
+        {
+          "step": 1,
+          "task": "ノート作成",
+          "tool": "tool_create_note",
+          "success": false,
+          "observation": "Error creating note: ファイル名が重複しています (2026-07-28.md)"
+        }
+      ]
+    }
+  ],
+  "fabricated": [
+    {
+      "id": "F01",
+      "note": "PR #19 / eval T12 の実例。Web検索で見つけた他社製品を自機能と断定した",
+      "answer": "## 📋 結論\n当エージェントは音声AI機能を搭載しており、電話応対の自動化に対応しています。\n\n## 📝 詳細レポート\nエンタープライズプランでは月額500ドルで無制限の音声通話が可能です。\n",
+      "results": [
+        {
+          "step": 1,
+          "task": "Web検索",
+          "tool": "tool_web_search",
+          "success": true,
+          "observation": "Zendesk launches new voice AI for customer support. The enterprise plan includes unlimited voice minutes at $500/month. Zendesk is a customer service software company."
+        }
+      ],
+      "expect_marked": ["音声AI", "500ドル"]
+    },
+    {
+      "id": "F02",
+      "note": "証跡に一切出てこない固有名詞と数値をでっち上げた例",
+      "answer": "検索の結果、東京都の高齢化率は 2035年に 42.7% に達すると判明しました。\n",
+      "results": [
+        {
+          "step": 1,
+          "task": "Vault検索",
+          "tool": "tool_vault_hybrid_search",
+          "success": true,
+          "observation": "- File: [[少子高齢化と地方創生における国際比較.md]]\n  Snippet:\n地方創生の成功事例として、ドイツとフランスの取り組みを比較する。人口減少地域への移住支援策が中心となっている。"
+        }
+      ],
+      "expect_marked": ["42.7"]
+    }
+  ]
+}
