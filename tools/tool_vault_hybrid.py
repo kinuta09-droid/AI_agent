@@ -24,12 +24,16 @@ Phase A2 で3段重ねた:
 import するため、同居させると numpy 欠落環境で検索ツールが全滅する。本モジュールは
 常に import 可能なのでレジストリ entry に optional を付けない。
 
-環境変数 (既定は下の MULTIQUERY_DEFAULT / RERANK_DEFAULT):
-  VAULT_SEARCH_MULTIQUERY=1  — クエリ書き換えを有効化する (既定 OFF)
-  VAULT_SEARCH_RERANK=0      — LLM リランクを止める (既定 ON)
+環境変数 (既定は下の *_DEFAULT 定数):
+  VAULT_SEARCH_MULTIQUERY=1        — クエリ書き換えを有効化する (既定 OFF)
+  VAULT_SEARCH_RERANK=0            — LLM リランクを止める (既定 ON)
+  VAULT_SEARCH_RERANK_BACKEND      — gemini | ollama
+  VAULT_SEARCH_RERANK_OLLAMA_MODEL — ollama のときのモデル名
+  VAULT_SEARCH_RERANK_CANDIDATES   — リランクに渡す件数 (速度/精度の調整用)
+  VAULT_SEARCH_RERANK_SNIPPET_CHARS — 1候補あたりのスニペット長 (同上)
 
-コスト: リランクが有効なとき検索1回あたり Light Gemini を1回叩く
-(cost_guard の日次上限を共有する)。両方 ON なら2回。
+コスト: backend=gemini のときリランク1回につき Light Gemini を1回叩く
+(cost_guard の日次上限を共有する)。backend=ollama なら課金ゼロ。
 """
 
 import json
@@ -64,7 +68,39 @@ MULTIQUERY_VARIANTS = 2
 # 試すときは必ず --multiquery on で測り直すこと。
 MULTIQUERY_DEFAULT = False
 RERANK_DEFAULT = True
-# リランクに渡す RRF 上位件数。多すぎるとプロンプトが膨れ Light の精度が落ちる
+
+# リランクを実行するモデルの置き場所。"gemini" (Light Gemini) か "ollama" (ローカル)。
+#
+# **実測 (scripts/eval_retrieval.py・15問・実Vault) で ollama を選んだ** — 2026-07-28:
+#
+#   arm                                   | Hit@5  | MRR@10 | 平均秒 | Gemini
+#   --------------------------------------|--------|--------|--------|-------
+#   リランク無し (RRFのみ)                | 0.9333 | 0.7317 |  2.68  |  0/問
+#   gemini (Light)                        | 1.0000 | 0.8167 |  3.21  |  1/問
+#   ollama qwen3:1.7b                     | 1.0000 | 0.6244 | 12.15  |  0
+#   ollama qwen2.5-coder:7b (GPU埋め込み)  | 1.0000 | 0.8722 | 15.25  |  0
+#   ollama qwen2.5-coder:7b (CPU埋め込み)  | 1.0000 | 0.8722 |  8.30  |  0  ← 採用
+#
+# qwen2.5-coder:7b は MRR で Gemini を上回る (0.8722 > 0.8167)。
+# qwen3:1.7b はリランク無し (0.7317) すら下回るので不可 — 小さすぎて候補本文を読めていない。
+#
+# レイテンシの正体は推論ではなく **モデルの再ロード**だった: VRAM 6GB に
+# bge-m3 (1.16GB) と coder7b (4.68GB) は同居できず、検索のたびに入れ替わって
+# 1問あたり約8秒を払っていた (/api/ps で bge-m3 が VRAM から消えるのを確認)。
+# クエリ埋め込みを CPU に逃がすと 15.25秒 → 8.30秒。
+# 候補数/スニペット長の削減はほぼ効かなかった (15.25 → 14.11秒) ので、
+# 入力量が原因ではない。
+#
+# → tool_vault_index.query_embed_on_cpu() と**必ず連動させる**こと。
+#    片方だけ ollama にすると、動きはするが黙って7秒遅くなる。
+RERANK_BACKEND_DEFAULT = "ollama"
+RERANK_OLLAMA_MODEL = "qwen2.5-coder:7b"
+# 7B をロードから回すと数十秒かかりうる。常駐していれば7秒前後。
+RERANK_OLLAMA_TIMEOUT = 120
+
+# リランクに渡す RRF 上位件数。多すぎるとプロンプトが膨れ Light の精度が落ちる。
+# env で上書きできるのは、ローカルモデルが遅かったときに
+# コード編集なしで速度/精度のトレードオフを測れるようにするため。
 RERANK_CANDIDATES = 20
 # リランクプロンプトに載せる 1 候補あたりのスニペット長
 RERANK_SNIPPET_CHARS = 600
@@ -134,6 +170,18 @@ def _parse_json_array(raw) -> list:
     return []
 
 
+def _env_int(name: str, default: int) -> int:
+    """整数の env。未設定・パース不能・0以下なら default (呼び出し時に読む)。"""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 def _call_light_llm(prompt: str) -> str:
     """Light Gemini を1回呼んで生テキストを返す。
 
@@ -144,6 +192,77 @@ def _call_light_llm(prompt: str) -> str:
     from lib.lib_shared import client, MODEL_NAME
     response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
     return (response.text or "").strip()
+
+
+# Qwen3 系は思考ブロックを吐く。JSON 抽出の前に落とさないと
+# <think> 内の「[1] が良さそう」を本命の配列として拾ってしまう。
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_SPECIAL_TOKEN_RE = re.compile(r"<\|[^|>]+\|>")
+
+
+def _call_ollama_llm(prompt: str, model: str = None, timeout: int = None) -> str:
+    """ローカル Ollama を1回呼んで生テキストを返す。
+
+    tool_future_search._call_ollama を再利用しない理由:
+      あれは happy-claude 専用に段落重複除去まで含み、import も重い
+      (Tavily クライアント初期化を伴う)。検索のホットパスに載せたくない。
+      Ollama の定義を各ツールが自前で持つのはこのプロジェクトの慣例
+      (tool_vault_index._call_ollama_embed と同じ)。
+
+    失敗を "[ERROR] ..." 文字列ではなく **例外** で返す理由:
+      文字列で返すと _parse_json_array が黙って [] を返し、
+      「有効な番号が0件」という理由を失ったフォールバックになる。
+      RuntimeError なら _llm_rerank の except が
+      「LLMリランク: フォールバック (RuntimeError: Ollama not running…)」として
+      戻り値に残せる。
+    """
+    from tools.tool_vault_index import OLLAMA_BASE_URL, OLLAMA_KEEP_ALIVE
+    import requests
+
+    model = model or os.getenv("VAULT_SEARCH_RERANK_OLLAMA_MODEL") or RERANK_OLLAMA_MODEL
+    timeout = timeout or RERANK_OLLAMA_TIMEOUT
+    try:
+        resp = requests.post(
+            f"{OLLAMA_BASE_URL}/api/generate",
+            # /no_think: Qwen3 の thinking を止める。思考させると
+            # 数千トークン吐いてタイムアウトし、リランクが常時フォールバックする。
+            # keep_alive: モデルの再ロードがレイテンシの主因 (実測 +3.9秒/回)。
+            # 埋め込みを CPU に逃がす (VAULT_QUERY_EMBED_DEVICE=cpu) と併せて
+            # 初めて VRAM に居座れる。
+            json={"model": model, "prompt": "/no_think\n\n" + prompt, "stream": False,
+                  "options": {"temperature": 0}, "keep_alive": OLLAMA_KEEP_ALIVE},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "") or ""
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError("Ollama not running. Start with: ollama serve")
+    except requests.exceptions.Timeout:
+        raise RuntimeError(f"Ollama timeout after {timeout}s (model={model})")
+    except Exception as e:
+        raise RuntimeError(f"Ollama call failed (model={model}): {e}")
+
+    raw = _THINK_BLOCK_RE.sub("", raw)
+    raw = raw.split("<|endoftext|>")[0]
+    return _SPECIAL_TOKEN_RE.sub("", raw).strip()
+
+
+def _resolve_rerank_llm(backend=None):
+    """リランクに使う LLM 呼び出しを決める。
+
+    優先順位: 明示引数 > VAULT_SEARCH_RERANK_BACKEND > RERANK_BACKEND_DEFAULT。
+    未知の名前は既定にフォールバックし、理由をログに残す
+    (env の打ち間違いで黙って別のモデルを使うと、計測結果が嘘になる)。
+    """
+    name = (backend or os.getenv("VAULT_SEARCH_RERANK_BACKEND")
+            or RERANK_BACKEND_DEFAULT)
+    name = str(name).strip().lower()
+    if name == "ollama":
+        return _call_ollama_llm, "ollama"
+    if name != "gemini":
+        print(f"[Hybrid] ⚠️ 未知のリランクバックエンド '{name}' → gemini を使います")
+        name = "gemini"
+    return _call_light_llm, name
 
 
 # ---------------------------------------------------------
@@ -244,17 +363,18 @@ def _format_rerank_candidates(candidates: list) -> str:
     本文は指示ではなく資料として扱わせる。ここでは区切りタグを閉じさせない
     ためのエスケープだけを行い、判定規則そのものは _RERANK_PROMPT に書く。
     """
+    limit = _env_int("VAULT_SEARCH_RERANK_SNIPPET_CHARS", RERANK_SNIPPET_CHARS)
     lines = []
     for i, h in enumerate(candidates, start=1):
         link = format_wikilink(h["filename"], h.get("heading"))
-        body = str(h.get("snippet", ""))[:RERANK_SNIPPET_CHARS]
+        body = str(h.get("snippet", ""))[:limit]
         # 本文が </candidates> を含んでいると区切りを閉じて以降を指示にできる
         body = body.replace("</candidates>", "<_/candidates>")
         lines.append(f"[{i}] {link}\n{body}")
     return "\n\n".join(lines)
 
 
-def _llm_rerank(query: str, candidates: list, llm_fn=None, enabled=None):
+def _llm_rerank(query: str, candidates: list, llm_fn=None, enabled=None, backend=None):
     """RRF 上位候補を LLM の判断で並べ替える。
 
     Returns:
@@ -272,13 +392,19 @@ def _llm_rerank(query: str, candidates: list, llm_fn=None, enabled=None):
         print("[Hybrid] LLMリランクは無効 (VAULT_SEARCH_RERANK=0)")
         return candidates, ""
 
+    if llm_fn is None:
+        llm_fn, backend_name = _resolve_rerank_llm(backend)
+    else:
+        backend_name = "injected"
+
     try:
         prompt = _RERANK_PROMPT.format(
             query=str(query).strip(), candidates=_format_rerank_candidates(candidates))
-        order = _parse_json_array((llm_fn or _call_light_llm)(prompt))
+        order = _parse_json_array(llm_fn(prompt))
     except Exception as e:
-        print(f"[Hybrid] ⚠️ LLMリランクに失敗、RRF順のまま返します: {e}")
-        return candidates, f"LLMリランク: フォールバック ({type(e).__name__}: {e})"
+        print(f"[Hybrid] ⚠️ LLMリランク({backend_name})に失敗、RRF順のまま返します: {e}")
+        return candidates, (f"LLMリランク({backend_name}): "
+                            f"フォールバック ({type(e).__name__}: {e})")
 
     picked = []
     seen = set()
@@ -294,7 +420,7 @@ def _llm_rerank(query: str, candidates: list, llm_fn=None, enabled=None):
 
     if not picked:
         print("[Hybrid] ⚠️ LLMリランクが有効な番号を返しませんでした、RRF順のまま返します")
-        return candidates, "LLMリランク: フォールバック (有効な番号が0件)"
+        return candidates, f"LLMリランク({backend_name}): フォールバック (有効な番号が0件)"
 
     rest = [h for i, h in enumerate(candidates) if i not in seen]
     return picked + rest, ""
@@ -401,7 +527,8 @@ def _fuse(rank_lists: list) -> list:
 # ---------------------------------------------------------
 
 def _hybrid_hits(query: str, top_k: int = 5, keyword_fn=_keyword_hits,
-                 semantic_fn=None, llm_fn=None, multiquery=None, rerank=None):
+                 semantic_fn=None, llm_fn=None, multiquery=None, rerank=None,
+                 rerank_backend=None):
     """ハイブリッド検索の構造化結果を返す。
 
     Returns:
@@ -410,8 +537,9 @@ def _hybrid_hits(query: str, top_k: int = 5, keyword_fn=_keyword_hits,
          query_ids / rerank_pos)、notes は劣化・フォールバックの理由行、
         queries は実際に検索した全クエリ変種。
 
-    multiquery / rerank に True/False を渡すと .env より優先される
-    (None なら .env)。scripts/eval_retrieval.py の A/B 計測用。
+    multiquery / rerank に True/False、rerank_backend に "gemini"/"ollama" を
+    渡すと .env より優先される (None なら .env)。scripts/eval_retrieval.py の
+    A/B 計測用。
 
     文字列整形と分けてあるのは scripts/eval_retrieval.py が Recall/MRR を
     採点するのに rel_path の並びだけを必要とするため。
@@ -431,8 +559,10 @@ def _hybrid_hits(query: str, top_k: int = 5, keyword_fn=_keyword_hits,
     if not hits:
         return [], notes, queries
 
-    candidates, tail = hits[:RERANK_CANDIDATES], hits[RERANK_CANDIDATES:]
-    reranked, rerank_note = _llm_rerank(query, candidates, llm_fn=llm_fn, enabled=rerank)
+    n_cand = _env_int("VAULT_SEARCH_RERANK_CANDIDATES", RERANK_CANDIDATES)
+    candidates, tail = hits[:n_cand], hits[n_cand:]
+    reranked, rerank_note = _llm_rerank(
+        query, candidates, llm_fn=llm_fn, enabled=rerank, backend=rerank_backend)
     if rerank_note:
         notes.append(rerank_note)
     return (reranked + tail)[:top_k], notes, queries
@@ -455,7 +585,8 @@ def _format_hit(h: dict) -> str:
 def tool_vault_hybrid_search(query: str, top_k: int = 5,
                              keyword_fn=_keyword_hits,
                              semantic_fn=None, llm_fn=None,
-                             multiquery=None, rerank=None) -> str:
+                             multiquery=None, rerank=None,
+                             rerank_backend=None) -> str:
     """Vault内をキーワード+意味検索のハイブリッド (RRF) で検索する。
 
     出力形式は tool_vault_search / tool_vault_semantic_search と揃える
@@ -474,7 +605,7 @@ def tool_vault_hybrid_search(query: str, top_k: int = 5,
 
     hits, notes, queries = _hybrid_hits(
         query, top_k, keyword_fn=keyword_fn, semantic_fn=semantic_fn, llm_fn=llm_fn,
-        multiquery=multiquery, rerank=rerank)
+        multiquery=multiquery, rerank=rerank, rerank_backend=rerank_backend)
 
     if len(queries) > 1:
         # 何で引いた結果なのかを常に残す。ヒットが的外れなときに

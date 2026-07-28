@@ -285,7 +285,8 @@ def test_degradation_reason_is_visible():
 
     assert "[[a.md]]" in result, f"検索結果が失われた:\n{result}"
     assert "クエリ書き換え: フォールバック" in result, result
-    assert "LLMリランク: フォールバック" in result, result
+    # バックエンド名を括弧で併記する (どの経路が落ちたか切り分けるため)
+    assert "LLMリランク(injected): フォールバック" in result, result
     assert "RuntimeError" in result, "例外の型/文言が残っていない"
 
     # 意味検索が死んだときの既存の注記も併存すること
@@ -295,7 +296,8 @@ def test_degradation_reason_is_visible():
         semantic_fn=lambda q, k: "[ERROR] Ollama not running.",
         llm_fn=boom, multiquery=True, rerank=True)
     assert "⚠️ 意味検索は利用できない" in result, result
-    assert "LLMリランク: フォールバック" in result, result
+    # バックエンド名を括弧で併記する (どの経路が落ちたか切り分けるため)
+    assert "LLMリランク(injected): フォールバック" in result, result
     print("✅ degradation: 3層の劣化理由が同時に戻り値へ残る")
 
 

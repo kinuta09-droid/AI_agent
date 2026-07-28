@@ -16,6 +16,7 @@ Vault 規模 (~600ファイル・数千チャンク) では ANN ライブラリ�
   ollama pull bge-m3
 """
 
+import inspect
 import os
 import re
 import sys
@@ -40,6 +41,50 @@ OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_EMBED_MODEL = "bge-m3"
 EMBED_TIMEOUT = 60
 EMBED_BATCH_SIZE = 32
+# モデルを常駐させておく時間。ロードし直しがレイテンシの主因 (実測 +3.9秒/回) なので
+# 長めに取ってある。実測値 (検索1回 5.7〜8.3秒) はこの常駐が前提。
+#
+# **代償**: リランカ (qwen2.5-coder:7b) が VRAM 4.09GB をこの時間ずっと占有する。
+# このマシンの GPU は 6GB で、ComfyUI (lib/lib_comfy_client.py・tool_lora_factory)
+# が画像生成に同じ GPU を使う。検索直後に /lora を回すと VRAM が足りず
+# 画像生成が失敗・低速化しうる。競合したら OLLAMA_KEEP_ALIVE を短く
+# (例 "60s") するか、VAULT_SEARCH_RERANK_BACKEND=gemini に戻す。
+# 短くすると常駐が切れた後の1回だけ再ロード分 (数十秒) を払う。
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
+
+def _accepts_prefer_cpu(fn) -> bool:
+    """fn が prefer_cpu 引数を受け取れるか。判定できなければ False (安全側)。"""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False  # 組み込み等でシグネチャが取れない場合は渡さない
+    if "prefer_cpu" in params:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def query_embed_on_cpu() -> bool:
+    """検索時のクエリ埋め込みを CPU で回すか (インデックス構築には効かない)。
+
+    VAULT_QUERY_EMBED_DEVICE = cpu | gpu | auto (既定 auto)
+
+    auto にしてある理由:
+      この設定とリランクのバックエンドは **必ず連動していないといけない**。
+      ローカルリランク + GPU埋め込み の組み合わせは、VRAM 6GB を
+      bge-m3 とリランクモデルが奪い合って毎回入れ替わり、1問 8.3秒 → 15.3秒 になる
+      (2026-07-28 実測)。片方だけ切り替えると、動きはするが黙って7秒遅くなる —
+      誰も気付けない類の劣化なので、既定では自動で揃える。
+      明示的に cpu / gpu と書けば上書きできる。
+    """
+    raw = os.getenv("VAULT_QUERY_EMBED_DEVICE", "auto").strip().lower()
+    if raw == "cpu":
+        return True
+    if raw == "gpu":
+        return False
+    # auto: リランクがローカル(ollama)なら VRAM を譲る
+    from tools.tool_vault_hybrid import RERANK_BACKEND_DEFAULT  # 遅延importで循環回避
+    backend = (os.getenv("VAULT_SEARCH_RERANK_BACKEND") or RERANK_BACKEND_DEFAULT)
+    return backend.strip().lower() == "ollama"
 
 DB_PATH = os.path.join(_PROJECT_ROOT, "logs", "vault_index.db")
 
@@ -57,18 +102,35 @@ CHUNK_MIN_CHARS = 20
 # ---------------------------------------------------------
 
 def _call_ollama_embed(texts: list, model: str = OLLAMA_EMBED_MODEL,
-                       timeout: int = EMBED_TIMEOUT):
+                       timeout: int = EMBED_TIMEOUT, prefer_cpu: bool = False):
     """Ollama /api/embed でテキスト群を埋め込む。
 
     Returns:
         成功時: 埋め込みベクトルのリスト (入力と同数)。
         失敗時: "[ERROR] ..." 文字列 (tool_future_search._call_ollama と同じソフトエラー規約)。
         呼び出し側は isinstance(result, str) でエラー判定すること。
+
+    prefer_cpu の用途 (2026-07-28 実測):
+      ローカルリランクを使うと、検索1回ごとに bge-m3 とリランクモデルが
+      VRAM (6GB) を奪い合って入れ替わり、1問あたり約8秒をモデルのロードに
+      払っていた (/api/ps で bge-m3 が VRAM から消えるのを確認)。
+      **クエリ1本の埋め込みは CPU でも 2.3秒**なので、そちらを CPU に逃がすと
+      リランクモデルが VRAM に居座れて 16.2秒 → 9.0秒 になる。
+
+      **インデックス構築 (update_vault_index) では絶対に使わない**:
+      あちらは数千チャンクをバッチで埋め込むスループット勝負で、
+      CPU に落とすと夜間バッチが桁違いに遅くなる。
+      検索時 (_semantic_hits) だけに効かせること。
     """
+    payload = {"model": model, "input": texts}
+    if prefer_cpu:
+        payload["options"] = {"num_gpu": 0}
+        # GPU を明け渡したまま常駐させる (毎回ロードし直すと CPU 化の意味が薄れる)
+        payload["keep_alive"] = OLLAMA_KEEP_ALIVE
     try:
         resp = requests.post(
             f"{OLLAMA_BASE_URL}/api/embed",
-            json={"model": model, "input": texts},
+            json=payload,
             timeout=timeout,
         )
         resp.raise_for_status()
@@ -367,7 +429,19 @@ def _semantic_hits(query: str, top_k: int = 5,
         return ("Vault semantic index が未構築です。夜間ジョブ (03:15) の実行を待つか、"
                 "update_vault_index() を手動実行してください。")
 
-    result = embed_fn([str(query)])
+    # クエリ埋め込みだけ CPU に逃がせるようにする (インデックス構築は GPU のまま)。
+    # embed_fn を注入するテストは prefer_cpu を受け取らないので、シグネチャを見て
+    # 対応している場合だけ渡す。
+    #
+    # try/except TypeError で握らない理由:
+    #   embed_fn の**内部**で TypeError が出た場合まで拾ってしまい、
+    #   (a) 本物のバグを「引数が合わなかった」と誤認して隠し、
+    #   (b) リトライで埋め込みAPIを二度叩く。
+    #   「引数を受け取れるか」は呼ぶ前に分かる情報なので、呼んで確かめない。
+    if _accepts_prefer_cpu(embed_fn):
+        result = embed_fn([str(query)], prefer_cpu=query_embed_on_cpu())
+    else:
+        result = embed_fn([str(query)])
     if isinstance(result, str):
         return result
     query_vec = _normalize(np.asarray(result[0], dtype=np.float32))
