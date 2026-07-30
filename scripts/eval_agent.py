@@ -41,11 +41,16 @@ import argparse
 import datetime
 import contextlib
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(_ROOT)
 sys.stdout.reconfigure(encoding='utf-8')
 
-EVAL_SET_PATH = os.path.join("C:\\AI_agent", "tests", "fixtures", "agent_eval_set.json")
-EVAL_OUT_DIR = os.path.join("C:\\AI_agent", "logs", "eval")
+# ルートは直書きしない。すぐ上で __file__ から算出しているのに、以前ここだけ
+# "C:\\AI_agent" と書いていたため、リポジトリを別の場所に置いた環境 (CI の
+# D:\\a\\AI_agent\\AI_agent) では load_eval_set() が FileNotFoundError になり、
+# tests/test_eval_agent.py が丸ごと落ちていた (2026-07-30)。
+EVAL_SET_PATH = os.path.join(_ROOT, "tests", "fixtures", "agent_eval_set.json")
+EVAL_OUT_DIR = os.path.join(_ROOT, "logs", "eval")
 
 # Tier B 1問あたりの Gemini 呼び出し見積り (計画1 + 引数解決/本文生成 + Critic + 最終要約)
 TIER_B_CALLS_PER_QUESTION = 5

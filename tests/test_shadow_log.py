@@ -235,8 +235,15 @@ def test_entry_time_timezone():
     good, _e, _n = _resolve_trade(100.0, 90.0, 120.0, candles, utc)
     check("UTCに揃えればエントリー直後の足を評価できる (WIN)", good == "WIN")
 
-    bad, _e2, _n2 = _resolve_trade(100.0, 90.0, 120.0, candles, local)
-    check("ローカル時刻のまま渡すと取りこぼす (回帰の再現)", bad != "WIN")
+    # 回帰の再現は、実行機のタイムゾーンに依存させてはいけない。
+    # 以前は `local` (= マシンのローカル時刻) をそのまま渡していたので、
+    # UTC のマシン (GitHub Actions の runner) では local == utc となり
+    # 「取りこぼす」はずが WIN になってこのチェックだけが落ちていた。
+    # 元の不具合は「JST naive を UTC naive として渡す」= entry が9時間先に
+    # 見える状態なので、+9時間を明示して組む (どの TZ でも同じ意味になる)。
+    jst_naive_like = utc + datetime.timedelta(hours=9)
+    bad, _e2, _n2 = _resolve_trade(100.0, 90.0, 120.0, candles, jst_naive_like)
+    check("JST naive のまま渡すと取りこぼす (回帰の再現)", bad != "WIN")
 
 
 if __name__ == "__main__":

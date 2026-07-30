@@ -149,7 +149,9 @@ from dotenv import load_dotenv
 # Configuration
 # ---------------------------------------------------------
 
-load_dotenv(r'C:\AI_agent\.env')
+# ルートを直書きすると、リポジトリを別の場所に置いた環境 (CI の
+# D:\a\AI_agent\AI_agent 等) で .env が読まれない。__file__ 相対にする。
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 LOG_CHANNEL_ID = os.getenv("DISCORD_LOG_CHANNEL_ID", "")
@@ -187,9 +189,12 @@ _openai_client = (
     else None
 )
 
-if not DISCORD_TOKEN:
-    print("Error: DISCORD_BOT_TOKEN not found in .env")
-    sys.exit(1)
+# トークン欠落の判定は run_bot() (起動時) に置く。
+# ここで sys.exit(1) すると `import bot_discord` そのものが失敗し、
+#   - verify_project.py の [3] import 整合性が「Import Error: bot_discord」で常に落ちる
+#   - bot_discord からコマンド定義を読むだけのテストも巻き込まれて落ちる
+# ため、.env を持たない環境 (CI) では検査が原理的に成立しなくなる。
+# import は副作用でプロセスを殺してはいけない。起動しようとした時に初めて落ちる。
 
 # ---------------------------------------------------------
 # Bot Setup
@@ -1301,6 +1306,13 @@ async def on_ready():
 
 def run_bot():
     """main.py から呼び出し可能なエントリーポイント"""
+    # トークンの検査はここ (起動時) で行う。import 時ではない — 理由は
+    # DISCORD_TOKEN の定義箇所のコメントを参照。
+    # spawn 側でも先に見ることで、子プロセスを立ててから落ちる無駄を避ける。
+    if not DISCORD_TOKEN:
+        print("Error: DISCORD_BOT_TOKEN not found in .env")
+        sys.exit(1)
+
     # Imported from main.py -> Spawn fresh process to avoid Session Closed error (global client reuse)
     if __name__ != "__main__":
         print(f"[Discord] 🚀 Spawning independent bot process via subprocess...")

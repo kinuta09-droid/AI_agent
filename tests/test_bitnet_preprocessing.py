@@ -1,10 +1,20 @@
 # -*- coding: utf-8 -*-
-"""BitNet 前処理フィルターテスト: 日本語入力 → 構造化英語出力"""
-import sys
-sys.path.insert(0, r'C:\AI_agent')
+"""BitNet 前処理フィルターテスト: 日本語入力 → 構造化英語出力
+
+外部前提 (C:\\BitNet の llama-cli.exe + 量子化モデル) が要る手動デバッグスクリプト。
+前提が無い環境 (CI 等) では SKIP して正常終了する。
+"""
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.stdout.reconfigure(encoding='utf-8')
-from tools.tool_bitnet import _run_bitnet
+from tools.tool_bitnet import _run_bitnet, LLAMA_CLI, MODEL_PATH
 import time, json
+
+if not (os.path.exists(LLAMA_CLI) and os.path.exists(MODEL_PATH)):
+    print("⏭️ SKIP: BitNet の実行環境が見つかりません")
+    print(f"   llama-cli: {LLAMA_CLI}")
+    print(f"   model    : {MODEL_PATH}")
+    sys.exit(0)
 
 def test(title, prompt, max_tokens=30, temp=0.1):
     t0 = time.time()
