@@ -14,6 +14,7 @@
        「作成されていない」ように見えていた。
 
 Gemini / Tavily / Obsidian CLI は全てスタブ。Vault は一時ディレクトリ。
+cost_guard の日次カウンタも一時ファイルへ逃がす (理由は _isolate_gemini_counter)。
 外部通信も Vault への書き込みも一切しない。
 
 実行: py tests/test_curate_note_save.py
@@ -96,6 +97,37 @@ _install_module_stubs()
 import lib.lib_shared as ls  # noqa: E402
 import tools.tool_obsidian as tobs  # noqa: E402
 import tools.tool_curator as tc  # noqa: E402
+
+
+def _isolate_gemini_counter():
+    """本番と共有の日次カウンタから切り離す。
+
+    なぜ必要か (2026-07-30 に実際に踏んだ):
+      lib_shared は client.models.generate_content を予算チェックで包むので
+      (lib_shared.py:302-308)、google.genai をスタブしても
+      cost_guard.check_and_increment() は必ず走る。
+      その参照先 cost_guard.GEMINI_COUNTER は **本番の**
+      logs/gemini_daily_calls.json を見ている。
+      さらに上の _install_module_stubs() が dotenv をスタブするため
+      cost_guard の load_dotenv が無効化され、.env の
+      DAILY_GEMINI_CALL_LIMIT=0 (無効) が読まれず既定値 200 に落ちる。
+      結果このテストは **本番のカウントが200を超えた時刻以降だけ赤くなる** =
+      同じコードが朝は緑・夜は赤という状態だった (実測: count 212 で再現)。
+
+      cost_guard.check_and_increment() はモジュールグローバルを呼び出し時に
+      引くので、ここで差し替えれば経路全体に効く。
+    """
+    from lib import cost_guard
+    counter_dir = tempfile.mkdtemp(prefix="curate_counter_")
+    cost_guard.GEMINI_COUNTER = cost_guard.DailyCounter(
+        path=os.path.join(counter_dir, "gemini_daily_calls.json"),
+        limit=0,  # 0 = ガード無効。予算超過はここで演じない (test_cost_guard の担当)
+        name="Gemini API (test)",
+    )
+    return counter_dir
+
+
+_COUNTER_DIR = _isolate_gemini_counter()
 
 
 TEMPLATE = '''---
@@ -301,4 +333,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        code = main()
+    finally:
+        shutil.rmtree(_COUNTER_DIR, ignore_errors=True)
+    sys.exit(code)
