@@ -155,6 +155,19 @@ subprocess.Popen(cmd, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
 - Verify behavior diff against main branch when applicable
 - Run relevant `test_*.py` files before committing
 
+### CI (GitHub Actions)
+`.github/workflows/tests.yml` が push/PR で自動実行される (`windows-latest`)。
+- `guardian` ジョブ (ブロッキング): `verify_project.py` を実行
+- `tests` ジョブ (現状 `continue-on-error: true`): `tests/test_*.py` を1本ずつ
+  スクリプトとして実行し終了コードで判定する。**`pytest tests/` では判定しない** —
+  多くのファイルの `check()` ヘルパーは失敗時も例外を投げないため、pytest 経由だと
+  チェックが全部failしていても緑になる (このリポジトリで繰り返し出ている
+  「表示と実態の食い違い」パターンそのもの)
+- `tests` が bootstrap 扱いなのは、`tests/` に実ネットワーク/実APIキー/外部バイナリ
+  (gws CLI等) が要る「手動デバッグスクリプト」が混在するため
+  (Architecture 節の "tests/: Unit tests and debugging stubs" 参照)。
+  一度実行結果を確認し、要否を仕分けてから `continue-on-error` を外すこと
+
 ### Backtest Gate (crypto logic)
 - `lib/quant_core.py` / `tools/tool_crypto.py` の変更は **before/after バックテスト比較が必須**。
   詳細な規約と既知バグパターンは skill `crypto-backtest` を参照 (該当ファイル編集時に自動ロードされる)

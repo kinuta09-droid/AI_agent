@@ -1,0 +1,76 @@
+name: Tests
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  guardian:
+    # 構造的な整合性 (構文/エンコーディング/未定義名/import/StringIOアンチパターン/
+    # 例外握りつぶし)。CLAUDE.md の「Guardian: MANDATORY before any significant
+    # commit」を実行担保にする。これはブロッキング。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - name: verify_project.py
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY || 'ci-placeholder-key' }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY || 'ci-placeholder-key' }}
+        run: python verify_project.py
+
+  tests:
+    # tests/test_*.py (67ファイル) を実行する。重要: このリポジトリの test_*.py は
+    # pytest のネイティブ assert ではなく、独自の check()/PASS-FAIL リストヘルパーで
+    # 失敗を記録するだけの箇所が多く、失敗しても例外を投げない。そのため
+    # `pytest tests/` で集めて流すと「チェックが全部failしていても緑」になる
+    # (このリポジトリで繰り返し出ている「表示と実態の食い違い」パターンそのもの)。
+    # 各ファイルが自前で持つ `if __name__ == "__main__": ... sys.exit(1 if _FAIL else 0)`
+    # を信頼し、スクリプトとして1本ずつ実行して終了コードで判定する。
+    #
+    # continue-on-error: true (bootstrap):
+    # 初回導入時点で、一部のテストは実ネットワーク/実APIキー/外部バイナリ
+    # (gws CLI, mcp サーバ等) に依存する「手動デバッグスクリプト」であり
+    # (CLAUDE.md Architecture: "tests/: Unit tests and debugging stubs")、
+    # ヘッドレスCIでは原理的に green にならない。既知の対象は下記ジョブ実行結果の
+    # サマリーで一覧化されるので、一度確認して要否を判断してから
+    # continue-on-error を外し、真のリグレッションゲートにすること。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - name: Run tests/test_*.py (script exit-code semantics)
+        continue-on-error: true
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY || 'ci-placeholder-key' }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY || 'ci-placeholder-key' }}
+          PYTHONPATH: ${{ github.workspace }}
+          PYTHONIOENCODING: utf-8
+        shell: pwsh
+        run: |
+          $failed = @()
+          $passed = @()
+          Get-ChildItem tests/test_*.py | ForEach-Object {
+            Write-Host "`n=== $($_.Name) ==="
+            python $_.FullName
+            if ($LASTEXITCODE -ne 0) {
+              $failed += $_.Name
+            } else {
+              $passed += $_.Name
+            }
+          }
+          Write-Host "`n============================================"
+          Write-Host "PASS: $($passed.Count)  FAIL: $($failed.Count)"
+          if ($failed.Count -gt 0) {
+            Write-Host "`nFailed files:"
+            $failed | ForEach-Object { Write-Host "  - $_" }
+            exit 1
+          }
