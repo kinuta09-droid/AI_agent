@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
-import sys, re
-sys.path.insert(0, r'C:\AI_agent')
+import sys, os, re
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.stdout.reconfigure(encoding='utf-8')
 
 from tools.tool_bitnet import quick_filter_discord
+
+# quick_filter_discord は BitNet バイナリを使わない (純キーワード判定) ので、
+# このファイルは C:\BitNet が無い環境でもそのまま実行できる。
+_FAIL = []
 
 print("=== Fix1: URL は skip でなく pass ===")
 url_cases = [
@@ -14,7 +18,11 @@ url_cases = [
 ]
 for msg, expected in url_cases:
     r = quick_filter_discord(msg)
-    ok = "OK" if r["action"] == expected else f"FAIL(got={r['action']})"
+    if r["action"] == expected:
+        ok = "OK"
+    else:
+        ok = f"FAIL(got={r['action']})"
+        _FAIL.append(f"url_case {msg!r}")
     print(f"  [{ok}] {msg!r} -> {r['action']}")
 
 print()
@@ -38,7 +46,17 @@ safe_cases = [
 ]
 for inp, expected in safe_cases:
     out = re.sub(r"\s+(Response|Example|Output|Answer|Result)$", "", inp, flags=re.IGNORECASE)
-    ok = "OK" if out == expected else f"FAIL(got={out!r})"
+    if out == expected:
+        ok = "OK"
+    else:
+        ok = f"FAIL(got={out!r})"
+        _FAIL.append(f"safe_case {inp!r}")
     print(f"  [{ok}] {inp!r} -> {out!r}")
 
-print("\nALL DONE")
+# 判定を終了コードに載せる。print するだけだと FAIL が並んでいても exit 0 =
+# CI からは永久に緑になる (2026-07-30)。
+print(f"\n=== 結果: FAIL {len(_FAIL)} ===")
+if _FAIL:
+    for f in _FAIL:
+        print(f"  - {f}")
+sys.exit(1 if _FAIL else 0)

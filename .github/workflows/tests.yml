@@ -1,0 +1,96 @@
+name: Tests
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  guardian:
+    # 構造的な整合性 (構文/エンコーディング/未定義名/import/StringIOアンチパターン/
+    # 例外握りつぶし)。CLAUDE.md の「Guardian: MANDATORY before any significant
+    # commit」を実行担保にする。これはブロッキング。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - name: verify_project.py
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY || 'ci-placeholder-key' }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY || 'ci-placeholder-key' }}
+        run: python verify_project.py
+
+  tests:
+    # tests/test_*.py (70ファイル) を実行する。重要: このリポジトリの test_*.py は
+    # pytest のネイティブ assert ではなく、独自の check()/PASS-FAIL リストヘルパーで
+    # 失敗を記録するだけの箇所が多く、失敗しても例外を投げない。そのため
+    # `pytest tests/` で集めて流すと「チェックが全部failしていても緑」になる
+    # (このリポジトリで繰り返し出ている「表示と実態の食い違い」パターンそのもの)。
+    # 各ファイルが自前で持つ `if __name__ == "__main__": ... sys.exit(1 if _FAIL else 0)`
+    # を信頼し、スクリプトとして1本ずつ実行して終了コードで判定する。
+    #
+    # continue-on-error を外した (2026-07-30・CI 初起動の実結果を見た上で):
+    # 初回実行は PASS 58 / FAIL 11 だった (実機は 69/0)。11件の内訳と処置:
+    #   - 6件 sys.path.insert(0, r'C:\AI_agent') とルートを直書き
+    #     -> __file__ 相対に修正。verify_project.py の
+    #        check_machine_locked_syspath() が再混入を止める (--fast にも乗る)
+    #   - 1件 scripts/eval_agent.py が固定パスの fixture を開いていた -> __file__ 相対
+    #   - 1件 bot_discord.py が import 時に sys.exit(1) していた (.env が無いと
+    #     モジュールごと死ぬ) -> 判定を run_bot() へ移動
+    #   - 2件 外部プロセス依存 (gws CLI / MCP サーバ) -> 前提が無ければ SKIP。
+    #     うち Drive にフォルダを作るものは ARMS_LIVE_TESTS=1 の後ろへ
+    #   - 1件 実行機のタイムゾーンに依存した回帰再現 -> 明示的な +9h に置換
+    # BitNet バイナリ (C:\BitNet) 依存3件は SKIP して正常終了する。
+    # **再び continue-on-error を足さないこと** — 落ちるものが出たら原因を潰すか、
+    # 前提の不在なら SKIP + exit 0 に分類する。この2択以外に逃げ道を作らない。
+    #
+    # PYTHONPATH を敢えて設定しない (2026-07-30):
+    # 以前は PYTHONPATH: ${{ github.workspace }} を渡していたが、これは
+    # tests/ 側の sys.path bootstrap の欠陥 (dirname が1段足りず tests/ 自身を
+    # 追加していた3ファイル、bootstrap が全く無い1ファイル) を丸ごと隠していた。
+    # 結果、実機では ImportError で落ちるテストが CI では通ってしまい、
+    # 「CI の失敗一覧が実機と一致するか」で CI 固有の問題を切り分ける、という
+    # 判定基準が原理的に成立しなくなっていた。各テストが自前で
+    # sys.path.insert(0, dirname(dirname(__file__))) する形に統一したので、
+    # CI 側の下駄は外す。**再び追加しないこと** — 隠れるのは実機の欠陥の方。
+    #
+    # ARMS_LIVE_TESTS を設定しない:
+    # 本物の Discord へ投稿する / YouTube へ実アクセスする / 受信箱を Gemini で
+    # 要約する (課金) といった副作用のあるテストは、この環境変数が "1" のときだけ
+    # 実行される。CI では設定しないので SKIP して正常終了する。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - name: Run tests/test_*.py (script exit-code semantics)
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY || 'ci-placeholder-key' }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY || 'ci-placeholder-key' }}
+          PYTHONIOENCODING: utf-8
+        shell: pwsh
+        run: |
+          $failed = @()
+          $passed = @()
+          Get-ChildItem tests/test_*.py | ForEach-Object {
+            Write-Host "`n=== $($_.Name) ==="
+            python $_.FullName
+            if ($LASTEXITCODE -ne 0) {
+              $failed += $_.Name
+            } else {
+              $passed += $_.Name
+            }
+          }
+          Write-Host "`n============================================"
+          Write-Host "PASS: $($passed.Count)  FAIL: $($failed.Count)"
+          if ($failed.Count -gt 0) {
+            Write-Host "`nFailed files:"
+            $failed | ForEach-Object { Write-Host "  - $_" }
+            exit 1
+          }

@@ -1,9 +1,20 @@
 # -*- coding: utf-8 -*-
-"""BitNet 実用テスト: ルーター・要約・下書き"""
-import sys
-sys.path.insert(0, r'C:\AI_agent')
-from tools.tool_bitnet import route_tool, summarize, draft_message
+"""BitNet 実用テスト: ルーター・要約・下書き
+
+外部前提 (C:\\BitNet の llama-cli.exe + 量子化モデル) が要る手動デバッグスクリプト。
+前提が無い環境 (CI 等) では SKIP して正常終了する — 以前はルートを直書きしていて
+`No module named 'tools'` で落ち、直した後も FileNotFoundError で落ちる状態だった。
+"""
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools.tool_bitnet import route_tool, summarize, draft_message, LLAMA_CLI, MODEL_PATH
 import time
+
+if not (os.path.exists(LLAMA_CLI) and os.path.exists(MODEL_PATH)):
+    print("⏭️ SKIP: BitNet の実行環境が見つかりません")
+    print(f"   llama-cli: {LLAMA_CLI}")
+    print(f"   model    : {MODEL_PATH}")
+    sys.exit(0)
 
 TOOLS = ["daily_news", "crypto_analysis", "curate", "agent", "bitnet"]
 TOOL_DESC = {

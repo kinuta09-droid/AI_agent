@@ -51,38 +51,62 @@ def test_vault_path_sanitize():
 
 
 def test_pid_guard():
+    """R1: agent_scheduler が PID ガードを lib.pid_guard に委譲していること。
+
+    2026-07-30 に書き換えた。旧版は `agent_scheduler._check_existing_scheduler()` を
+    直接呼んで stale/live/破損の3分岐を検査していたが、この関数は
+    lib.pid_guard.acquire() (O_EXCL によるアトミック取得) への移行で削除されており、
+    **移行以降このセキュリティ回帰テストはずっと AttributeError で死んでいた**。
+    誰も sweep を回していなかったため気付けなかった (無言の死がテスト層で起きていた)。
+
+    3分岐そのものは tests/test_pid_guard.py が本家として検査している
+    (stale / live / 破損 / 前ブート / 並行取得の16ケース)。ここで見るべきは
+    **agent_scheduler がそれを実際に使っているか** という配線であり、
+    重複させても本家と一緒に腐るだけなので、配線だけを ast で検査する。
+    """
+    import ast
     import agent_scheduler as sched
-    test_pid = os.path.join(tempfile.gettempdir(), "test_scheduler_guard.pid")
-    orig = sched.PID_FILE
+    from lib import pid_guard
+
+    # 委譲先の関数がガードとして機能すること (最小限の実挙動確認)
+    probe = os.path.join(tempfile.gettempdir(), "test_scheduler_guard.pid")
+    if os.path.exists(probe):
+        os.remove(probe)
     try:
-        sched.PID_FILE = test_pid
-
-        # 生存 PID (自分以外) → exit しつつ PID ファイルは残る
-        # ※ 自プロセス PID は「自分自身なら素通し」の早期 return に入るため親 PID を使う
-        with open(test_pid, 'w', encoding='utf-8') as f:
-            f.write(str(os.getppid()))
-        try:
-            sched._check_existing_scheduler()
-            raise AssertionError("should exit for live PID")
-        except SystemExit:
-            assert os.path.exists(test_pid), "live PID file must survive"
-
-        # 死んだ PID → ファイル削除して続行
-        with open(test_pid, 'w', encoding='utf-8') as f:
-            f.write("999999")
-        sched._check_existing_scheduler()
-        assert not os.path.exists(test_pid), "stale PID file must be removed"
-
-        # 破損ファイル → 削除して続行
-        with open(test_pid, 'w', encoding='utf-8') as f:
-            f.write("not-a-pid")
-        sched._check_existing_scheduler()
-        assert not os.path.exists(test_pid), "corrupt PID file must be removed"
+        assert pid_guard.acquire(probe), "空きロックを取得できるべき"
+        assert not pid_guard.acquire(probe, pid=os.getpid() + 1, is_alive=lambda p: True), \
+            "生存中の他インスタンスがいるなら取得を拒否するべき"
+        assert pid_guard.release(probe), "所有者は release できるべき"
     finally:
-        sched.PID_FILE = orig
-        if os.path.exists(test_pid):
-            os.remove(test_pid)
-    print("✅ R1: PID guard branches")
+        if os.path.exists(probe):
+            os.remove(probe)
+
+    # agent_scheduler 側の配線 — import 済みかつ main() から呼ばれているか
+    assert hasattr(sched, "PID_FILE"), "agent_scheduler.PID_FILE が無い"
+    src_path = os.path.join(_PROJECT_ROOT, "agent_scheduler.py")
+    with open(src_path, encoding='utf-8') as f:
+        tree = ast.parse(f.read(), src_path)
+
+    # {元の関数名: ローカルに束縛された名前}。別名 (as) を付けても追えるよう
+    # **alias.name (元の名前) で判定する** — asname で判定すると、別名を変えただけで
+    # 落ちる一方、`release as _acquire_pid_lock` のような取り違えは検出できない。
+    bindings = {
+        alias.name: (alias.asname or alias.name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "lib.pid_guard"
+        for alias in node.names
+    }
+    assert "acquire" in bindings, \
+        f"agent_scheduler が lib.pid_guard.acquire を import していない ({sorted(bindings)})"
+
+    called = {
+        getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        for node in ast.walk(tree) if isinstance(node, ast.Call)
+    }
+    assert bindings["acquire"] in called, \
+        f"lib.pid_guard.acquire を import しただけで呼んでいない " \
+        f"(束縛名 {bindings['acquire']!r} の呼び出しが無い = ガードが無効化されている)"
+    print("✅ R1: PID guard は lib.pid_guard に委譲され、agent_scheduler から呼ばれている")
 
 
 def test_task_lock_skip():

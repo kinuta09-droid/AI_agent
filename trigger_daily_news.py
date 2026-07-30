@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
+r"""
 毎朝のニュース取得トリガースクリプト。
 デイリーノートが未作成なら自動生成 → tool_fetch_daily_news() を実行。
 n8n や Windows Task Scheduler から呼び出して使う。
@@ -15,7 +15,8 @@ import datetime
 import argparse
 
 sys.stdout.reconfigure(encoding='utf-8')
-sys.path.insert(0, r'C:\AI_agent')
+# ルート直書きはこのマシン専用になるので __file__ 相対 (このファイルはルート直下)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from dotenv import load_dotenv
 load_dotenv(r'C:\AI_agent\.env')

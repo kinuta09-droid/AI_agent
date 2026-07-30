@@ -1,10 +1,21 @@
 # -*- coding: utf-8 -*-
-"""BitNet 新機能テスト: generate_pattern / quick_filter_discord / batch_tag_notes"""
-import sys
-sys.path.insert(0, r'C:\AI_agent')
+"""BitNet 新機能テスト: generate_pattern / quick_filter_discord / batch_tag_notes
+
+TEST 1 (quick_filter_discord) は BitNet バイナリを使わないのでどこでも動く。
+TEST 2 以降は C:\\BitNet の llama-cli.exe + 量子化モデルが要るので、前提が無い
+環境 (CI 等) では TEST 1 だけ実行して SKIP で正常終了する。
+"""
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.stdout.reconfigure(encoding='utf-8')
-from tools.tool_bitnet import generate_pattern, quick_filter_discord, generate_note_tags, batch_tag_notes
+from tools.tool_bitnet import (
+    generate_pattern, quick_filter_discord, generate_note_tags, batch_tag_notes,
+    LLAMA_CLI, MODEL_PATH,
+)
 import time
+
+_BITNET_AVAILABLE = os.path.exists(LLAMA_CLI) and os.path.exists(MODEL_PATH)
+_FAIL = []
 
 print("=" * 55)
 print("TEST 1: quick_filter_discord (BitNet 不使用・即時)")
@@ -28,10 +39,20 @@ for msg, expected_action, label in filter_cases:
     mark = "OK" if action == expected_action else f"FAIL(expected={expected_action})"
     if action == expected_action:
         ok += 1
+    else:
+        _FAIL.append(f"quick_filter_discord {label}: {msg!r}")
     reply_str = f', reply="{result["reply"][:20]}"' if result.get("reply") else ""
     print(f"  [{mark}] {label}: {repr(msg)} -> {action}{reply_str}")
 
 print(f"\n  正解率: {ok}/{len(filter_cases)}\n")
+
+if not _BITNET_AVAILABLE:
+    # TEST 2 以降は BitNet の実行環境が要る。ここまでの判定は終了コードに載せる。
+    print("⏭️ SKIP: TEST 2 以降は BitNet の実行環境が必要です")
+    print(f"   llama-cli: {LLAMA_CLI}")
+    print(f"   model    : {MODEL_PATH}")
+    print(f"\n=== 結果: FAIL {len(_FAIL)} ===")
+    sys.exit(1 if _FAIL else 0)
 
 print("=" * 55)
 print("TEST 2: generate_pattern - cron 式")
@@ -120,3 +141,5 @@ for r in results:
 
 print(f"\n  合計時間: {total_elapsed:.1f}s")
 print("\nALL TESTS DONE")
+print(f"\n=== 結果: FAIL {len(_FAIL)} ===")
+sys.exit(1 if _FAIL else 0)

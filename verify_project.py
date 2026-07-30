@@ -5,12 +5,27 @@ Antigravity Guardian (Stability Verifier)
 - 全ファイルの構文チェック (Compile Check)
 - エンコーディングチェック (UTF-8)
 - パッケージインポート整合性チェック (Dependency Check)
+
+使い方:
+    py verify_project.py            # フル検査 (リリース前・CI)
+    py verify_project.py --fast     # 静的検査のみ (git commit フック用)
+
+--fast は「サブプロセスを1つも起動しない検査」だけを走らせる。
+実測 (2026-07-30 実機 Windows): フル 174秒 / --fast 数秒。
+フルの所要時間の大半は [3][4][6] が ccxt/pandas/google.genai を含む
+重量級モジュールを37回ロードし直すことに費やされており、
+これを `git commit` のたびに払うのは実用に耐えない (判断ゲートA)。
+--fast が緑でもフルが緑とは限らないので、**--fast はフルの代用ではない**。
+import 整合性は CI (.github/workflows/tests.yml の guardian ジョブ) と
+リリース前の手動フル実行が担保する。
 """
 
 import os
+import re
 import sys
 import subprocess
 import importlib.util
+import warnings
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding='utf-8')
@@ -18,6 +33,10 @@ sys.stdout.reconfigure(encoding='utf-8')
 # プロジェクトルートの設定
 ROOT_DIR = Path(__file__).parent.absolute()
 PYTHON_EXE = sys.executable
+
+# Windows のドライブレター始まり (C:\... / D:/...) と POSIX の絶対パス。
+# check_machine_locked_syspath で使う。
+_ABS_PATH_RE = re.compile(r'^(?:[A-Za-z]:[\\/]|/)')
 
 def check_encoding(file_path):
     """ファイルがUTF-8で保存されているか確認する"""
@@ -29,13 +48,32 @@ def check_encoding(file_path):
         return False
 
 def check_syntax(file_path):
-    """Pythonの構文チェックを行う"""
+    """Pythonの構文チェックを行う。
+
+    旧実装は `subprocess.run([py, "-m", "py_compile", file])` で、143ファイル =
+    143プロセスを起動していた。Windows はプロセス生成が高価で、これだけで
+    フル実行時間の相当部分を占めていた (2026-07-30 計測)。
+    compile() はバイト列を渡せば PEP 263 の coding 宣言も BOM も py_compile と
+    同じ規則で解釈するので、判定内容を変えずにインプロセス化できる
+    (.pyc を書かなくなる点だけが差分で、検査には影響しない)。
+    """
     try:
-        subprocess.run([PYTHON_EXE, "-m", "py_compile", str(file_path)], 
-                       check=True, capture_output=True)
+        with open(file_path, 'rb') as f:
+            src = f.read()
+        # compile() は SyntaxWarning を出すことがあるが、構文の可否は例外で判定する。
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            compile(src, str(file_path), "exec")
         return True, ""
-    except subprocess.CalledProcessError as e:
-        return False, e.stderr.decode('utf-8', errors='replace')
+    except SyntaxError as e:
+        return False, f"{type(e).__name__}: {e}"
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        # ValueError はソース中の NUL バイト等
+        return False, f"{type(e).__name__}: {e}"
+    except (RecursionError, MemoryError) as e:
+        # サブプロセス版では病的に深いネストの1ファイルが子プロセスだけを殺したが、
+        # インプロセス化した以上ここで捕まえないと Guardian 自体が落ちる。
+        return False, f"{type(e).__name__}: コンパイルできないほど複雑なファイル ({e})"
 
 def check_undefined_names(file_path):
     """定義もインポートもされていない名前への参照を検出する。
@@ -144,22 +182,133 @@ def check_swallowed_exceptions(file_path):
     return findings
 
 
+def check_machine_locked_syspath(file_path):
+    """sys.path に絶対パスのリテラルを差し込んでいる箇所を検出する。
+
+    `sys.path.insert(0, r'C:\\AI_agent')` はこのマシンでしか成立しない「下駄」で、
+    リポジトリを別の場所に置いた環境 (CI の D:\\a\\AI_agent\\AI_agent) では
+    ImportError になる。開発機だけが緑になるので、実機のテストスイープが
+    「通っている」と言い続ける一方で CI だけが落ちる、という食い違いを生む。
+    実際 2026-07-30 の CI 初起動で6ファイルがこれで落ちた
+    (`No module named 'tools'` / `'lib'`)。正しい形は
+    `sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))`。
+
+    文字列走査ではなく ast を使う理由: この欠陥を説明する docstring/コメント自体が
+    `sys.path.insert(0, r'C:\\AI_agent')` という文字列を含むため、grep 的な検査だと
+    「教訓を書いた行」を違反として報告してしまう。
+
+    **リテラル直書きの形だけを見てはいけない** (2026-07-30 の /grill 指摘)。
+    初版は `sys.path.insert(0, <文字列定数>)` だけを見ており、実測すると7形のうち
+    6形が素通りしていた: 変数経由 (`ROOT = r'C:\\AI_agent'` -> `insert(0, ROOT)`)、
+    `sys.path += [...]`、`sys.path = [...] + sys.path`、`extend([...])`、
+    `os.path.join(r'C:\\AI_agent', ...)`、`from sys import path` -> `path.insert(...)`。
+    Session 2 の C1 (「穴を塞いだ」と書いたコミットが半分しか塞いでいなかった)
+    と同じ罠なので、**sys.path を書き換える箇所を列挙し、その式の部分木ごと**
+    絶対パスを探す形にした。名前は「絶対パス文字列を代入された名前」を集めて解決する。
+
+    Returns: [(lineno, 該当リテラル), ...]
+    """
+    import ast
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            tree = ast.parse(f.read(), str(file_path))
+    except Exception:
+        return []  # 構文エラーは check_syntax の担当
+
+    def first_abs_literal(subtree):
+        """部分木の中の最初の「絶対パスに見える文字列定数」を返す"""
+        for n in ast.walk(subtree):
+            if (isinstance(n, ast.Constant) and isinstance(n.value, str)
+                    and _ABS_PATH_RE.match(n.value)):
+                return n.value
+        return None
+
+    sys_aliases = {"sys"}      # import sys / import sys as s
+    path_aliases = set()       # from sys import path / as p
+    abs_names = {}             # 絶対パス文字列を代入された名前 -> そのリテラル
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "sys":
+                    sys_aliases.add(a.asname or "sys")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "sys":
+                for a in node.names:
+                    if a.name == "path":
+                        path_aliases.add(a.asname or "path")
+        elif isinstance(node, ast.Assign):
+            lit = first_abs_literal(node.value)
+            if lit:
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        abs_names[t.id] = lit
+
+    def is_sys_path(node):
+        """node が sys.path (別名込み) を指しているか"""
+        if isinstance(node, ast.Attribute) and node.attr == "path":
+            return isinstance(node.value, ast.Name) and node.value.id in sys_aliases
+        return isinstance(node, ast.Name) and node.id in path_aliases
+
+    def scan(subtree, lineno, out):
+        for n in ast.walk(subtree):
+            if (isinstance(n, ast.Constant) and isinstance(n.value, str)
+                    and _ABS_PATH_RE.match(n.value)):
+                out.append((lineno, n.value))
+            elif isinstance(n, ast.Name) and n.id in abs_names:
+                out.append((lineno, abs_names[n.id]))
+
+    findings = []
+    for node in ast.walk(tree):
+        # sys.path.insert / append / extend (別名込み)
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("insert", "append", "extend")
+                and is_sys_path(node.func.value)):
+            for arg in node.args:
+                scan(arg, node.lineno, findings)
+        # sys.path += [...]
+        elif isinstance(node, ast.AugAssign) and is_sys_path(node.target):
+            scan(node.value, node.lineno, findings)
+        # sys.path = [...] + sys.path
+        elif isinstance(node, ast.Assign) and any(is_sys_path(t) for t in node.targets):
+            scan(node.value, node.lineno, findings)
+    return findings
+
+
 def check_import(module_name):
     """モジュールが正常にインポート可能か確認する"""
     try:
         # サブプロセスで実行することで、現在のプロセスを汚さず、かつパス解決を検証
         cmd = [PYTHON_EXE, "-c", f"import {module_name}; print('OK')"]
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT_DIR))
+        # encoding/errors は必須 (LEVEL 1)。text=True だけだとロケール既定で復号するため、
+        # 日本語を含む traceback が cp1252 ロケール (GitHub Actions の runner) で
+        # UnicodeDecodeError になり、reader thread が死んで stderr が空になる。
+        # 結果 Guardian は「Import Error: <mod>」だけを出し理由を説明できない。
+        # 開発機 (cp932) では偶然復号できるので、CI で初めて顕在化した (2026-07-30)。
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                encoding='utf-8', errors='replace',
+                                cwd=str(ROOT_DIR))
         if result.returncode == 0:
             return True, ""
         return False, result.stderr
     except Exception as e:
         return False, str(e)
 
-def run_verification():
+def run_verification(fast=False):
+    """プロジェクト整合性を検査する。
+
+    fast=True では「サブプロセスを起動する検査」= [3] import 整合性 /
+    [4] main.py TOOLS レジストリ / [6] Briefing プロバイダー を飛ばす。
+    残る [1][2][5] は純粋な静的検査 (compile / symtable / ast / 文字列走査) で、
+    構文・エンコーディング・未定義名・Discord アンチパターン・例外握りつぶしを
+    カバーする。「commit を止めるべき壊れ方」の大半はここで捕まる。
+    """
     print("🛡️  Antigravity Guardian - System Verification Start")
+    if fast:
+        print("⚡ FAST MODE: 静的検査のみ。import整合性 [3][4][6] は検査していません")
     errors = []
-    
+
     # 1. パッケージ構造の確認
     required_pkgs = ['lib', 'tools', 'commands', 'tests']
     print("[1] Checking Package Structure...")
@@ -209,10 +358,45 @@ def run_verification():
             errors.append(f"Undefined Name: {rel_path} — {scope} が '{name}' を参照")
             print(f"  ❌ {rel_path} ({scope}: '{name}' が未定義)")
 
+        # sys.path へのルート直書き — 開発機だけ緑になる「下駄」の検出
+        for lineno, literal in check_machine_locked_syspath(py_file):
+            errors.append(
+                f"Machine-locked sys.path: {rel_path}:{lineno} — {literal!r} を直書き。"
+                f"__file__ からの相対で算出すること "
+                f"(tests/ や scripts/ からなら dirname を2段)")
+            print(f"  ❌ {rel_path}:{lineno} (sys.path にルート直書き: {literal!r})")
+
         count += 1
 
     print(f"  - Total {count} source files scanned.")
 
+    if not fast:
+        run_import_checks(errors)
+    run_discord_checks(errors)
+    if not fast:
+        run_briefing_check(errors)
+
+    # 判定
+    print("\n" + "="*50)
+    if not errors:
+        print("✅ ALL SYSTEMS GO. Project is clean and stable.")
+        if fast:
+            print("   ⚡ ただし --fast。import整合性は未検査なので"
+                  " リリース前に `py verify_project.py` (フル) を実行すること")
+        return True
+    print(f"❌ FOUND {len(errors)} ERROR(S):")
+    for err in errors:
+        print(f"\n--- ERROR ---\n{err}")
+    return False
+
+
+def run_import_checks(errors):
+    """[3] 重要モジュールの import 整合性 と [4] main.py TOOLS レジストリ。
+
+    どちらも1モジュールにつき1サブプロセスを起動し、その中で ccxt / pandas /
+    google.genai までロードされる。合計36回で実行時間の大半を占めるため、
+    --fast では丸ごと飛ばす (判断ゲートA / 2026-07-30)。
+    """
     # 3. 重要モジュールのインポート整合性
     print("\n[3] Checking Import Integrity...")
     critical_modules = [
@@ -284,6 +468,35 @@ def run_verification():
     except Exception as e:
         errors.append(f"Failed to load main.py for registry verification: {e}")
 
+
+def run_briefing_check(errors):
+    """[6] Briefing プロバイダー登録チェック。
+
+    tools.tool_briefing_manager の import を伴うサブプロセスなので --fast では飛ばす。
+    """
+    print("\n[6] Checking Briefing Providers...")
+    expected_providers = ['Crypto', 'Obsidian', 'Gmail']
+    cmd = [PYTHON_EXE, "-c",
+        "from tools.tool_briefing_manager import _providers; "
+        f"missing=[p for p in {expected_providers} if p not in _providers]; "
+        "print('MISSING:'+','.join(missing) if missing else 'OK:'+','.join(_providers.keys()))"
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True,
+                            encoding='utf-8', errors='replace',
+                            cwd=str(ROOT_DIR))
+    if result.returncode != 0 or result.stdout.startswith('MISSING:'):
+        msg = f"Briefing providers missing: {result.stdout.strip() or result.stderr.strip()}"
+        errors.append(msg)
+        print(f"  ❌ {msg}")
+    else:
+        print(f"  ✅ Registered: {result.stdout.strip().replace('OK:','')}")
+
+
+def run_discord_checks(errors):
+    """[5] Discord アンチパターン と bot 層の例外握りつぶし。
+
+    どちらも純粋な文字列走査 / ast なのでサブプロセス不要 = --fast でも実行する。
+    """
     # 5. Discord パターン禁止チェック
     print("\n[5] Checking Discord Anti-Patterns...")
     discord_files = [
@@ -322,33 +535,7 @@ def run_verification():
     if swallowed == 0:
         print(f"  ✅ bot層 {len(bot_layer)} ファイル (握りつぶした例外なし)")
 
-    # 6. Briefing プロバイダー登録チェック
-    print("\n[6] Checking Briefing Providers...")
-    expected_providers = ['Crypto', 'Obsidian', 'Gmail']
-    cmd = [PYTHON_EXE, "-c",
-        "from tools.tool_briefing_manager import _providers; "
-        f"missing=[p for p in {expected_providers} if p not in _providers]; "
-        "print('MISSING:'+','.join(missing) if missing else 'OK:'+','.join(_providers.keys()))"
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT_DIR))
-    if result.returncode != 0 or result.stdout.startswith('MISSING:'):
-        msg = f"Briefing providers missing: {result.stdout.strip() or result.stderr.strip()}"
-        errors.append(msg)
-        print(f"  ❌ {msg}")
-    else:
-        print(f"  ✅ Registered: {result.stdout.strip().replace('OK:','')}")
-
-    # 判定
-    print("\n" + "="*50)
-    if not errors:
-        print("✅ ALL SYSTEMS GO. Project is clean and stable.")
-        return True
-    else:
-        print(f"❌ FOUND {len(errors)} ERROR(S):")
-        for err in errors:
-            print(f"\n--- ERROR ---\n{err}")
-        return False
 
 if __name__ == "__main__":
-    success = run_verification()
+    success = run_verification(fast="--fast" in sys.argv[1:])
     sys.exit(0 if success else 1)

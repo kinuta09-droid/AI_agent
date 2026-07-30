@@ -58,3 +58,6 @@ scripts/note_draft.md
 # Audio pipeline runtime artifacts
 tmp_audio/
 gemini_result.md
+
+# Claude Code のローカル承認済み権限 (セッション固有の絶対パスが焼き込まれるため共有しない)
+.claude/settings.local.json
