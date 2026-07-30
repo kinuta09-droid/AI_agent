@@ -185,6 +185,13 @@ subprocess.Popen(cmd, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
 
 ## Sub-agent Delegation Protocol
 
+### Defined Subagents (`.claude/agents/`)
+| Agent | 使いどころ |
+|---|---|
+| `verifier` | PR説明文/最終要約/ドキュメントの主張が証跡に基づいているか検査 (コミット/投稿前) |
+| `test-writer` | 新規バグ修正・機能に対応するテストを既存作法 (LEVEL 0 encoding, ast静的検査) で追加 |
+| `bug-pattern-archivist` | バグ修正後の教訓を CLAUDE.md 本体か該当 skill かを判断して追記 (肥大化防止) |
+
 ### When to Delegate
 | Trigger | Example |
 |---------|---------|
