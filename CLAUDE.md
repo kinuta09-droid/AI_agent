@@ -46,6 +46,12 @@ GitHub MCP は個人の PAT が要るため `.mcp.json` に含めていない。
 claude mcp add --transport http github https://api.githubcopilot.com/mcp/ --header "Authorization: Bearer YOUR_PAT"
 ```
 
+**Agent Reach は MCP ではない** (よく「Agent Reach MCP」と呼ばれるが誤り)。本体は CLI +
+Agent Skill で、同梱の MCP サーバーが公開するツールは `get_status` 1個だけ・かつ mcp SDK 2.x
+ではクラッシュするため `.mcp.json` には登録していない。導入手順と落とし穴は
+`docs/agent-reach.md` を参照 (`pipx install git+https://github.com/Panniantong/agent-reach.git`
+→ `agent-reach skill --install`。Skill はユーザースコープなのでチェックアウト毎に要再実行)。
+
 ## Skills (領域別の詳細な既知バグパターン)
 `## Known Bug Patterns` は**プロジェクト全域に効く教訓のみ**を残し、特定領域の詳細は `.claude/skills/` に分割した。該当領域のファイルを触るときは Claude が自動でロードするが、新しい教訓を追記するときは **どの skill に属するか判断してからそこに書く** — Known Bug Patterns 本体に無闇に追記して肥大化させない。
 
