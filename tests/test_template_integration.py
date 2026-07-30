@@ -1,16 +1,35 @@
-import sys
+# -*- coding: utf-8 -*-
+"""tool_create_note のテンプレート統合 (参照元/関連ノートの抽出) の回帰テスト
+
+本文中の `## References` / `## Sources` / `> Source: [[...]]` をテンプレートの
+「### 参照元」「### 関連ノート」へ移し、かつ**本文を巻き込んで消さない**ことを見る。
+最後の点はかつて正規表現が本文を丸ごと飲み込んだ実障害の回帰。
+
+実 Vault にノートを作る統合テスト。Vault が無い環境 (CI 等) では SKIP して
+正常終了する (tests/test_vault_semantic_smoke.py と同じ作法)。
+
+2026-07-30 に3点直した (test_moc_auto_link.py と同じ欠陥):
+  1. `from agent_hello import find_file_in_vault` が ImportError。
+     この関数は lib/lib_shared.py:256 へ移動済み。
+  2. ルートを `r'C:\\AI_agent'` と直書きしていたのを __file__ 相対に。
+  3. **errors を集めておきながら終了コードに反映していなかった**ため、
+     全チェックが FAIL でも CI からは緑に見えていた。
+
+実行: py tests/test_template_integration.py
+"""
 import os
-import shutil
-import re
-sys.path.insert(0, r'C:\AI_agent')
+import sys
 
-from agent_hello import tool_create_note, find_file_in_vault
+sys.stdout.reconfigure(encoding='utf-8')
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
-def test_template_integration():
-    print("=== TEST START: Template Integration ===")
-    
-    filename = "Test_Integration.md"
-    content = """This is the main content of the note.
+from lib.lib_shared import VAULT_ROOT, find_file_in_vault
+from tools.tool_obsidian import tool_create_note
+
+FILENAME = "Test_Integration.md"
+CONTENT = """This is the main content of the note.
 It has some important information.
 > Source: [[Lineage_Parent_Note]]
 
@@ -24,89 +43,93 @@ It has some important information.
 
 This part should remain in the content.
 """
-    summary = "Testing template integration"
 
-    # 1. Create Note
-    print(f"\nCreating note: {filename}")
-    result = tool_create_note(filename, content, summary)
+
+def test_template_integration():
+    print("=== TEST START: Template Integration ===")
+    errors = []
+
+    print(f"\nCreating note: {FILENAME}")
+    result = tool_create_note(FILENAME, CONTENT, "Testing template integration")
     print(f"Result: {result}")
-    
-    # 2. Read File
-    path = find_file_in_vault(filename)
-    if path and os.path.exists(path):
+
+    path = find_file_in_vault(FILENAME)
+    if not (path and os.path.exists(path)):
+        return [f"作成したはずのファイルが見つからない ({result})"]
+
+    try:
         with open(path, 'r', encoding='utf-8') as f:
             file_content = f.read()
-        
+
         print("\n--- Generated File Content ---")
         print(file_content)
         print("------------------------------\n")
 
-        # 3. Verification
-        errors = []
-        
-        # Check References in Template Section
-        if "### 参照元\n- https://example.com/ref1" in file_content:
-            print("✅ PASS: References moved to Template section")
-        else:
-            errors.append("❌ FAIL: References not found in Template section")
+        def expect(label, cond, detail):
+            if cond:
+                print(f"  ✅ PASS: {label}")
+            else:
+                errors.append(f"{label}: {detail}")
+                print(f"  ❌ FAIL: {label} — {detail}")
 
-        # Check Main Content Preservation (Crucial for regex bug fix)
-        if "This is the main content of the note." in file_content:
-             print("✅ PASS: Main content preserved")
-        else:
-             errors.append("❌ FAIL: Main content was swallowed by regex!")
+        expect(
+            "参照元がテンプレート節へ移動",
+            "### 参照元\n- https://example.com/ref1" in file_content,
+            "### 参照元 に URL が入っていない",
+        )
+        expect(
+            "本文が保持されている",
+            "This is the main content of the note." in file_content,
+            "正規表現が本文を飲み込んだ",
+        )
+        expect(
+            "関連ノート (Lineage 含む) がテンプレート節へ移動",
+            "- [[Lineage_Parent_Note]]" in file_content,
+            "Lineage リンクがテンプレート節に無い",
+        )
+        expect(
+            "Lineage リンクが本文から除去されている",
+            "> Source: [[Lineage_Parent_Note]]" not in file_content,
+            "本文に '> Source: ...' が残っている",
+        )
+        expect(
+            "'## References' が本文から除去されている",
+            "## References" not in file_content,
+            "見出しが本文に残っている",
+        )
+        expect(
+            "'## Sources' が本文から除去されている",
+            "## Sources" not in file_content,
+            "見出しが本文に残っている",
+        )
+        expect(
+            "末尾の本文が保持されている",
+            "This part should remain in the content." in file_content,
+            "末尾が巻き込まれて消えた",
+        )
+    finally:
+        # 判定の成否によらず実 Vault から消す (旧版は成功時しか消していなかった)
+        try:
+            os.remove(path)
+            print("  (deleted test file)")
+        except OSError as e:
+            print(f"  ⚠️ テストファイルを削除できなかった: {e}")
 
-        # Check Sources in Template Section (Includes Lineage)
-        if "### 関連ノート\n- [[Lineage_Parent_Note]]\n- [[Source_Note_A]]" in file_content or "- [[Lineage_Parent_Note]]" in file_content:
-            print("✅ PASS: Sources (incl. Lineage) moved to Template section")
-        else:
-            errors.append("❌ FAIL: Sources/Lineage not found in Template section")
+    return errors
 
-        # Check Lineage Removal from Body
-        # We need to ensure "> Source: ..." is gone. 
-        # But be careful not to match the template if we formatted it differently, 
-        # though template uses "- [[...]]".
-        if "> Source: [[Lineage_Parent_Note]]" in file_content:
-             errors.append("❌ FAIL: Lineage link '> Source: ...' still exists in content")
-        else:
-             print("✅ PASS: Lineage link removed from content")
-
-
-        # Check Removal from Body
-        # Original headings should be gone from the body text part
-        # Note: "This part should remain in the content" is after sources.
-        # But our regex might remove everything till next header or EOF.
-        # Let's check if the raw headings exist in the generated file OUTSIDE of the template sections.
-        # Simple check: count occurrences. "### 参照元" is template, "## References" is content.
-        if "## References" in file_content:
-             errors.append("❌ FAIL: '## References' header still exists in content")
-        else:
-             print("✅ PASS: '## References' removed from content")
-
-        if "## Sources" in file_content:
-             errors.append("❌ FAIL: '## Sources' header still exists in content")
-        else:
-             print("✅ PASS: '## Sources' removed from content")
-        
-        if "This part should remain in the content." in file_content:
-             print("✅ PASS: Footer content preserved")
-        else:
-             errors.append("❌ FAIL: Footer content was accidentally removed")
-
-        if not errors:
-            print("\n🎉 ALL TESTS PASSED!")
-            # Cleanup
-            try:
-                os.remove(path)
-                print("Deleted test file.")
-            except: pass
-        else:
-            print("\n💀 ERRORS FOUND:")
-            for e in errors:
-                print(e)
-
-    else:
-         print("❌ FAIL: File not found.")
 
 if __name__ == "__main__":
-    test_template_integration()
+    if not os.path.isdir(VAULT_ROOT):
+        print(f"⏭️ SKIP: Obsidian Vault が見つかりません ({VAULT_ROOT})")
+        print("   (実 Vault にノートを作る統合テストのため、CI 等では実行できません)")
+        sys.exit(0)
+
+    failed = test_template_integration()
+    print("\n" + "=" * 50)
+    if failed:
+        print(f"❌ FAILED: {len(failed)} 件")
+        for f in failed:
+            print(f"  - {f}")
+        sys.exit(1)
+    print("🎉 ALL TESTS PASSED")
+    sys.exit(0)

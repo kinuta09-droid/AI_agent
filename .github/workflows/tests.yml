@@ -40,6 +40,21 @@ jobs:
     # ヘッドレスCIでは原理的に green にならない。既知の対象は下記ジョブ実行結果の
     # サマリーで一覧化されるので、一度確認して要否を判断してから
     # continue-on-error を外し、真のリグレッションゲートにすること。
+    #
+    # PYTHONPATH を敢えて設定しない (2026-07-30):
+    # 以前は PYTHONPATH: ${{ github.workspace }} を渡していたが、これは
+    # tests/ 側の sys.path bootstrap の欠陥 (dirname が1段足りず tests/ 自身を
+    # 追加していた3ファイル、bootstrap が全く無い1ファイル) を丸ごと隠していた。
+    # 結果、実機では ImportError で落ちるテストが CI では通ってしまい、
+    # 「CI の失敗一覧が実機と一致するか」で CI 固有の問題を切り分ける、という
+    # 判定基準が原理的に成立しなくなっていた。各テストが自前で
+    # sys.path.insert(0, dirname(dirname(__file__))) する形に統一したので、
+    # CI 側の下駄は外す。**再び追加しないこと** — 隠れるのは実機の欠陥の方。
+    #
+    # ARMS_LIVE_TESTS を設定しない:
+    # 本物の Discord へ投稿する / YouTube へ実アクセスする / 受信箱を Gemini で
+    # 要約する (課金) といった副作用のあるテストは、この環境変数が "1" のときだけ
+    # 実行される。CI では設定しないので SKIP して正常終了する。
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,7 +67,6 @@ jobs:
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY || 'ci-placeholder-key' }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY || 'ci-placeholder-key' }}
-          PYTHONPATH: ${{ github.workspace }}
           PYTHONIOENCODING: utf-8
         shell: pwsh
         run: |
