@@ -19,11 +19,13 @@ sys.stdout.reconfigure(encoding='utf-8')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from dotenv import load_dotenv
-load_dotenv(r'C:\AI_agent\.env')
+
+from lib.paths import ENV_PATH, VAULT_ROOT
+
+load_dotenv(ENV_PATH)
 
 import agent_hello
 
-VAULT_ROOT = r'D:\マイドライブ\Obsidian'
 DAILY_DIR = os.path.join(VAULT_ROOT, '01_Daily')
 TEMPLATE_PATH = os.path.join(VAULT_ROOT, '99_Assets', 'Templates', 'Tpl_Daily.md')
 

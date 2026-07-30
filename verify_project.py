@@ -276,6 +276,85 @@ def check_machine_locked_syspath(file_path):
     return findings
 
 
+# 絶対パスの直書きを許す唯一の場所。ここが「リポジトリ外の実体」の宣言箇所。
+_ABS_PATH_ALLOWED = {"lib/paths.py"}
+
+# 据え置き中の既知の直書き。**新規追加禁止** — 増やすなら lib/paths.py へ寄せる。
+_ABS_PATH_EXEMPT = {
+    "tools/tool_lora_factory.py":
+        "旧Vault (C:\\obsidian\\Obsidian\\...) を指したまま。現行 Vault は "
+        "D ドライブなので移行漏れの可能性が高いが、書き込み先が変わる変更に "
+        "なるため要判断。棚卸しの結論が出たら lib/paths.py へ寄せて本行を消す",
+}
+
+# パスを組み立てている、と見なす呼び出し
+_PATHY_CALLS = {"join", "load_dotenv", "open", "exists", "isdir", "isfile", "makedirs"}
+# パス定数だと見なす代入先の名前の語尾
+_PATHY_SUFFIXES = ("_PATH", "_DIR", "_ROOT", "_FILE")
+
+
+def check_hardcoded_abs_paths(file_path, rel_path):
+    """実行時データパスに絶対パスを直書きしている箇所を検出する。
+
+    check_machine_locked_syspath() の姉妹編。あちらは **sys.path** だけを見るので、
+    2026-07-30 の修正後も `learning_db.json` / コストガードのカウンタ /
+    OHLCVキャッシュ / token.json / .env といった **実行時に読み書きするパス** の
+    ルート直書きが9箇所そのまま残っていた (検出対象外だったため誰も気付かない)。
+
+    sys.path の直書きは ImportError で派手に落ちるが、データパスの直書きは
+    **落ちずに間違ったファイルを読み書きする**。別の場所に置いたチェックアウトが
+    本番の learning_db やコストガードのカウンタを更新してしまえば、学習DBの
+    統計もコスト上限も静かに嘘になる。sys.path 版より症状が見えにくい。
+
+    誤検知を避けるため「パスを組み立てている文脈」に限定する:
+      - os.path.join() / load_dotenv() / open() 等の引数
+      - 語尾が _PATH/_DIR/_ROOT/_FILE の名前への代入
+    これで `DEFAULT_KEYWORDS = [..., "C:\\obsidian", ...]` のような
+    「検索語としての絶対パス」(scripts/search_dev_logs.py) は素通りする。
+
+    docstring/コメントは ast なので元々引っかからない (この関数自身の docstring が
+    絶対パスを含んでいるのが何よりの理由 — check_machine_locked_syspath と同じ罠)。
+
+    Returns: [(lineno, 該当リテラル), ...]
+    """
+    import ast
+
+    norm = str(rel_path).replace("\\", "/")
+    if norm in _ABS_PATH_ALLOWED or norm in _ABS_PATH_EXEMPT:
+        return []
+    # tests/ は「期待値としての絶対パス」を書く場所なので対象外
+    if norm.startswith("tests/"):
+        return []
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            tree = ast.parse(f.read(), str(file_path))
+    except Exception:
+        return []  # 構文エラーは check_syntax の担当
+
+    findings = []
+
+    def take(node):
+        if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and _ABS_PATH_RE.match(node.value)):
+            findings.append((node.lineno, node.value))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+            if name in _PATHY_CALLS:
+                for arg in node.args:
+                    take(arg)
+                for kw in node.keywords:
+                    take(kw.value)
+        elif isinstance(node, ast.Assign):
+            if any(isinstance(t, ast.Name) and t.id.upper().endswith(_PATHY_SUFFIXES)
+                   for t in node.targets):
+                take(node.value)
+    return findings
+
+
 def check_import(module_name):
     """モジュールが正常にインポート可能か確認する"""
     try:
@@ -365,6 +444,15 @@ def run_verification(fast=False):
                 f"__file__ からの相対で算出すること "
                 f"(tests/ や scripts/ からなら dirname を2段)")
             print(f"  ❌ {rel_path}:{lineno} (sys.path にルート直書き: {literal!r})")
+
+        # 実行時データパスへのルート直書き — 落ちずに別ファイルを読み書きする方の下駄
+        for lineno, literal in check_hardcoded_abs_paths(py_file, rel_path):
+            errors.append(
+                f"Hardcoded absolute path: {rel_path}:{lineno} — {literal!r} を直書き。"
+                f"リポジトリ配下なら lib/paths.py の PROJECT_ROOT/LOGS_DIR 経由、"
+                f"リポジトリ外 (Vault/BitNet 等) なら lib/paths.py に "
+                f"「.env で上書き可・既定値は現行値」の形で宣言して import すること")
+            print(f"  ❌ {rel_path}:{lineno} (データパスにルート直書き: {literal!r})")
 
         count += 1
 

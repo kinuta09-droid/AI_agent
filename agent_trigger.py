@@ -4,8 +4,10 @@ import os
 import requests
 import sys
 
+from lib.paths import VAULT_ROOT
+
 # Configuration
-WATCH_FILE = r"D:\マイドライブ\Obsidian\Dev_Logs\Agent_Input.md"
+WATCH_FILE = os.path.join(VAULT_ROOT, "Dev_Logs", "Agent_Input.md")
 WEBHOOK_URL = "http://localhost:5678/webhook/mobile-agent"
 
 def get_file_mtime(filepath):

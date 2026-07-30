@@ -13,7 +13,8 @@ diagnose_curate_note.py — /curate が「作成した」と表示したノー�
   5. Obsidian の [[wikilink]] が解決可能かを判定する
 
 lib.lib_shared は import しない（GOOGLE_API_KEY 未設定だと sys.exit する上に
-google-genai / tavily を要求するため）。Vault パスはソースから正規表現で拾う。
+google-genai / tavily を要求するため）。Vault パスは依存の軽い lib.paths から取り、
+それも読めなければ lib/paths.py のソースから正規表現で拾う。
 
 実行:
   py scripts/diagnose_curate_note.py
@@ -48,19 +49,31 @@ def _note(level: str, msg: str):
 
 
 def resolve_vault_root(override: str = "") -> str:
-    """lib/lib_shared.py の VAULT_ROOT を import せずに取り出す。"""
+    """本体と同じ VAULT_ROOT を、lib_shared を import せずに解決する。
+
+    lib.paths は dotenv しか要求しないので import してよい（.env の
+    OBSIDIAN_VAULT_ROOT による上書きもそのまま反映される）。dotenv すら
+    入っていない環境向けに、ソースの DEFAULT_VAULT_ROOT へフォールバックする。
+    """
     if override:
         return override
-    shared = os.path.join(_PROJECT_ROOT, "lib", "lib_shared.py")
+    if _PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, _PROJECT_ROOT)
     try:
-        with open(shared, encoding="utf-8") as f:
+        from lib.paths import VAULT_ROOT
+        return VAULT_ROOT
+    except Exception as e:
+        print(f"⚠️  lib.paths を import できませんでした（{e}）。ソースから既定値を読みます。")
+    paths_py = os.path.join(_PROJECT_ROOT, "lib", "paths.py")
+    try:
+        with open(paths_py, encoding="utf-8") as f:
             src = f.read()
     except OSError as e:
-        print(f"❌ lib/lib_shared.py を読めません: {e}")
+        print(f"❌ lib/paths.py を読めません: {e}")
         return ""
-    m = re.search(r"^VAULT_ROOT\s*=\s*r?['\"](.+?)['\"]", src, re.MULTILINE)
+    m = re.search(r"^DEFAULT_VAULT_ROOT\s*=\s*r?['\"](.+?)['\"]", src, re.MULTILINE)
     if not m:
-        print("❌ lib/lib_shared.py から VAULT_ROOT を抽出できませんでした。--vault で指定してください。")
+        print("❌ lib/paths.py から DEFAULT_VAULT_ROOT を抽出できませんでした。--vault で指定してください。")
         return ""
     return m.group(1)
 

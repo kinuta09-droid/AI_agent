@@ -230,11 +230,145 @@ def test_machine_locked_syspath_covers_indirection():
             os.remove(probe)
 
 
+def test_hardcoded_data_path_is_blocked():
+    """実行時データパスへのルート直書きを --fast が止めることの回帰テスト。
+
+    [3][4] が塞いだのは **sys.path** の直書きだけで、2026-07-30 時点では
+    `learning_db.json` / コストガードのカウンタ / `.env` / `token.json` /
+    OHLCVキャッシュ といった **実行時に読み書きするパス** の直書きが9箇所
+    残っていた。sys.path 版は ImportError で落ちるので気付けるが、データパス版は
+    **落ちずに間違ったファイルを読み書きする** ぶん症状が見えにくい
+    (学習DBの統計もコスト上限も静かに嘘になる)。
+
+    プローブは scripts/ に置く: 検査は tests/ を対象外にしている
+    (テストは期待値として絶対パスを書く場所なので) ため、tests/ に置くと
+    「配線されているのに緑」になり、テストの意味が消える。
+    """
+    print("\n[5] 実行時データパスへのルート直書きを --fast が止める")
+
+    violating = os.path.join(_PROJECT_ROOT, "scripts", "_tmp_datapath_probe.py")
+    with open(violating, "w", encoding="utf-8") as f:
+        f.write("# -*- coding: utf-8 -*-\n"
+                "import os\n"
+                "LEARNING_DB_PATH = os.path.join(r'C:\\AI_agent', 'learning_db.json')\n")
+    try:
+        code, out, _ = _run_verify("--fast")
+        check("データパス直書きを置くと --fast が赤 (exit 1)", code == 1,
+              f"exit={code} — 検査が判定に反映されていない")
+        check("エラー内容に該当ファイル名が出る", "_tmp_datapath_probe" in out,
+              f"出力に無い: {out[-400:]!r}")
+    finally:
+        os.remove(violating)
+
+    code, _, _ = _run_verify("--fast")
+    check("プローブ削除後は再び緑", code == 0, f"exit={code} — 一時ファイルが残っている")
+
+
+def test_hardcoded_data_path_forms_and_false_positives():
+    """どの書き方まで見えているか / 何を誤検知してはいけないかを関数単体で固定する。
+
+    誤検知の方向が特に重要: この検査を「絶対パス文字列を全部赤にする」形に広げると、
+    (a) 欠陥を説明する docstring、(b) `scripts/search_dev_logs.py` の
+    「移行の痕跡を探す検索語リスト」に入っている `C:\\obsidian`、
+    (c) 唯一の宣言場所である `lib/paths.py` 自身 — の3つが巻き添えになる。
+    だから「パスを組み立てている文脈」に限定してある。その線引きをここで縛る。
+    """
+    print("\n[6] データパス検査の網羅と誤検知")
+    from verify_project import check_hardcoded_abs_paths as chk
+
+    probe = os.path.join(_PROJECT_ROOT, "scripts", "_tmp_datapath_form_probe.py")
+    rel = os.path.join("scripts", "_tmp_datapath_form_probe.py")
+
+    detected = {
+        "os.path.join の第1引数": "import os\nP = os.path.join(r'C:\\AI_agent', 'learning_db.json')\n",
+        "load_dotenv の引数": "from dotenv import load_dotenv\nload_dotenv(r'C:\\AI_agent\\.env')\n",
+        "open の引数": "f = open(r'C:\\AI_agent\\learning_db.json')\n",
+        "_PATH への代入": "TOKEN_PATH = r'C:\\AI_agent\\token.json'\n",
+        "_DIR への代入": "OHLCV_CACHE_DIR = r'C:\\AI_agent\\logs\\ohlcv_cache'\n",
+        "_ROOT への代入": "VAULT_ROOT = r'D:\\マイドライブ\\Obsidian'\n",
+        "キーワード引数": "import os\nos.makedirs(name=r'C:\\AI_agent\\logs')\n",
+        "POSIX 絶対パス": "import os\nP = os.path.join('/opt/arms', 'db.json')\n",
+    }
+    clean = {
+        "__file__ 相対": (
+            "import os\n"
+            "ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n"
+            "LEARNING_DB_PATH = os.path.join(ROOT, 'learning_db.json')\n"),
+        "教訓を docstring に書いただけ": (
+            "r'''以前は os.path.join(r\"C:\\AI_agent\", \"learning_db.json\") だった。'''\n"
+            "import os\n"),
+        "コメントに書いただけ": "import os\n# LEARNING_DB_PATH = r'C:\\AI_agent\\learning_db.json'\n",
+        "検索語リスト (search_dev_logs 型)": (
+            "DEFAULT_KEYWORDS = ['マイドライブ', 'C:\\\\obsidian', 'C:/obsidian', '移行']\n"),
+        "相対パスの組み立て": "import os\nP = os.path.join('logs', 'x.json')\n",
+    }
+    try:
+        for label, src in detected.items():
+            with open(probe, "w", encoding="utf-8") as f:
+                f.write("# -*- coding: utf-8 -*-\n" + src)
+            check(f"検出できる: {label}", bool(chk(probe, rel)), "素通りしている")
+
+        for label, src in clean.items():
+            with open(probe, "w", encoding="utf-8") as f:
+                f.write("# -*- coding: utf-8 -*-\n" + src)
+            got = chk(probe, rel)
+            check(f"誤検知しない: {label}", got == [], f"誤検知: {got}")
+
+        # 唯一の宣言場所 lib/paths.py は allowlist されている (ここが赤いと
+        # 「宣言する場所が無い」状態になり、検査ごと外される方向に力が働く)
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("# -*- coding: utf-8 -*-\nVAULT_ROOT = r'D:\\マイドライブ\\Obsidian'\n")
+        check("lib/paths.py は許可されている", chk(probe, "lib/paths.py") == [],
+              "唯一の宣言場所まで赤くしている")
+        check("tests/ は対象外", chk(probe, "tests/test_x.py") == [],
+              "テストの期待値まで赤くしている")
+    finally:
+        if os.path.exists(probe):
+            os.remove(probe)
+
+
+def test_paths_module_is_the_single_source():
+    """lib/paths.py が実際に「リポジトリルートを __file__ から算出」していること。
+
+    検査 (verify) と実体 (lib/paths.py) は別物なので、検査だけ通って実体が
+    直書きに戻っている、という食い違いがありうる。ここで実体側を縛る。
+    """
+    print("\n[7] lib/paths.py の解決先")
+    from lib import paths
+
+    check("PROJECT_ROOT がリポジトリルート",
+          os.path.normcase(paths.PROJECT_ROOT) == os.path.normcase(_PROJECT_ROOT),
+          f"{paths.PROJECT_ROOT} != {_PROJECT_ROOT}")
+    check("ENV_PATH は PROJECT_ROOT/.env",
+          paths.ENV_PATH == os.path.join(_PROJECT_ROOT, ".env"), paths.ENV_PATH)
+    check("LOGS_DIR は PROJECT_ROOT/logs",
+          paths.LOGS_DIR == os.path.join(_PROJECT_ROOT, "logs"), paths.LOGS_DIR)
+
+    # lib_shared のデータパスが paths 経由になっていること (直書きへの復帰検出)。
+    # lib_shared は API キーが要るので import せず、ast で式の形だけ見る。
+    import ast
+    src = open(os.path.join(_PROJECT_ROOT, "lib", "lib_shared.py"), encoding="utf-8").read()
+    wanted = {"LEARNING_DB_PATH", "LEARNING_DB_ARCHIVE_PATH"}
+    found = {}
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id in wanted:
+                    found[t.id] = ast.unparse(node.value)
+    for name in sorted(wanted):
+        expr = found.get(name, "")
+        check(f"{name} が PROJECT_ROOT 起点", "PROJECT_ROOT" in expr,
+              f"式が {expr!r} — 直書きに戻っている疑い")
+
+
 if __name__ == "__main__":
     test_fast_skips_only_the_expensive_sections()
     test_fast_actually_fails_on_broken_source()
     test_machine_locked_syspath_is_blocked()
     test_machine_locked_syspath_covers_indirection()
+    test_hardcoded_data_path_is_blocked()
+    test_hardcoded_data_path_forms_and_false_positives()
+    test_paths_module_is_the_single_source()
 
     print("\n" + "=" * 55)
     print(f"PASS: {len(_PASS)} / FAIL: {len(_FAIL)}")

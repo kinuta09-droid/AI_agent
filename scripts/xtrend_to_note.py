@@ -25,7 +25,10 @@ if _PROJECT_ROOT not in sys.path:
 sys.stdout.reconfigure(encoding='utf-8')
 
 from dotenv import load_dotenv
-load_dotenv(r'C:\AI_agent\.env')
+
+from lib.paths import ENV_PATH
+
+load_dotenv(ENV_PATH)
 
 from lib.lib_shared import client, MODEL_NAME_HEAVY, WORK_DIR
 

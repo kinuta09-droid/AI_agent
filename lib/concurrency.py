@@ -26,8 +26,10 @@ from contextlib import contextmanager
 
 from dotenv import load_dotenv
 
+from lib.paths import ENV_PATH
+
 # 単独 import されても .env を読めるようにする (load_dotenv は冪等)
-load_dotenv('C:\\AI_agent\\.env')
+load_dotenv(ENV_PATH)
 
 
 # 既定値。ここを変えるときは tests/test_concurrency.py も一緒に直す。

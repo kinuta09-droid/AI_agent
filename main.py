@@ -10,7 +10,9 @@ from dotenv import load_dotenv
 # Windows console encoding fix
 sys.stdout.reconfigure(encoding='utf-8')
 
-load_dotenv(r'C:\AI_agent\.env')
+from lib.paths import ENV_PATH
+
+load_dotenv(ENV_PATH)
 
 # ---------------------------------------------------------
 # Gemini Client (lightweight init)
