@@ -5,12 +5,26 @@ Antigravity Guardian (Stability Verifier)
 - 全ファイルの構文チェック (Compile Check)
 - エンコーディングチェック (UTF-8)
 - パッケージインポート整合性チェック (Dependency Check)
+
+使い方:
+    py verify_project.py            # フル検査 (リリース前・CI)
+    py verify_project.py --fast     # 静的検査のみ (git commit フック用)
+
+--fast は「サブプロセスを1つも起動しない検査」だけを走らせる。
+実測 (2026-07-30 実機 Windows): フル 174秒 / --fast 数秒。
+フルの所要時間の大半は [3][4][6] が ccxt/pandas/google.genai を含む
+重量級モジュールを37回ロードし直すことに費やされており、
+これを `git commit` のたびに払うのは実用に耐えない (判断ゲートA)。
+--fast が緑でもフルが緑とは限らないので、**--fast はフルの代用ではない**。
+import 整合性は CI (.github/workflows/tests.yml の guardian ジョブ) と
+リリース前の手動フル実行が担保する。
 """
 
 import os
 import sys
 import subprocess
 import importlib.util
+import warnings
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding='utf-8')
@@ -29,13 +43,27 @@ def check_encoding(file_path):
         return False
 
 def check_syntax(file_path):
-    """Pythonの構文チェックを行う"""
+    """Pythonの構文チェックを行う。
+
+    旧実装は `subprocess.run([py, "-m", "py_compile", file])` で、143ファイル =
+    143プロセスを起動していた。Windows はプロセス生成が高価で、これだけで
+    フル実行時間の相当部分を占めていた (2026-07-30 計測)。
+    compile() はバイト列を渡せば PEP 263 の coding 宣言も BOM も py_compile と
+    同じ規則で解釈するので、判定内容を変えずにインプロセス化できる
+    (.pyc を書かなくなる点だけが差分で、検査には影響しない)。
+    """
     try:
-        subprocess.run([PYTHON_EXE, "-m", "py_compile", str(file_path)], 
-                       check=True, capture_output=True)
+        with open(file_path, 'rb') as f:
+            src = f.read()
+        # compile() は SyntaxWarning を出すことがあるが、構文の可否は例外で判定する。
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            compile(src, str(file_path), "exec")
         return True, ""
-    except subprocess.CalledProcessError as e:
-        return False, e.stderr.decode('utf-8', errors='replace')
+    except SyntaxError as e:
+        return False, f"{type(e).__name__}: {e}"
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        return False, f"{type(e).__name__}: {e}"
 
 def check_undefined_names(file_path):
     """定義もインポートもされていない名前への参照を検出する。
@@ -156,10 +184,20 @@ def check_import(module_name):
     except Exception as e:
         return False, str(e)
 
-def run_verification():
+def run_verification(fast=False):
+    """プロジェクト整合性を検査する。
+
+    fast=True では「サブプロセスを起動する検査」= [3] import 整合性 /
+    [4] main.py TOOLS レジストリ / [6] Briefing プロバイダー を飛ばす。
+    残る [1][2][5] は純粋な静的検査 (compile / symtable / ast / 文字列走査) で、
+    構文・エンコーディング・未定義名・Discord アンチパターン・例外握りつぶしを
+    カバーする。「commit を止めるべき壊れ方」の大半はここで捕まる。
+    """
     print("🛡️  Antigravity Guardian - System Verification Start")
+    if fast:
+        print("⚡ FAST MODE: 静的検査のみ。import整合性 [3][4][6] は検査していません")
     errors = []
-    
+
     # 1. パッケージ構造の確認
     required_pkgs = ['lib', 'tools', 'commands', 'tests']
     print("[1] Checking Package Structure...")
@@ -213,6 +251,33 @@ def run_verification():
 
     print(f"  - Total {count} source files scanned.")
 
+    if not fast:
+        run_import_checks(errors)
+    run_discord_checks(errors)
+    if not fast:
+        run_briefing_check(errors)
+
+    # 判定
+    print("\n" + "="*50)
+    if not errors:
+        print("✅ ALL SYSTEMS GO. Project is clean and stable.")
+        if fast:
+            print("   ⚡ ただし --fast。import整合性は未検査なので"
+                  " リリース前に `py verify_project.py` (フル) を実行すること")
+        return True
+    print(f"❌ FOUND {len(errors)} ERROR(S):")
+    for err in errors:
+        print(f"\n--- ERROR ---\n{err}")
+    return False
+
+
+def run_import_checks(errors):
+    """[3] 重要モジュールの import 整合性 と [4] main.py TOOLS レジストリ。
+
+    どちらも1モジュールにつき1サブプロセスを起動し、その中で ccxt / pandas /
+    google.genai までロードされる。合計36回で実行時間の大半を占めるため、
+    --fast では丸ごと飛ばす (判断ゲートA / 2026-07-30)。
+    """
     # 3. 重要モジュールのインポート整合性
     print("\n[3] Checking Import Integrity...")
     critical_modules = [
@@ -284,6 +349,33 @@ def run_verification():
     except Exception as e:
         errors.append(f"Failed to load main.py for registry verification: {e}")
 
+
+def run_briefing_check(errors):
+    """[6] Briefing プロバイダー登録チェック。
+
+    tools.tool_briefing_manager の import を伴うサブプロセスなので --fast では飛ばす。
+    """
+    print("\n[6] Checking Briefing Providers...")
+    expected_providers = ['Crypto', 'Obsidian', 'Gmail']
+    cmd = [PYTHON_EXE, "-c",
+        "from tools.tool_briefing_manager import _providers; "
+        f"missing=[p for p in {expected_providers} if p not in _providers]; "
+        "print('MISSING:'+','.join(missing) if missing else 'OK:'+','.join(_providers.keys()))"
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT_DIR))
+    if result.returncode != 0 or result.stdout.startswith('MISSING:'):
+        msg = f"Briefing providers missing: {result.stdout.strip() or result.stderr.strip()}"
+        errors.append(msg)
+        print(f"  ❌ {msg}")
+    else:
+        print(f"  ✅ Registered: {result.stdout.strip().replace('OK:','')}")
+
+
+def run_discord_checks(errors):
+    """[5] Discord アンチパターン と bot 層の例外握りつぶし。
+
+    どちらも純粋な文字列走査 / ast なのでサブプロセス不要 = --fast でも実行する。
+    """
     # 5. Discord パターン禁止チェック
     print("\n[5] Checking Discord Anti-Patterns...")
     discord_files = [
@@ -322,33 +414,7 @@ def run_verification():
     if swallowed == 0:
         print(f"  ✅ bot層 {len(bot_layer)} ファイル (握りつぶした例外なし)")
 
-    # 6. Briefing プロバイダー登録チェック
-    print("\n[6] Checking Briefing Providers...")
-    expected_providers = ['Crypto', 'Obsidian', 'Gmail']
-    cmd = [PYTHON_EXE, "-c",
-        "from tools.tool_briefing_manager import _providers; "
-        f"missing=[p for p in {expected_providers} if p not in _providers]; "
-        "print('MISSING:'+','.join(missing) if missing else 'OK:'+','.join(_providers.keys()))"
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT_DIR))
-    if result.returncode != 0 or result.stdout.startswith('MISSING:'):
-        msg = f"Briefing providers missing: {result.stdout.strip() or result.stderr.strip()}"
-        errors.append(msg)
-        print(f"  ❌ {msg}")
-    else:
-        print(f"  ✅ Registered: {result.stdout.strip().replace('OK:','')}")
-
-    # 判定
-    print("\n" + "="*50)
-    if not errors:
-        print("✅ ALL SYSTEMS GO. Project is clean and stable.")
-        return True
-    else:
-        print(f"❌ FOUND {len(errors)} ERROR(S):")
-        for err in errors:
-            print(f"\n--- ERROR ---\n{err}")
-        return False
 
 if __name__ == "__main__":
-    success = run_verification()
+    success = run_verification(fast="--fast" in sys.argv[1:])
     sys.exit(0 if success else 1)
