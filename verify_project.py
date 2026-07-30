@@ -63,7 +63,12 @@ def check_syntax(file_path):
     except SyntaxError as e:
         return False, f"{type(e).__name__}: {e}"
     except (OSError, ValueError, UnicodeDecodeError) as e:
+        # ValueError はソース中の NUL バイト等
         return False, f"{type(e).__name__}: {e}"
+    except (RecursionError, MemoryError) as e:
+        # サブプロセス版では病的に深いネストの1ファイルが子プロセスだけを殺したが、
+        # インプロセス化した以上ここで捕まえないと Guardian 自体が落ちる。
+        return False, f"{type(e).__name__}: コンパイルできないほど複雑なファイル ({e})"
 
 def check_undefined_names(file_path):
     """定義もインポートもされていない名前への参照を検出する。

@@ -60,12 +60,19 @@ def main() -> int:
     if not COMMIT_PATTERN.search(command):
         return 0
 
-    project_dir = payload.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR")
-    if not project_dir:
-        return 0
+    # cwd が payload に無い / CLAUDE_PROJECT_DIR が環境に export されていない場合に
+    # 「プロジェクトが分からないので素通し」にすると、ガードが無言で無効化される。
+    # このスクリプトは <project>/.claude/hooks/ に置かれているので、自分の位置から
+    # プロジェクトルートを決定的に求められる。最後の砦としてそれを使う。
+    project_dir = (
+        payload.get("cwd")
+        or os.environ.get("CLAUDE_PROJECT_DIR")
+        or str(Path(__file__).resolve().parents[2])
+    )
 
     verify_script = Path(project_dir) / "verify_project.py"
     if not verify_script.exists():
+        # 別リポジトリでの作業中など。ここは本当に検査対象外なので通す。
         return 0
 
     launcher = "py" if os.name == "nt" else "python3"

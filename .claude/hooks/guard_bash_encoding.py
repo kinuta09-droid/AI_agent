@@ -38,10 +38,13 @@ BLOCKED_PATTERNS = [
     ),
     (
         # PowerShell 版の LEVEL 4。第3引数が User/Machine のときだけレジストリに
-        # 永続化される (Process スコープは LEVEL 1 相当なので通す)。
+        # 永続化される (2引数形と 'Process' は LEVEL 1 相当なので通す)。
+        # スコープは文字列でも enum でも書けるため両方を見る:
+        #   SetEnvironmentVariable('X','1','Machine')
+        #   SetEnvironmentVariable('X','1',[EnvironmentVariableTarget]::Machine)
+        # 前者だけを見る正規表現は後者を素通りさせる (2026-07-30 の /grill で実証)。
         re.compile(
-            r"\[(?:System\.)?Environment\]::SetEnvironmentVariable\s*\("
-            r"[^)]*['\"](?:User|Machine)['\"]",
+            r"SetEnvironmentVariable\s*\([^)]*(?:['\"]|::)\s*(?:User|Machine)\b",
             re.IGNORECASE,
         ),
         "[Environment]::SetEnvironmentVariable(..., 'User'/'Machine') は"

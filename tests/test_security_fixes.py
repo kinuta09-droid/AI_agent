@@ -87,22 +87,25 @@ def test_pid_guard():
     with open(src_path, encoding='utf-8') as f:
         tree = ast.parse(f.read(), src_path)
 
-    imported = {
-        alias.asname or alias.name
+    # {元の関数名: ローカルに束縛された名前}。別名 (as) を付けても追えるよう
+    # **alias.name (元の名前) で判定する** — asname で判定すると、別名を変えただけで
+    # 落ちる一方、`release as _acquire_pid_lock` のような取り違えは検出できない。
+    bindings = {
+        alias.name: (alias.asname or alias.name)
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and node.module == "lib.pid_guard"
         for alias in node.names
     }
-    assert "acquire" in {a.split(".")[-1] for a in imported} or any(
-        n.endswith("acquire_pid_lock") for n in imported
-    ), f"agent_scheduler が lib.pid_guard.acquire を import していない ({imported})"
+    assert "acquire" in bindings, \
+        f"agent_scheduler が lib.pid_guard.acquire を import していない ({sorted(bindings)})"
 
     called = {
         getattr(node.func, "id", None) or getattr(node.func, "attr", None)
         for node in ast.walk(tree) if isinstance(node, ast.Call)
     }
-    assert called & {n for n in imported}, \
-        "import しただけで acquire/release を呼んでいない (ガードが無効化されている)"
+    assert bindings["acquire"] in called, \
+        f"lib.pid_guard.acquire を import しただけで呼んでいない " \
+        f"(束縛名 {bindings['acquire']!r} の呼び出しが無い = ガードが無効化されている)"
     print("✅ R1: PID guard は lib.pid_guard に委譲され、agent_scheduler から呼ばれている")
 
 

@@ -73,8 +73,8 @@ def _run_hook(hook: str, payload: dict):
     return proc.returncode, proc.stderr or ""
 
 
-def _shell_payload(tool_name: str, command: str):
-    return {"tool_name": tool_name, "tool_input": {"command": command}, "cwd": _PROJECT_ROOT}
+def _shell_payload(tool_name: str, command: str, cwd: str = _PROJECT_ROOT):
+    return {"tool_name": tool_name, "tool_input": {"command": command}, "cwd": cwd}
 
 
 # --- [1] 対象ツール名の宣言が3箇所で一致しているか -------------------------
@@ -119,6 +119,11 @@ def test_encoding_guard_blocks_both_shells():
         ("setx PYTHONIOENCODING utf-8", "LEVEL 4 setx"),
         ("[Environment]::SetEnvironmentVariable('PYTHONIOENCODING','utf-8','User')", "LEVEL 4 PowerShell版"),
         ("[Environment]::SetEnvironmentVariable('X','1','Machine')", "LEVEL 4 Machine スコープ"),
+        # スコープは enum でも書ける。文字列形だけを見る正規表現は素通りさせた (実証済み)
+        ("[Environment]::SetEnvironmentVariable('X','1',[EnvironmentVariableTarget]::Machine)",
+         "LEVEL 4 enum スコープ (Machine)"),
+        ("[Environment]::SetEnvironmentVariable('X','1',[EnvironmentVariableTarget]::User)",
+         "LEVEL 4 enum スコープ (User)"),
         (r"reg add HKCU\Environment /v PYTHONIOENCODING /d utf-8", "LEVEL 4 reg add"),
         ("notepad $PROFILE", "LEVEL 3 PowerShell プロファイル"),
         ("echo x >> ~/.bashrc", "LEVEL 3 .bashrc"),
@@ -134,6 +139,9 @@ def test_encoding_guard_allows_scoped_alternatives():
     allowed = [
         ("$env:PYTHONIOENCODING = 'utf-8'", "LEVEL 1 プロセス限定 env"),
         ("[Environment]::SetEnvironmentVariable('X','1','Process')", "Process スコープは永続化しない"),
+        ("[Environment]::SetEnvironmentVariable('X','1',[EnvironmentVariableTarget]::Process)",
+         "Process スコープ (enum) も永続化しない"),
+        ("[Environment]::SetEnvironmentVariable('X','1')", "2引数形は既定で Process スコープ"),
         ("py -c \"import sys; sys.stdout.reconfigure(encoding='utf-8')\"", "LEVEL 0"),
         ("git status", "無関係なコマンド"),
     ]
@@ -145,12 +153,36 @@ def test_encoding_guard_allows_scoped_alternatives():
 
 def test_commit_guard_sees_powershell():
     print("\n[4] guard_git_commit — PowerShell からの commit も検査対象")
-    # verify が緑である限り exit 0 だが、「hook が起動したか」を見たいので
-    # 壊れた cwd を渡して素通り (=0) と区別できる形で検査する。
+    import tempfile
+
+    # 本物のリポジトリでは verify が緑なので exit 0 になるが、それだけでは
+    # 「hook が verify を走らせて緑だった」のか「hook が素通りした」のか区別できない
+    # (どちらも exit 0)。verify_project.py が必ず失敗する偽リポジトリを cwd に
+    # 渡し、exit 2 になることで **hook が実際に verify を起動した** ことを示す。
+    with tempfile.TemporaryDirectory() as fake_repo:
+        with open(os.path.join(fake_repo, "verify_project.py"), "w", encoding="utf-8") as f:
+            f.write("import sys\nprint('STUB FAILURE')\nsys.exit(1)\n")
+        for tool in sorted(EXPECTED_SHELL_TOOLS):
+            code, err = _run_hook(
+                "guard_git_commit.py",
+                _shell_payload(tool, "git commit -m 'x'", cwd=fake_repo),
+            )
+            check(
+                f"{tool}: git commit で verify が起動し、失敗ならブロック (exit 2)",
+                code == 2 and "STUB FAILURE" in err,
+                f"exit={code} stderr={err[:80]!r}",
+            )
+            # 同じ偽リポジトリでも commit でなければ verify を起動しない
+            code, _ = _run_hook(
+                "guard_git_commit.py",
+                _shell_payload(tool, "git status", cwd=fake_repo),
+            )
+            check(f"{tool}: commit 以外では verify を起動しない", code == 0, f"exit={code}")
+
+    # 実リポジトリでは緑なので通る
     for tool in sorted(EXPECTED_SHELL_TOOLS):
-        payload = _shell_payload(tool, "git commit -m 'x'")
-        code, _ = _run_hook("guard_git_commit.py", payload)
-        check(f"{tool}: git commit で verify が走り緑 (exit 0)", code == 0, f"exit={code}")
+        code, _ = _run_hook("guard_git_commit.py", _shell_payload(tool, "git commit -m 'x'"))
+        check(f"{tool}: 実リポジトリは verify 緑なので許可 (exit 0)", code == 0, f"exit={code}")
 
     # 対象外ツールは素通りすること (過剰ブロックの回帰)
     code, _ = _run_hook("guard_git_commit.py", {"tool_name": "Read", "tool_input": {"command": "git commit"}})

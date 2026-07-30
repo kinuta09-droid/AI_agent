@@ -5,8 +5,14 @@
 「### 参照元」「### 関連ノート」へ移し、かつ**本文を巻き込んで消さない**ことを見る。
 最後の点はかつて正規表現が本文を丸ごと飲み込んだ実障害の回帰。
 
-実 Vault にノートを作る統合テスト。Vault が無い環境 (CI 等) では SKIP して
-正常終了する (tests/test_vault_semantic_smoke.py と同じ作法)。
+**実 Vault にノートを作り、tool_create_note の副作用で Obsidian.exe が起動する**
+統合テスト。テストを一周回すだけで実副作用が起きる状態にしないため、既定では
+SKIP し、明示的なオプトインを要求する:
+
+    ARMS_LIVE_TESTS=1 py tests/test_template_integration.py
+
+Vault が無い環境 (CI 等) でも SKIP して正常終了する
+(tests/test_vault_semantic_smoke.py と同じ作法)。
 
 2026-07-30 に3点直した (test_moc_auto_link.py と同じ欠陥):
   1. `from agent_hello import find_file_in_vault` が ImportError。
@@ -119,6 +125,10 @@ def test_template_integration():
 
 
 if __name__ == "__main__":
+    if os.getenv("ARMS_LIVE_TESTS") != "1":
+        print("⏭️ SKIP: 実 Vault への書き込みは ARMS_LIVE_TESTS=1 のときだけ行います")
+        print("   (ノートを作成・削除し、tool_create_note の副作用で Obsidian が起動します)")
+        sys.exit(0)
     if not os.path.isdir(VAULT_ROOT):
         print(f"⏭️ SKIP: Obsidian Vault が見つかりません ({VAULT_ROOT})")
         print("   (実 Vault にノートを作る統合テストのため、CI 等では実行できません)")
