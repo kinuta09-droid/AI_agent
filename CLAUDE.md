@@ -36,6 +36,16 @@ py n8n_patrol.py               # Patrol n8n workflows
 py agent_trigger.py            # Trigger webhook
 ```
 
+## MCP Servers
+`.mcp.json` (プロジェクトスコープ・コミット済み) に2つ登録済み。初回は `claude` 起動時に承認プロンプトが出る:
+- `context7`: ライブラリの最新ドキュメント参照 (`todoist-api-python` v3+ 等のバージョン差異バグの予防)
+- `chrome-devtools`: `tool_browser_use.py` / `tool_xtrend.py` のセレクタ崩れを実ブラウザで確認 (要 Node.js 22+)
+
+GitHub MCP は個人の PAT が要るため `.mcp.json` に含めていない。使う場合は各自:
+```bash
+claude mcp add --transport http github https://api.githubcopilot.com/mcp/ --header "Authorization: Bearer YOUR_PAT"
+```
+
 ## Skills (領域別の詳細な既知バグパターン)
 `## Known Bug Patterns` は**プロジェクト全域に効く教訓のみ**を残し、特定領域の詳細は `.claude/skills/` に分割した。該当領域のファイルを触るときは Claude が自動でロードするが、新しい教訓を追記するときは **どの skill に属するか判断してからそこに書く** — Known Bug Patterns 本体に無闇に追記して肥大化させない。
 
