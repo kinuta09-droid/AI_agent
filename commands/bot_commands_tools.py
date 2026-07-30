@@ -289,6 +289,59 @@ async def cmd_xtrend_prompt(interaction: discord.Interaction, index: int = 1):
         await interaction.followup.send(result[:2000])
 
 
+def _import_paper_radar():
+    from tools.tool_paper_radar import run_paper_radar
+    return run_paper_radar
+
+
+def _import_paper_digest():
+    from tools.tool_paper_digest import run_paper_digest
+    return run_paper_digest
+
+
+async def cmd_paper_radar(interaction: discord.Interaction, field: str = "",
+                          top_k: int = 5, days: int = 7):
+    """指定分野の注目論文を判別して Obsidian に保存"""
+    await interaction.response.defer()
+    try:
+        run_paper_radar = _import_paper_radar()
+        result = await asyncio.to_thread(run_paper_radar, field, top_k, days)
+    except Exception as e:
+        result = log_command_error("/paper-radar", e, "❌ Paper Radar Error")
+
+    if _log_to_daily_note:
+        await asyncio.to_thread(_log_to_daily_note, "command", "/paper-radar", result)
+
+    if _send_with_fallback:
+        await _send_with_fallback(interaction, result, title="Paper Radar", emoji="📡")
+    else:
+        await interaction.followup.send(result[:2000])
+
+
+async def cmd_paper_digest(interaction: discord.Interaction, index: int = 1,
+                           arxiv_id: str = "", mode: str = "sns"):
+    """注目論文をキャプチャ・要約し、SNS/note の下書きまで生成する"""
+    # docling の変換 + Gemini 2回で数分かかりうる。defer を先に返さないと
+    # interaction token が3秒で切れる (skill discord-bot-patterns)。
+    await interaction.response.defer()
+    try:
+        run_paper_digest = _import_paper_digest()
+        result = await asyncio.to_thread(run_paper_digest, index, arxiv_id, "", mode)
+    except Exception as e:
+        result = log_command_error("/paper-digest", e, "❌ Paper Digest Error")
+
+    if _log_to_daily_note:
+        await asyncio.to_thread(_log_to_daily_note, "command", "/paper-digest", result)
+
+    if _send_with_fallback:
+        file = _make_discord_file(
+            result, f"paper_digest_{datetime.date.today().isoformat()}.md"
+        ) if len(result) > 1800 else None
+        await _send_with_fallback(interaction, result, title="Paper Digest", emoji="📄", file=file)
+    else:
+        await interaction.followup.send(result[:2000])
+
+
 async def cmd_browse(interaction: discord.Interaction, url: str, task: str = "このページの主要な情報を要約して"):
     """URLを開いてAIで情報抽出（JS動的ページ対応）"""
     await interaction.response.defer()

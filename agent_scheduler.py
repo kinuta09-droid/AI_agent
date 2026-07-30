@@ -154,6 +154,33 @@ except ImportError:
     def _run_xtrend():
         return "XTrend: tool_xtrend not available"
 
+# Paper Radar / Digest (optional — import失敗でスケジューラ全体を壊さない)
+try:
+    from tools.tool_paper_radar import run_paper_radar as _paper_radar
+    _HAS_PAPER_RADAR = True
+except ImportError as _e:
+    _paper_radar_err = str(_e)
+    _HAS_PAPER_RADAR = False
+
+def _run_paper_radar() -> str:
+    """注目論文レーダー (Gemini を呼ばないので API 課金ゼロ)。"""
+    if not _HAS_PAPER_RADAR:
+        return f"Paper Radar: tool_paper_radar not available ({_paper_radar_err})"
+    return _paper_radar(top_k=5, days=7)
+
+def _run_paper_digest() -> str:
+    """レーダー1位を docling でキャプチャして要約 + 投稿下書きを生成する。
+
+    週次にしてある理由: docling の変換 (数十秒〜数分) と Gemini 2回を伴うため
+    毎日回すとコストが読めない。レーダー自体は毎朝走っているので、
+    「今週いちばん効いた1本」を週末にまとめる形にしている。
+    """
+    try:
+        from tools.tool_paper_digest import run_paper_digest
+    except ImportError as e:
+        return f"Paper Digest: tool_paper_digest not available ({e})"
+    return run_paper_digest(index=1, mode="both")
+
 # Audio Transcription Sync (optional)
 try:
     from tools.tool_audio_automation import tool_sync_audio_transcriptions
@@ -303,6 +330,22 @@ SCHEDULE = [
         "time": "06:30",
         "name": "Auto Deep-Dive (XTrend TOP1)",
         "func": _run_auto_deep_dive,
+    },
+    # 論文レーダー: arXiv/HuggingFace/Semantic Scholar の公開APIのみ (課金ゼロ)。
+    # 06:45 は XTrend(06:00)/Deep-Dive(06:30) の後、朝ブリーフィング(07:30) の前。
+    {
+        "time": "06:45",
+        "name": "Paper Radar",
+        "func": _run_paper_radar,
+    },
+    # 週次ダイジェスト: docling キャプチャ + Gemini 2回。土曜の朝に1本だけ。
+    # catch_up=True なので PC が落ちていた週も起動時に1回だけ追いかける。
+    {
+        "time": "09:30",
+        "name": "Paper Digest (Radar TOP1)",
+        "func": _run_paper_digest,
+        "weekday": 5,  # 土曜
+        "catch_up": True,
     },
     {
         "time": "08:00",

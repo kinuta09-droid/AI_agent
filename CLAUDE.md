@@ -16,6 +16,8 @@
 | `tool_calendar.py` | Google Calendar + Todoist integration (5 tools) |
 | `tool_daily_note.py` | Daily note auto-generation from template |
 | `tool_lora_factory.py` | LoRA/ComfyUI image generation |
+| `tool_paper_radar.py` | 注目論文の自動判別 (arXiv × HF upvote × 被引用速度 × 新しさ)。Gemini不使用=課金ゼロ |
+| `tool_paper_digest.py` | 論文本文を docling でキャプチャ→要約→X スレッド/note 記事の下書き生成 |
 
 ## Coding Standards & Stability
 - **Python**: PEP8. Always `# -*- coding: utf-8 -*-` and explicit `encoding='utf-8'` on file I/O.
@@ -30,6 +32,9 @@
 py verify_project.py           # Pre-flight check (MANDATORY before release)
 scripts\arms.bat               # ワンクリック制御 (引数なし=メニュー / start|stop|restart|status|logs)
 py main.py                     # Universal launcher
+py tools/tool_paper_radar.py --field ai_agent --top 5   # 注目論文レーダー (課金ゼロ)
+py tools/tool_paper_digest.py --index 1 --mode both     # 本文キャプチャ→要約→SNS/note下書き
+py -m pip install -r requirements-docling.txt           # docling (任意・未導入ならHTML抽出に劣化)
 py bot_discord.py              # Start Discord bot
 py agent_scheduler.py          # Start scheduler
 py n8n_patrol.py               # Patrol n8n workflows

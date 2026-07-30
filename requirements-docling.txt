@@ -1,0 +1,13 @@
+# Paper Radar / Digest の本文キャプチャ用オプション依存。
+#
+# requirements.txt に入れていない理由:
+#   docling は torch / transformers を引き連れる (数GB・初回DLに数分)。
+#   CI (windows-latest) の毎回の pip install に載せると、論文機能と無関係な
+#   全テストがその待ち時間を払うことになる。
+#   docling が無い環境では lib/docling_client.py が HTML 抽出へ自動で
+#   フォールバックし、どの経路で取れたかを backend として明示する
+#   (無言で劣化しない)。本文の構造 (表・数式・セクション) が要るなら入れる。
+#
+# インストール:
+#   py -m pip install -r requirements-docling.txt
+docling>=2.0.0
