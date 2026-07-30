@@ -26,16 +26,24 @@ twitter-cli など) をエージェントが直接叩く**設計になってい�
 
 ## インストール (開発機)
 
+> **実行手順は `plans/agent-reach-setup.md` にステップ化してある。**
+> 実機で入れるときはそちらを上から順に進めること。以下は要約。
+
 Agent Reach は **PyPI に無い**。GitHub から直接入れる。
 
 ```bash
 py -m pip install --user pipx
 py -m pipx ensurepath
+# ここでターミナルを開き直す (PATH 反映)
 pipx install git+https://github.com/Panniantong/agent-reach.git
+pipx inject --include-apps --force agent-reach yt-dlp
 ```
 
 `pipx` を使うのは、これが Bot のランタイム依存ではなく**開発者/エージェント用の CLI** だから。
 `requirements.txt` には**入れない** (入れると Bot のデプロイが GitHub tarball を引きに行く)。
+
+2行目の `inject` が要るのは、`yt-dlp` は依存として venv に入るのに **shim が作られず PATH に
+出ない**ため。これを飛ばすと doctor が YouTube を「yt-dlp 未安装」と誤報し続ける。
 
 続けて Skill をエージェントに登録する:
 
@@ -63,8 +71,12 @@ V2EX / B站検索 の6つ。Twitter/X・Reddit・小紅書などは cookie か�
 | `pip install agent-reach` | **失敗する** — PyPI に存在しない。`git+https://...` を使う |
 | `pip install agent-reach[mcp]` (コード内の案内文) | **その extra は無い**。定義されているのは `browser` / `cookies` / `all` / `dev` のみ |
 | MCP サーバーを mcp SDK 2.x で起動 | **クラッシュ** — `AttributeError: 'Server' object has no attribute 'list_tools'`。2.0.0 で低レベル `Server` からデコレータ API が消えたため。動かすなら `mcp<2` にピン留めが必要 (1.29.0 で動作確認済み) |
-| `agent-reach doctor` の出力 | **中国語**。ログに混ざる前提で読む |
+| pipx 導入後に `yt-dlp` が PATH に無い | 依存として venv には入るが shim が作られない。`pipx inject --include-apps --force agent-reach yt-dlp` で出す (`--force` が無いと「already installed」で何もせず終わる) |
+| `pipx install --include-deps` で代用 | yt-dlp は出るが `dotenv` `idna` `pygmentize` など**余計な shim が13個**生える。使わない |
+| pipx が `uv` バックエンドで失敗 | `pipx needs uv>=0.9.17, but ... reports 0.8.17` → 各コマンドに `--backend pip` を付ける |
+| `agent-reach doctor` の出力 | **中国語**。`[X]`=未インストール / `[!]`=要設定 / `✅`=使える |
 | `agent-reach skill --install` の書き込み先 | `~/.claude/skills/` (ユーザースコープ)。リポジトリの `.claude/skills/` ではない |
+| `agent-reach install --env=auto` | gh CLI や mcporter を**勝手に入れにいく**。`--dry-run` で確認するに留め、必要なものだけ手で入れる |
 
 ## このプロジェクトでの使いどころ
 
