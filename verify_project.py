@@ -21,6 +21,7 @@ import 整合性は CI (.github/workflows/tests.yml の guardian ジョブ) と
 """
 
 import os
+import re
 import sys
 import subprocess
 import importlib.util
@@ -32,6 +33,10 @@ sys.stdout.reconfigure(encoding='utf-8')
 # プロジェクトルートの設定
 ROOT_DIR = Path(__file__).parent.absolute()
 PYTHON_EXE = sys.executable
+
+# Windows のドライブレター始まり (C:\... / D:/...) と POSIX の絶対パス。
+# check_machine_locked_syspath で使う。
+_ABS_PATH_RE = re.compile(r'^(?:[A-Za-z]:[\\/]|/)')
 
 def check_encoding(file_path):
     """ファイルがUTF-8で保存されているか確認する"""
@@ -177,12 +182,113 @@ def check_swallowed_exceptions(file_path):
     return findings
 
 
+def check_machine_locked_syspath(file_path):
+    """sys.path に絶対パスのリテラルを差し込んでいる箇所を検出する。
+
+    `sys.path.insert(0, r'C:\\AI_agent')` はこのマシンでしか成立しない「下駄」で、
+    リポジトリを別の場所に置いた環境 (CI の D:\\a\\AI_agent\\AI_agent) では
+    ImportError になる。開発機だけが緑になるので、実機のテストスイープが
+    「通っている」と言い続ける一方で CI だけが落ちる、という食い違いを生む。
+    実際 2026-07-30 の CI 初起動で6ファイルがこれで落ちた
+    (`No module named 'tools'` / `'lib'`)。正しい形は
+    `sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))`。
+
+    文字列走査ではなく ast を使う理由: この欠陥を説明する docstring/コメント自体が
+    `sys.path.insert(0, r'C:\\AI_agent')` という文字列を含むため、grep 的な検査だと
+    「教訓を書いた行」を違反として報告してしまう。
+
+    **リテラル直書きの形だけを見てはいけない** (2026-07-30 の /grill 指摘)。
+    初版は `sys.path.insert(0, <文字列定数>)` だけを見ており、実測すると7形のうち
+    6形が素通りしていた: 変数経由 (`ROOT = r'C:\\AI_agent'` -> `insert(0, ROOT)`)、
+    `sys.path += [...]`、`sys.path = [...] + sys.path`、`extend([...])`、
+    `os.path.join(r'C:\\AI_agent', ...)`、`from sys import path` -> `path.insert(...)`。
+    Session 2 の C1 (「穴を塞いだ」と書いたコミットが半分しか塞いでいなかった)
+    と同じ罠なので、**sys.path を書き換える箇所を列挙し、その式の部分木ごと**
+    絶対パスを探す形にした。名前は「絶対パス文字列を代入された名前」を集めて解決する。
+
+    Returns: [(lineno, 該当リテラル), ...]
+    """
+    import ast
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            tree = ast.parse(f.read(), str(file_path))
+    except Exception:
+        return []  # 構文エラーは check_syntax の担当
+
+    def first_abs_literal(subtree):
+        """部分木の中の最初の「絶対パスに見える文字列定数」を返す"""
+        for n in ast.walk(subtree):
+            if (isinstance(n, ast.Constant) and isinstance(n.value, str)
+                    and _ABS_PATH_RE.match(n.value)):
+                return n.value
+        return None
+
+    sys_aliases = {"sys"}      # import sys / import sys as s
+    path_aliases = set()       # from sys import path / as p
+    abs_names = {}             # 絶対パス文字列を代入された名前 -> そのリテラル
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "sys":
+                    sys_aliases.add(a.asname or "sys")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "sys":
+                for a in node.names:
+                    if a.name == "path":
+                        path_aliases.add(a.asname or "path")
+        elif isinstance(node, ast.Assign):
+            lit = first_abs_literal(node.value)
+            if lit:
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        abs_names[t.id] = lit
+
+    def is_sys_path(node):
+        """node が sys.path (別名込み) を指しているか"""
+        if isinstance(node, ast.Attribute) and node.attr == "path":
+            return isinstance(node.value, ast.Name) and node.value.id in sys_aliases
+        return isinstance(node, ast.Name) and node.id in path_aliases
+
+    def scan(subtree, lineno, out):
+        for n in ast.walk(subtree):
+            if (isinstance(n, ast.Constant) and isinstance(n.value, str)
+                    and _ABS_PATH_RE.match(n.value)):
+                out.append((lineno, n.value))
+            elif isinstance(n, ast.Name) and n.id in abs_names:
+                out.append((lineno, abs_names[n.id]))
+
+    findings = []
+    for node in ast.walk(tree):
+        # sys.path.insert / append / extend (別名込み)
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("insert", "append", "extend")
+                and is_sys_path(node.func.value)):
+            for arg in node.args:
+                scan(arg, node.lineno, findings)
+        # sys.path += [...]
+        elif isinstance(node, ast.AugAssign) and is_sys_path(node.target):
+            scan(node.value, node.lineno, findings)
+        # sys.path = [...] + sys.path
+        elif isinstance(node, ast.Assign) and any(is_sys_path(t) for t in node.targets):
+            scan(node.value, node.lineno, findings)
+    return findings
+
+
 def check_import(module_name):
     """モジュールが正常にインポート可能か確認する"""
     try:
         # サブプロセスで実行することで、現在のプロセスを汚さず、かつパス解決を検証
         cmd = [PYTHON_EXE, "-c", f"import {module_name}; print('OK')"]
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT_DIR))
+        # encoding/errors は必須 (LEVEL 1)。text=True だけだとロケール既定で復号するため、
+        # 日本語を含む traceback が cp1252 ロケール (GitHub Actions の runner) で
+        # UnicodeDecodeError になり、reader thread が死んで stderr が空になる。
+        # 結果 Guardian は「Import Error: <mod>」だけを出し理由を説明できない。
+        # 開発機 (cp932) では偶然復号できるので、CI で初めて顕在化した (2026-07-30)。
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                encoding='utf-8', errors='replace',
+                                cwd=str(ROOT_DIR))
         if result.returncode == 0:
             return True, ""
         return False, result.stderr
@@ -251,6 +357,14 @@ def run_verification(fast=False):
         for scope, name in check_undefined_names(py_file):
             errors.append(f"Undefined Name: {rel_path} — {scope} が '{name}' を参照")
             print(f"  ❌ {rel_path} ({scope}: '{name}' が未定義)")
+
+        # sys.path へのルート直書き — 開発機だけ緑になる「下駄」の検出
+        for lineno, literal in check_machine_locked_syspath(py_file):
+            errors.append(
+                f"Machine-locked sys.path: {rel_path}:{lineno} — {literal!r} を直書き。"
+                f"__file__ からの相対で算出すること "
+                f"(tests/ や scripts/ からなら dirname を2段)")
+            print(f"  ❌ {rel_path}:{lineno} (sys.path にルート直書き: {literal!r})")
 
         count += 1
 
@@ -367,7 +481,9 @@ def run_briefing_check(errors):
         f"missing=[p for p in {expected_providers} if p not in _providers]; "
         "print('MISSING:'+','.join(missing) if missing else 'OK:'+','.join(_providers.keys()))"
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT_DIR))
+    result = subprocess.run(cmd, capture_output=True, text=True,
+                            encoding='utf-8', errors='replace',
+                            cwd=str(ROOT_DIR))
     if result.returncode != 0 or result.stdout.startswith('MISSING:'):
         msg = f"Briefing providers missing: {result.stdout.strip() or result.stderr.strip()}"
         errors.append(msg)
