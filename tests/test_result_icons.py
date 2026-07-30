@@ -23,6 +23,43 @@ if _PROJECT_ROOT not in sys.path:
 
 from lib.bot_errors import log_command_error, is_failure_result, FAILURE_PREFIXES
 
+
+def _stub_gemini_and_isolate_counter() -> str:
+    """実 Gemini 呼び出しと本番の日次カウンタから切り離す (2026-07-30)。
+
+    このファイルは表示ロジックの検査だが、[8] と [9] が
+    `agent_scheduler._execute_task` / `execute_plan` を **実際に走らせる** ため、
+    共有 client 経由で実 Gemini を1回呼んでいた
+    (`logs/gemini_daily_calls.json` の差分で実測 +1/回)。
+    「実APIを呼ぶテスト」は目で見つかるが、**実行系を回した結果として
+    間接的に呼ぶもの**は見落とす。
+
+    共有 client のメソッドを差し替えるので、`from lib.lib_shared import client`
+    で直接束縛している呼び出し側にも効く (同一インスタンスのため)。
+    カウンタも一時パスへ逃がす — 本番カウントが上限を超えた時刻以降だけ
+    赤くなる、という時刻依存を作らないため。
+    """
+    import tempfile
+    import types as _types
+    import lib.lib_shared as ls
+    from lib import cost_guard
+
+    d = tempfile.mkdtemp(prefix="result_icons_counter_")
+    cost_guard.GEMINI_COUNTER = cost_guard.DailyCounter(
+        path=os.path.join(d, "gemini_daily_calls.json"),
+        limit=0,  # 0 = ガード無効。予算超過の検証は test_cost_guard の担当
+        name="Gemini API (test)",
+    )
+
+    def _stub_generate(*a, **k):
+        return _types.SimpleNamespace(text="STUB")
+
+    ls.client.models.generate_content = _stub_generate
+    return d
+
+
+_COUNTER_DIR = _stub_gemini_and_isolate_counter()
+
 _PASS = []
 _FAIL = []
 
@@ -670,4 +707,7 @@ if __name__ == "__main__":
     print(f"PASS: {len(_PASS)} / FAIL: {len(_FAIL)}")
     for f in _FAIL:
         print(f"  ❌ {f}")
+
+    import shutil as _shutil
+    _shutil.rmtree(_COUNTER_DIR, ignore_errors=True)
     sys.exit(1 if _FAIL else 0)
