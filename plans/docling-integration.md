@@ -37,7 +37,7 @@ Claude Code を起動して:
 | 3-0 | サイドカー変換 (方式A) + スケジューラ 03:05 ジョブ | 未着手 | | インデクサ本体は触らない |
 | 3-1 | **チャンカーの表分割修正** (docling 非依存) | **完了** | 2026-07-30 | `tool_vault_index` + `tests/test_vault_chunking.py` に11件追加。実機では**再インデックス**が要る (下記) |
 | 3-2 | 表キャプションを添えて埋め込み | 未着手 | | 3-4 の実測で不要なら**やらない** |
-| 3-4 | `eval_retrieval` に表/PDFクエリを追加して before/after | 未着手 | | **3-1 の前に物差しを作る** (3-3 は判断のみで作業なし) |
+| 3-4 | `eval_retrieval` に表/PDFクエリを追加して before/after | 未着手 | | **before は再インデックスの前にしか取れない** (冒頭 STEP 1)。3-3 は判断のみで作業なし |
 | 4 | 表の計算経路 (CSV/SQLite) | 保留 | | 数値質問の実需が出たら |
 
 状態は `未着手` / `進行中` / `完了` / `見送り(理由)` のいずれかで書く。
@@ -46,27 +46,42 @@ Claude Code を起動して:
 
 3-1 (チャンカーの表分割修正) は**コード側は完了しているが、既存のインデックスは
 古いチャンクのまま**。表を含むノートは壊れた状態で埋め込まれているので、
-**再インデックスして初めて効く**:
+**再インデックスして初めて効く**。
 
-**通常の `update_vault_index()` では直らない** — 実装を確認済み
+> ⚠️ **順序が重要**: 再インデックスすると「修正前の検索品質」を測る機会が
+> 永久に失われる。**ベースライン (STEP 1) を先に取ること。**
+> いま実機のインデックスは「修正前のチャンク」なので、**今だけ before が測れる**。
+
+**STEP 1 — before を測る (再インデックスの前に必ず)**
+```bat
+py scripts\eval_retrieval.py > logs\eval_before_table_fix.txt
+```
+表の中身を問うクエリ (「手法Aの精度は」等) が eval セットに無ければ、
+**この時点で追加してから**実行する (3-4 参照)。無い状態で測った before は
+表修正の効果測定には使えない。
+
+**STEP 2 — 全件再構築**
+
+通常の `update_vault_index()` では直らない — 実装を確認済み
 (`tool_vault_index.py:483` `if stored_mtimes.get(rel_path) == mtime: continue`)。
-mtime が変わっていないノートはスキップされるので、**チャンカーを直しても
-既存ノートは古いチャンクのまま残る**。全件再構築が要る:
+mtime が変わっていないノートはスキップされるため、チャンカーを直しても
+既存ノートは古いチャンクのまま残る。夜間 03:15 のジョブも差分更新なので同じ。
 
 ```bat
-REM 1. インデックスDBを退避 (消すのではなく名前を変える。失敗したら戻せる)
+REM インデックスDBを退避 (消すのではなく名前を変える。失敗したら戻せる)
 move logs\vault_index.db logs\vault_index.db.bak-before-table-fix
 
-REM 2. 全件再構築 (ローカル Ollama の埋め込みのみ = API 課金ゼロ。5000件規模で数十分)
+REM 全件再構築 (ローカル Ollama の埋め込みのみ = API 課金ゼロ。5000件規模で数十分)
 py -c "from tools.tool_vault_index import update_vault_index; print(update_vault_index())"
 ```
-夜間 03:15 のジョブに任せても**差分更新なので直らない**点に注意。
-再構築が終わったら `.bak-` は削除してよい。
 
-その後、表を含むノートを狙って検索し、ヘッダ付きで返ることを確認する:
+**STEP 3 — after を測って突き合わせる**
 ```bat
+py scripts\eval_retrieval.py > logs\eval_after_table_fix.txt
 py -c "from tools.tool_vault_hybrid import tool_vault_hybrid_search as s; print(s('表 精度 比較'))"
 ```
+表クエリが改善し、**既存クエリが劣化していない**ことを確認する。
+問題なければ `.bak-` は削除してよい (劣化していたら STEP 2 の `move` を戻す)。
 
 ### Phase 0-3 ベンチ結果 (実機が記入する)
 
@@ -155,8 +170,14 @@ DOCLING_ARTIFACTS_PATH=C:\AI_agent\models\docling
 
 ### 0-3. 実物 3 本でベンチを取る
 
-新規 `scripts/bench_docling.py` (リモートセッションで実装可) が、
-指定した実ファイルを変換して JSON + Markdown で `logs/docling_bench_*.json` に残す:
+`scripts/bench_docling.py` (**実装済み**) が、指定した実ファイルを変換して
+計測値を `logs/docling_bench_*.json` に、変換結果の Markdown を
+`logs/docling_bench/*.md` (目視用) に残す:
+
+```bat
+py scripts\bench_docling.py paper.pdf 日本語資料.pdf 資料.docx
+py scripts\bench_docling.py --ocr scanned.pdf     REM OCR 有無の比較
+```
 
 | 検体 | 見るところ |
 |---|---|
@@ -164,7 +185,16 @@ DOCLING_ARTIFACTS_PATH=C:\AI_agent\models\docling
 | **日本語の PDF** (請求書・行政資料など手元のもの) | **文字化けしないか** (cp932 環境で最も壊れやすい) |
 | .docx か .pptx | Office 系が同じ API で通るか |
 
-記録する値: 変換秒数 / 出力文字数 / 表の数 / 警告 / ピークメモリ。
+記録する値: 変換秒数 / 出力文字数 / 表の数 / CJK率 / U+FFFD の個数 /
+Python 側ピークメモリ (torch のネイティブ確保は含まない) / 注記。
+
+表の数は**インデクサと同じ判定器** (`tool_vault_index._is_table_delimiter`) で
+数える。独自に数えると「ベンチでは表3個、インデクサからは0個」という
+食い違いが起きる。
+
+**スクリプトは合否を決めない**。日本語の化けと表の可読性は
+`logs/docling_bench/*.md` を開いて人が判断する (0-4 の判定基準は数値だけでは
+埋まらない)。
 
 ### 0-4. Go / No-Go の判定基準
 
@@ -327,12 +357,23 @@ docling には構造を保つ `HybridChunker` があるが、既存の `_chunk_m
 before/after を測ってから (skill `retrieval-tuning` の作法)。
 
 ### 3-4. 検証
-`scripts/eval_retrieval.py` に次を**追加してから**着手する (先に物差しを作る):
-- **PDF 由来ノートを狙うクエリ** — 変換経路が効いているか
-- **表の中身を問うクエリ** (例:「手法Aの精度は」「表の最良値は」) — 3-1/3-2 の効果測定。
-  **3-1 だけ入れた状態で何%当たるかを先に測る**。そこで足りて
-  いれば 3-2 (Gemini を使う側) は不要
-- 既存クエリのスコアが**劣化しないこと** (変換ノートがノイズとして混ざる副作用)
+
+`scripts/eval_retrieval.py` に次のクエリを追加する:
+- **表の中身を問うクエリ** (例:「手法Aの精度は」「表の最良値は」)
+- **PDF 由来ノートを狙うクエリ** (3-0 のサイドカー変換が効いているか)
+- 既存クエリは触らない (**劣化していないこと**の確認に使う。変換ノートが
+  ノイズとして混ざる副作用はここでしか見えない)
+
+**測る順序** (3-1 のコードは既に入っているので、実機の測定機会は1回きり):
+
+| | 状態 | 測るもの |
+|---|---|---|
+| before | インデックスが**修正前のチャンク**のまま | 表クエリの現状 (壊れたチャンクでの命中率) |
+| ↓ | 全件再構築 (冒頭 STEP 2) | |
+| after | 3-1 適用後 | 表クエリの改善 / 既存クエリの非劣化 |
+
+**after で表クエリが十分に通るなら 3-2 (キャプション生成) はやらない。**
+Gemini を使う側は、3-1 だけでは足りないと実測できてから着手する。
 
 ---
 
@@ -408,6 +449,7 @@ before/after を測ってから (skill `retrieval-tuning` の作法)。
 | Phase | 戻し方 |
 |---|---|
 | 0 / 1 | `py -m pip uninstall docling torch` のみ。コードは docling 不在で HTML 経路に落ちるので**削除不要** |
+| 3-1 (表分割) | コードを revert しただけでは**インデックスは新しいチャンクのまま**。`move logs\vault_index.db.bak-before-table-fix logs\vault_index.db` で退避したDBを戻すか、再度全件再構築する |
 | 2 | registry の2エントリと `bot_discord.py` のコマンド定義を revert (ツールファイルは残っても無害) |
 | 3 | `99_Assets/Converted/` を削除 → 次回 index で消える。スケジューラの `Document Conversion` ジョブを外す |
 
