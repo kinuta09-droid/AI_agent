@@ -13,7 +13,10 @@ import json
 sys.stdout.reconfigure(encoding='utf-8')
 
 from dotenv import load_dotenv
-load_dotenv(r'C:\AI_agent\.env')
+
+from lib.paths import PROJECT_ROOT, ENV_PATH, VAULT_ROOT
+
+load_dotenv(ENV_PATH)
 
 from lib.lib_shared import _run_gws_command
 from lib.bot_errors import is_failure_result
@@ -22,11 +25,10 @@ from lib.bot_errors import is_failure_result
 # Configuration
 # ---------------------------------------------------------
 
-CREDENTIALS_PATH = os.path.join("C:\\AI_agent", "credentials.json")
-TOKEN_PATH = os.path.join("C:\\AI_agent", "token.json")
+CREDENTIALS_PATH = os.path.join(PROJECT_ROOT, "credentials.json")
+TOKEN_PATH = os.path.join(PROJECT_ROOT, "token.json")
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
-VAULT_ROOT = r"D:\マイドライブ\Obsidian"
 DAILY_NOTE_DIR = os.path.join(VAULT_ROOT, "01_Daily")
 
 GOOGLE_CALENDAR_ENABLED = os.getenv("GOOGLE_CALENDAR_ENABLED", "false").lower() == "true"
@@ -208,7 +210,7 @@ def _tool_get_calendar_legacy(date: str = "today", days: int = 1) -> str:
         if not GOOGLE_CALENDAR_ENABLED:
             return ("Google Calendar が未設定です。\n"
                     "1. Google Cloud Console で Calendar API を有効化\n"
-                    "2. OAuth 2.0 クライアントID を作成し credentials.json を C:\\AI_agent\\ に配置\n"
+                    f"2. OAuth 2.0 クライアントID を作成し credentials.json を {CREDENTIALS_PATH} に配置\n"
                     "3. .env の GOOGLE_CALENDAR_ENABLED=true に変更")
         if not _HAS_GCAL:
             return "Error: google-api-python-client がインストールされていません。"

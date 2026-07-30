@@ -164,7 +164,9 @@ except ImportError:
         return "Audio: tool_audio_automation not available"
 
 # Load environment variables
-load_dotenv(r'C:\AI_agent\.env')
+from lib.paths import ENV_PATH
+
+load_dotenv(ENV_PATH)
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_LOG_CHANNEL_ID = os.getenv("DISCORD_LOG_CHANNEL_ID")
 

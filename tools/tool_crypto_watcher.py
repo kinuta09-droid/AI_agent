@@ -22,11 +22,12 @@ import ccxt
 
 from lib.lib_shared import load_json, save_json, TRADE_LOG_PATH
 from lib.cost_guard import WATCHER_COUNTER, GeminiBudgetExceeded
+from lib.paths import LOGS_DIR
 from lib.watchdog import notify_discord
 from tools.tool_crypto import SCAN_SYMBOLS, tool_analyze_crypto
 from tools.tool_crypto_stats import _fmt_price, format_open_positions
 
-WATCH_STATE_PATH = os.path.join("C:\\AI_agent", "logs", "crypto_watch_state.json")
+WATCH_STATE_PATH = os.path.join(LOGS_DIR, "crypto_watch_state.json")
 
 # スナップショット保持数 (15分×8 = 2時間分。1hトリガ判定に必要な60-90分+余裕)
 SNAPSHOT_KEEP = 8

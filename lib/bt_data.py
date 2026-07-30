@@ -20,7 +20,9 @@ import ccxt
 import pandas as pd
 import requests as req
 
-OHLCV_CACHE_DIR = os.path.join("C:\\AI_agent", "logs", "ohlcv_cache")
+from lib.paths import LOGS_DIR
+
+OHLCV_CACHE_DIR = os.path.join(LOGS_DIR, "ohlcv_cache")
 FNG_CACHE_PATH = os.path.join(OHLCV_CACHE_DIR, "fng_history.json")
 FNG_API_URL = "https://api.alternative.me/fng/?limit=0"
 FNG_CACHE_TTL_SEC = 24 * 3600

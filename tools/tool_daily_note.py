@@ -17,7 +17,10 @@ sys.stdout.reconfigure(encoding='utf-8')
 # Configuration
 # ---------------------------------------------------------
 
-VAULT_ROOT = r"D:\マイドライブ\Obsidian"
+# Vault の実体は lib/paths.py に一本化 (.env の OBSIDIAN_VAULT_ROOT で差し替え可)。
+# ここで直書きを残すと、Vault を移したとき「このファイルだけ旧パスを見る」分裂が起きる。
+from lib.paths import VAULT_ROOT
+
 DAILY_NOTE_DIR = os.path.join(VAULT_ROOT, "01_Daily")
 TEMPLATE_PATH = os.path.join(VAULT_ROOT, "99_Assets", "Templates", "Tpl_Daily.md")
 

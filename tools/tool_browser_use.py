@@ -28,7 +28,10 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from dotenv import load_dotenv
-load_dotenv(r'C:\AI_agent\.env')
+
+from lib.paths import ENV_PATH
+
+load_dotenv(ENV_PATH)
 
 from urllib.parse import urlparse
 
