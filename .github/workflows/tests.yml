@@ -25,7 +25,7 @@ jobs:
         run: python verify_project.py
 
   tests:
-    # tests/test_*.py (67ファイル) を実行する。重要: このリポジトリの test_*.py は
+    # tests/test_*.py (70ファイル) を実行する。重要: このリポジトリの test_*.py は
     # pytest のネイティブ assert ではなく、独自の check()/PASS-FAIL リストヘルパーで
     # 失敗を記録するだけの箇所が多く、失敗しても例外を投げない。そのため
     # `pytest tests/` で集めて流すと「チェックが全部failしていても緑」になる
@@ -33,13 +33,20 @@ jobs:
     # 各ファイルが自前で持つ `if __name__ == "__main__": ... sys.exit(1 if _FAIL else 0)`
     # を信頼し、スクリプトとして1本ずつ実行して終了コードで判定する。
     #
-    # continue-on-error: true (bootstrap):
-    # 初回導入時点で、一部のテストは実ネットワーク/実APIキー/外部バイナリ
-    # (gws CLI, mcp サーバ等) に依存する「手動デバッグスクリプト」であり
-    # (CLAUDE.md Architecture: "tests/: Unit tests and debugging stubs")、
-    # ヘッドレスCIでは原理的に green にならない。既知の対象は下記ジョブ実行結果の
-    # サマリーで一覧化されるので、一度確認して要否を判断してから
-    # continue-on-error を外し、真のリグレッションゲートにすること。
+    # continue-on-error を外した (2026-07-30・CI 初起動の実結果を見た上で):
+    # 初回実行は PASS 58 / FAIL 11 だった (実機は 69/0)。11件の内訳と処置:
+    #   - 6件 sys.path.insert(0, r'C:\AI_agent') とルートを直書き
+    #     -> __file__ 相対に修正。verify_project.py の
+    #        check_machine_locked_syspath() が再混入を止める (--fast にも乗る)
+    #   - 1件 scripts/eval_agent.py が固定パスの fixture を開いていた -> __file__ 相対
+    #   - 1件 bot_discord.py が import 時に sys.exit(1) していた (.env が無いと
+    #     モジュールごと死ぬ) -> 判定を run_bot() へ移動
+    #   - 2件 外部プロセス依存 (gws CLI / MCP サーバ) -> 前提が無ければ SKIP。
+    #     うち Drive にフォルダを作るものは ARMS_LIVE_TESTS=1 の後ろへ
+    #   - 1件 実行機のタイムゾーンに依存した回帰再現 -> 明示的な +9h に置換
+    # BitNet バイナリ (C:\BitNet) 依存3件は SKIP して正常終了する。
+    # **再び continue-on-error を足さないこと** — 落ちるものが出たら原因を潰すか、
+    # 前提の不在なら SKIP + exit 0 に分類する。この2択以外に逃げ道を作らない。
     #
     # PYTHONPATH を敢えて設定しない (2026-07-30):
     # 以前は PYTHONPATH: ${{ github.workspace }} を渡していたが、これは
@@ -63,7 +70,6 @@ jobs:
           python-version: "3.13"
       - run: pip install -r requirements.txt
       - name: Run tests/test_*.py (script exit-code semantics)
-        continue-on-error: true
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY || 'ci-placeholder-key' }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY || 'ci-placeholder-key' }}
