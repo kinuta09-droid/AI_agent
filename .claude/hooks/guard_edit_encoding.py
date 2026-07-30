@@ -15,6 +15,11 @@ import json
 import re
 import sys
 
+# ブロック理由は stderr 経由で Claude に渡る。reconfigure が無いと Windows では
+# cp932 で書き出され、日本語の理由が全て文字化けして「何を直せばよいか」が
+# 読めなくなる (skill windows-encoding の LEVEL 0 そのもの)。
+sys.stderr.reconfigure(encoding='utf-8')
+
 
 def _changed_text(tool_name: str, tool_input: dict) -> str:
     if tool_name == "Write":
