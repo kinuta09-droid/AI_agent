@@ -32,6 +32,7 @@ from lib.lib_shared import (
     retry,
 )
 from lib.cost_guard import DailyCounter, GeminiBudgetExceeded, get_limit
+from lib.paths import LOGS_DIR
 
 # Tier2-b コストガード: /future はスラッシュコマンド・深掘りボタン・
 # ツールレジストリ・スケジューラ06:30自動実行の4経路から呼ばれるため、
@@ -40,7 +41,7 @@ from lib.cost_guard import DailyCounter, GeminiBudgetExceeded, get_limit
 # グローバル日次上限 (DAILY_GEMINI_CALL_LIMIT) とは意図的な二層構え。
 FUTURE_SEARCH_DAILY_LIMIT = get_limit("FUTURE_SEARCH_DAILY_LIMIT", 3)
 _RUN_COUNTER = DailyCounter(
-    path=os.path.join("C:\\AI_agent", "logs", "future_search_daily.json"),
+    path=os.path.join(LOGS_DIR, "future_search_daily.json"),
     limit=FUTURE_SEARCH_DAILY_LIMIT,
     name="FutureSearch",
     notify=False,

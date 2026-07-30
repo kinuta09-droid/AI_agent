@@ -4,8 +4,10 @@ import json
 import os
 from dotenv import load_dotenv
 
+from lib.paths import ENV_PATH
+
 # .envファイルの内容を読み込む
-load_dotenv(r'C:\AI_agent\.env')
+load_dotenv(ENV_PATH)
 
 # 設定情報
 N8N_API_KEY = os.getenv("N8N_API_KEY") or "あなたのAPIキーをここに貼り付け"

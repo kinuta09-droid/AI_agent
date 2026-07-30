@@ -40,8 +40,9 @@ from lib.quant_core import (
     _compute_levels, _resolve_trade,
 )
 from lib import bt_data
+from lib.paths import LOGS_DIR
 
-BACKTEST_OUT_DIR = os.path.join("C:\\AI_agent", "logs", "backtest")
+BACKTEST_OUT_DIR = os.path.join(LOGS_DIR, "backtest")
 
 DEFAULT_SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 

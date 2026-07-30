@@ -15,8 +15,9 @@ import time
 import tempfile
 import logging
 
-# BitNet インストールパス
-BITNET_DIR = r"C:\BitNet"
+# BitNet インストールパス (実体は lib/paths.py。.env の BITNET_DIR で差し替え可)
+from lib.paths import BITNET_DIR
+
 LLAMA_CLI = os.path.join(BITNET_DIR, "build", "bin", "Release", "llama-cli.exe")
 MODEL_PATH = os.path.join(BITNET_DIR, "models", "BitNet-b1.58-2B-4T", "ggml-model-i2_s.gguf")
 THREADS = 4  # i7-13620H の最適値

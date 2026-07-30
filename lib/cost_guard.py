@@ -23,14 +23,16 @@ import threading
 
 from dotenv import load_dotenv
 
+from lib.paths import ENV_PATH, LOGS_DIR
+
 # lib_shared より先に import されても上限値の env を読めるようにする (冪等)
-load_dotenv('C:\\AI_agent\\.env')
+load_dotenv(ENV_PATH)
 
 # 未設定/パース不能 → デフォルト200。0以下 → 0 (ガード無効 = 無制限、カウントのみ継続)
 DEFAULT_DAILY_LIMIT = 200
 WARN_RATIO = 0.8
 
-GEMINI_COUNTER_PATH = os.path.join("C:\\AI_agent", "logs", "gemini_daily_calls.json")
+GEMINI_COUNTER_PATH = os.path.join(LOGS_DIR, "gemini_daily_calls.json")
 
 
 class GeminiBudgetExceeded(Exception):
@@ -173,7 +175,7 @@ GEMINI_COUNTER = DailyCounter(
 # 15分ウォッチャーが起動するフル分析 (tool_analyze_crypto = Gemini+Tavily) の
 # 日次上限。Gemini全体予算(200)とは別枠で先に止めることで、相場急変日に
 # ウォッチャーが予算を食い潰して定時ジョブを道連れにするのを防ぐ。
-WATCHER_COUNTER_PATH = os.path.join("C:\\AI_agent", "logs", "crypto_watcher_daily.json")
+WATCHER_COUNTER_PATH = os.path.join(LOGS_DIR, "crypto_watcher_daily.json")
 WATCHER_COUNTER = DailyCounter(
     path=WATCHER_COUNTER_PATH,
     limit=get_limit("DAILY_WATCHER_ANALYSIS_LIMIT", 8),
@@ -186,7 +188,7 @@ WATCHER_COUNTER = DailyCounter(
 # BUY系候補が出た銘柄には tool_analyze_crypto (Gemini+Tavily) を起動する。
 # 相場全体が同時に売られた日は候補が20銘柄同時に立ちうるため、ウォッチャーと
 # 同様に別枠の日次上限で先に止める。
-SWEEP_COUNTER_PATH = os.path.join("C:\\AI_agent", "logs", "crypto_sweep_daily.json")
+SWEEP_COUNTER_PATH = os.path.join(LOGS_DIR, "crypto_sweep_daily.json")
 SWEEP_COUNTER = DailyCounter(
     path=SWEEP_COUNTER_PATH,
     limit=get_limit("DAILY_SWEEP_ANALYSIS_LIMIT", 6),

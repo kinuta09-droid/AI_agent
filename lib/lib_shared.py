@@ -24,17 +24,21 @@ import requests
 # cost_guard はモジュールレベルで lib_shared を import しないため循環しない
 # (save_json/load_json は cost_guard 側が関数内で遅延 import する)
 from lib.cost_guard import GeminiBudgetExceeded, check_and_increment
+from lib.paths import PROJECT_ROOT, ENV_PATH, VAULT_ROOT
 
 # Windowsコンソールでの文字化け防止
 sys.stdout.reconfigure(encoding='utf-8')
 
 # 環境変数の読み込み
-load_dotenv('C:\\AI_agent\\.env')
+load_dotenv(ENV_PATH)
 api_key = os.getenv("GOOGLE_API_KEY")
 tavily_api_key = os.getenv("TAVILY_API_KEY")
 
 if not api_key:
-    print("Error: GOOGLE_API_KEY not found.")
+    # 探した場所を必ず出す。ルート直書きをやめた結果、チェックアウト毎に
+    # .env が要るようになったため、「どこを見て無かったのか」が分からないと
+    # 新しい worktree で無言に近い終了に見える
+    print(f"Error: GOOGLE_API_KEY not found. (.env を探した場所: {ENV_PATH})")
     sys.exit(1)
 if not tavily_api_key:
     # Use Tavily Key if available, otherwise warn
@@ -68,9 +72,11 @@ MODEL_NAME = os.getenv("GEMINI_MODEL_LIGHT", 'gemini-3.1-flash-lite-preview')
 MODEL_NAME_HEAVY = os.getenv("GEMINI_MODEL_HEAVY", 'gemini-2.5-flash')
 MAX_RETRIES = 5
 
-HISTORY_FILE = r'D:\マイドライブ\Obsidian\Dev_Logs\chat_history.json'
-WORK_DIR = r'D:\マイドライブ\Obsidian'
-VAULT_ROOT = r'D:\マイドライブ\Obsidian'
+# Vault は外部ドライブなので __file__ 相対にできない。実体と既定値は lib/paths.py
+# (.env の OBSIDIAN_VAULT_ROOT で差し替え可・未設定なら従来値) に集約し、
+# ここは後方互換のための再輸出に留める。WORK_DIR は VAULT_ROOT の歴史的別名。
+WORK_DIR = VAULT_ROOT
+HISTORY_FILE = os.path.join(VAULT_ROOT, 'Dev_Logs', 'chat_history.json')
 
 REPORT_DIR = os.path.join(WORK_DIR, '40_Report')
 OUTPUT_FILE = os.path.join(WORK_DIR, 'Dev_Logs', 'Agent_output.md')
@@ -80,8 +86,8 @@ NEWS_DIR_NAME = "02_News"
 CRYPTO_DIR_NAME = "03_Crypto"
 DAILY_NOTE_DIR_NAME = "01_Daily"
 TRADE_LOG_PATH = os.path.join(VAULT_ROOT, "Dev_Logs", "trade_log.json")
-LEARNING_DB_PATH = os.path.join("C:\\AI_agent", "learning_db.json")
-LEARNING_DB_ARCHIVE_PATH = os.path.join("C:\\AI_agent", "learning_db_archive.jsonl")
+LEARNING_DB_PATH = os.path.join(PROJECT_ROOT, "learning_db.json")
+LEARNING_DB_ARCHIVE_PATH = os.path.join(PROJECT_ROOT, "learning_db_archive.jsonl")
 PERFORMANCE_DASHBOARD_PATH = os.path.join(VAULT_ROOT, "Dev_Logs", "Agent_Performance.md")
 
 # 除外したいフォルダ

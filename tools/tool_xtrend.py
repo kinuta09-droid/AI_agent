@@ -29,7 +29,10 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from dotenv import load_dotenv
-load_dotenv(r'C:\AI_agent\.env')
+
+from lib.paths import ENV_PATH
+
+load_dotenv(ENV_PATH)
 
 from lib.lib_shared import (
     client,
@@ -496,12 +499,12 @@ def generate_claude_prompt(feature: dict, save: bool = True) -> str:
 
 ## ARMSプロジェクト情報
 - OS: Windows 11 / Python 3.13 / 起動コマンド: py
-- プロジェクトパス: C:\\AI_agent
+- プロジェクトパス: {_PROJECT_ROOT}
 - 既存ツール (tools/): {', '.join(scan['tools'])}
 - 既存ライブラリ (lib/): {', '.join(scan['libs'])}
 - 既存コマンド (commands/): {', '.join(scan['commands'])}
 - 利用可能クライアント: Gemini (MODEL_NAME_HEAVY={MODEL_NAME_HEAVY}), Tavily, Discord, ccxt
-- Obsidian Vault: D:\\マイドライブ\\Obsidian (WORK_DIR)
+- Obsidian Vault: {WORK_DIR} (WORK_DIR)
 
 ## 注意
 - 既存ツールと重複する機能は新規作成せず、既存を拡張すること
