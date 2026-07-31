@@ -385,7 +385,15 @@ def check_import(module_name):
                                 cwd=str(ROOT_DIR))
         if result.returncode == 0:
             return True, ""
-        return False, result.stderr
+        # stderr が空でも「理由なし」で返さない。os._exit() やクラッシュで死んだ
+        # モジュールは traceback を残さないので、これを素通しすると
+        # 「Import Error: <mod>」だけが出て理由が一行も無い状態になる
+        # (= 診断層そのものの無言の死。cp1252 の stderr 消失と同じ結末)。
+        reason = (result.stderr or "").strip()
+        if not reason:
+            reason = (f"(stderr なし) 子プロセスが exit code {result.returncode} で終了。"
+                      f"import 中に os._exit() / プロセスクラッシュが起きた可能性")
+        return False, reason
     except Exception as e:
         return False, str(e)
 
@@ -421,13 +429,21 @@ import sys
 import traceback
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+# stdin もロケール既定 (開発機は cp932) ではなく utf-8 で読む。
+# 現状 spec は ASCII のモジュール名だけだが、ここを暗黙のロケールに任せると
+# 「開発機では偶然通り CI で落ちる」型の欠陥を仕込むことになる。
+sys.stdin.reconfigure(encoding='utf-8')
 
 
 def emit(rec):
     # 1件ずつ flush する。バッチが途中で強制終了しても (os._exit / クラッシュ)
     # そこまでの結果は親に届き、親は「届かなかったモジュール」だけを
     # 単独プロセスで再検査できる。まとめて最後に出すと全部巻き添えになる。
-    sys.stdout.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    #
+    # 先頭の改行は必須。import 時に改行なしで stdout へ書くモジュール
+    # (「Loading...」等のバナー) があると、その続きに JSON が連結されて
+    # 行頭が `{` でなくなり、親がその1件を黙って捨てる。
+    sys.stdout.write("\n" + json.dumps(rec, ensure_ascii=False) + "\n")
     sys.stdout.flush()
 
 
@@ -454,9 +470,16 @@ def main():
         rec["syspath_added"] = [p for p in sys.path if p not in before]
         sys.path[:] = before
         if mod is not None:
-            rec["missing_attrs"] = [a for a in entry.get("attrs", []) if not hasattr(mod, a)]
-            for a in entry.get("keys_of", []):
-                rec["keys"][a] = list(getattr(mod, a, None) or {})
+            # 属性の取得自体が例外を投げうる (PEP 562 のモジュール __getattr__)。
+            # ここで素通しするとワーカーごと死に、隔離再検査は import しか見ないので
+            # **属性検査だけが黙って消える**。赤として報告する。
+            try:
+                rec["missing_attrs"] = [a for a in entry.get("attrs", []) if not hasattr(mod, a)]
+                for a in entry.get("keys_of", []):
+                    rec["keys"][a] = list(getattr(mod, a, None) or {})
+            except BaseException:
+                rec["ok"] = False
+                rec["error"] = "属性の検査中に例外:\n" + traceback.format_exc()
         emit(rec)
     emit({"__done__": True})
 
@@ -555,7 +578,17 @@ def module_verdict(results, module_name):
         return False, ("単独では import できるが、他モジュールと同一プロセスで"
                        "import すると失敗する (順序依存の副作用)\n"
                        "--- バッチ内の traceback ---\n" + rec.get("error", ""))
-    return False, err or rec.get("error", "")
+
+    # どちらも赤。**片方で上書きしない** — 単独プロセスは traceback を持たない
+    # ことがある (bare `sys.exit(1)` は何も出力せず終了コードだけ返す) 一方、
+    # バッチ側は必ず traceback.format_exc() を持っている。単独の結果で上書きすると
+    # 「SystemExit だった」という一番効く情報が消える。両方あるなら両方出す。
+    parts = []
+    if rec.get("error", "").strip():
+        parts.append("--- バッチ内の traceback ---\n" + rec["error"].strip())
+    if err.strip():
+        parts.append("--- 単独プロセスでの再検査 ---\n" + err.strip())
+    return False, "\n".join(parts) or "理由を取得できませんでした"
 
 
 def report_syspath_pollution(results):
@@ -718,15 +751,18 @@ CRITICAL_MODULES = [
 ]
 
 
-def load_tools_registry(errors):
+def load_tools_registry(errors, main_path=None):
     """main.py の TOOLS を読み、[(name, func_path), ...] を返す。
 
     main.py 自体は module scope が load_dotenv とパス定義だけなので、ここで
     exec_module しても重量級の依存は引かない (重いのは TOOLS が指す先のモジュールで、
     そちらはバッチの子プロセスが import する)。
+
+    main_path はテストが差し替えるためだけの引数 (既定は ROOT_DIR/main.py)。
     """
+    main_path = main_path or (ROOT_DIR / "main.py")
     try:
-        spec = importlib.util.spec_from_file_location("main_module", str(ROOT_DIR / "main.py"))
+        spec = importlib.util.spec_from_file_location("main_module", str(main_path))
         main_mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(main_mod)
     except Exception as e:

@@ -98,6 +98,18 @@ PROBES = {
         "import os\n"
         "os._exit(3)\n"
     ),
+    "_tmp_gbi_slow": (
+        "# -*- coding: utf-8 -*-\n"
+        "'''import が終わらないモジュール (バッチのタイムアウト経路の検証用)。'''\n"
+        "import time\n"
+        "time.sleep(120)\n"
+    ),
+    "_tmp_gbi_banner": (
+        "# -*- coding: utf-8 -*-\n"
+        "'''import 時に改行なしで stdout に書くモジュール (バナー出力の再現)。'''\n"
+        "import sys\n"
+        "sys.stdout.write('Loading tool...')\n"
+    ),
 }
 
 MISSING_MODULE = "tests._tmp_gbi_does_not_exist_xyz"
@@ -219,6 +231,100 @@ def test_batch_crash_falls_back_to_isolated():
     check("未到達だったことが理由に書かれる", "単独" in reason2, f"reason={reason2!r}")
 
 
+def test_batch_timeout_is_reported():
+    """バッチが時間内に終わらなかったとき、届いた分を残しつつ note を立てる。
+
+    タイムアウトを「例外が出た = 全件不明」として捨てると、以降が単独再検査に
+    落ちるだけで済むはずのところが全滅する。逆に note を立て忘れると
+    **未完走なのに正常終了扱い**になる。
+    """
+    print("\n[2c] バッチがタイムアウトしたとき")
+    original = v._BATCH_TIMEOUT_SEC
+    v._BATCH_TIMEOUT_SEC = 5
+    try:
+        results, note = v.run_import_batch([
+            _spec("tests._tmp_gbi_ok"),
+            _spec("tests._tmp_gbi_slow"),
+            _spec("tests._tmp_gbi_after"),
+        ])
+    finally:
+        v._BATCH_TIMEOUT_SEC = original
+
+    check("タイムアウトを検出する (note が空でない)", note != "", "正常終了扱いになっている")
+    check("タイムアウトだと分かる文言", "秒" in note, f"note={note!r}")
+    check("タイムアウト前の結果は届いている",
+          results.get("tests._tmp_gbi_ok", {}).get("ok") is True, f"{sorted(results)!r}")
+
+
+def test_banner_output_does_not_swallow_a_record():
+    """import 時に改行なしで stdout へ書くモジュールがあっても記録を落とさない。
+
+    ワーカーが JSON を書く前に改行を出さないと、モジュールのバナー出力に
+    JSON が連結されて行頭が `{` でなくなり、親がその1件を黙って捨てる。
+    捨てられた1件は「未到達」として単独再検査に落ちるので **赤にはならず遅くなるだけ** —
+    つまり誰も気付かないまま高速化が空洞化する。
+    """
+    print("\n[2d] バナー出力を挟んでも記録を落とさない")
+    results, note = v.run_import_batch([
+        _spec("tests._tmp_gbi_banner"),
+        _spec("tests._tmp_gbi_ok"),
+    ])
+    check("バッチが完走する", note == "", f"note={note!r}")
+    check("バナーを出したモジュール自身の記録が届く",
+          results.get("tests._tmp_gbi_banner", {}).get("ok") is True, f"{sorted(results)!r}")
+    check("後続の記録も届く",
+          results.get("tests._tmp_gbi_ok", {}).get("ok") is True, f"{sorted(results)!r}")
+
+
+def test_isolated_recheck_always_gives_a_reason():
+    """単独再検査が「理由なしの赤」を返さないこと。
+
+    os._exit() で死ぬモジュールは traceback を残さないので stderr が空になる。
+    それを素通しすると「Import Error: <mod>」だけが出て理由が一行も無い —
+    診断層そのものの無言の死 (cp1252 で stderr が消えたのと同じ結末)。
+    """
+    print("\n[2e] 単独再検査は必ず理由を返す")
+    v._ISOLATED_CACHE.clear()
+    ok, reason = v.check_import("tests._tmp_gbi_crash")
+    check("os._exit するモジュールは赤", ok is False, "緑になっている")
+    check("理由が空でない", bool(reason.strip()), "理由が一行も無い")
+    check("終了コードが理由に含まれる", "3" in reason, f"reason={reason!r}")
+
+
+def test_registry_rejects_malformed_function_path():
+    """TOOLS の function が 'module.func' 形でないときに黙って飛ばさない。
+
+    飛ばすとそのツールだけが永久に未検査になる (無言の死)。
+    """
+    print("\n[2f] TOOLS の function の形")
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        good = os.path.join(d, "main_ok.py")
+        with open(good, "w", encoding="utf-8") as f:
+            f.write("# -*- coding: utf-8 -*-\n"
+                    "TOOLS = [{'name': 'a', 'function': 'lib.paths.PROJECT_ROOT'},\n"
+                    "         {'name': 'b', 'function': 'nodots'},\n"
+                    "         {'name': 'c'}]\n")
+        errors = []
+        entries = v.load_tools_registry(errors, main_path=good)
+        check("正しい形だけが検査対象になる", entries == [("a", "lib.paths.PROJECT_ROOT")],
+              f"{entries!r}")
+        check("'module.func' 形でない function をエラーにする", len(errors) == 1, f"{errors!r}")
+        check("該当ツール名が出る", "[b]" in (errors[0] if errors else ""), f"{errors!r}")
+
+        no_tools = os.path.join(d, "main_no_tools.py")
+        with open(no_tools, "w", encoding="utf-8") as f:
+            f.write("# -*- coding: utf-8 -*-\nX = 1\n")
+        errors = []
+        v.load_tools_registry(errors, main_path=no_tools)
+        check("TOOLS が無ければエラー", len(errors) == 1, f"{errors!r}")
+
+        errors = []
+        v.load_tools_registry(errors, main_path=os.path.join(d, "does_not_exist.py"))
+        check("読めなければエラー", len(errors) == 1, f"{errors!r}")
+
+
 def test_module_verdict_reports_order_dependency():
     """バッチで赤・単独で緑 = 順序依存の副作用。これは偽陽性ではないので赤のまま。"""
     print("\n[2b] 順序依存 (バッチ赤 / 単独緑) の扱い")
@@ -271,7 +377,11 @@ def test_e2e_module_that_exits_on_import_turns_red():
     code, out = _e2e(["tests._tmp_gbi_exit", "lib.paths"])
     check("exit 1 になる", code == 1, f"exit={code}")
     check("モジュール名が出力される", "_tmp_gbi_exit" in out, out[-500:])
-    check("SystemExit として説明される", "SystemExit" in out, out[-800:])
+    # bare `sys.exit(1)` は単独プロセスでは traceback を残さない (stderr が空・
+    # 終了コードだけ)。単独再検査の結果でバッチの traceback を上書きすると
+    # 「SystemExit だった」という一番効く情報が消える。両方出ること。
+    check("SystemExit として説明される", "SystemExit" in out, out[-1200:])
+    check("単独再検査の結果も併記される", "単独プロセスでの再検査" in out, out[-1200:])
     check("後続の実在モジュールも検査される", "✅ lib.paths" in out, out[-800:])
 
 
@@ -356,6 +466,10 @@ if __name__ == "__main__":
         test_batch_detects_each_failure_shape()
         test_syspath_report_ignores_repo_root()
         test_batch_crash_falls_back_to_isolated()
+        test_batch_timeout_is_reported()
+        test_banner_output_does_not_swallow_a_record()
+        test_isolated_recheck_always_gives_a_reason()
+        test_registry_rejects_malformed_function_path()
         test_module_verdict_reports_order_dependency()
         test_e2e_missing_module_turns_red()
         test_e2e_module_that_exits_on_import_turns_red()
