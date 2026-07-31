@@ -1,9 +1,37 @@
 name: Tests
 
+# docs だけの変更で CI を回さない (2026-07-31)。
+# 実測 (run 30623715101): docs 3行の PR が 358 job秒 = private+Windows で12課金分、
+# しかも PR run と merge push run で2回走っていた。
+#
+# **これは «下駄» ではなく «検証済みの宣言» である**ことを機械的に縛ってある:
+# `tests/test_ci_docs_exemption.py` が
+#   (a) ここの paths-ignore が下の宣言リストと一致しているか
+#   (b) 追跡下の .md を読む Python が tests/ verify_project.py scripts/ に無いか
+# を ast で検査する。将来「テストが読む .md」が1本でも入ったら、CI 設定より先に
+# そのテストが赤くなる。前提が崩れたまま黙って skip し続ける経路を作らない。
+#
+# `**.md` にしている理由: GitHub の path filter で «どこにあっても .md» を表す
+# documented な書き方はこれ。`**/*.md` はルート直下の CLAUDE.md を
+# 取りこぼす実装があるので使わない。
+#
+# workflow_dispatch には path filter が効かない = **手動なら常に全部走らせられる**。
+# docs 変更でどうしても回したいときの逃げ道はここ (UI の Run workflow)。
+#
+# 将来 Pro 化 / public 化して branch protection の required check を入れるときは
+# **この paths-ignore をそのままにしてはいけない**: skip された PR は
+# 「Expected — Waiting for status」で永久に固まる。そのときは同名のダミージョブ
+# (`if: always()` で即 success) を足す形に組み替えること。
+# 現在このリポジトリは private + 無料プランで branch protection が使えず、
+# required check が存在しないので、この形で安全。
 on:
   push:
     branches: [master, main]
+    paths-ignore:
+      - '**.md'
   pull_request:
+    paths-ignore:
+      - '**.md'
   workflow_dispatch:
 
 # 同じ PR ブランチの古い run を殺す (2026-07-31)。PR に push し直したとき、

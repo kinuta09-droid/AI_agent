@@ -79,6 +79,12 @@ SERIAL_TESTS = {
         "_tmp_gbi_exit は import 時に sys.exit(1)、_tmp_gbi_crash は os._exit(3) する。"
         "(b) その状態で verify_project.py を**フルで**実走させる (import 整合性まで)。"
         "つまり上の3本にとっての加害者であり、同時に被害者でもある",
+    "test_ci_docs_exemption.py":
+        "test_diagnostic_subprocess_encoding のコメントが予告した «tests/ を走査する"
+        "検査» が実際に増えた側。tests/*.py と scripts/*.py を glob して ast で読むので、"
+        "上の3本が一時ファイルを置いている窓に重なると (a) 消えた直後のパスを開いて"
+        "FileNotFoundError、(b) わざと壊したファイルを走査対象として拾う、"
+        "のどちらかで自分は無実なのに赤くなる",
 }
 
 # 共有する可変資源を持たないことを確認済みのもの。書き込み先は tempfile.mkdtemp か、
