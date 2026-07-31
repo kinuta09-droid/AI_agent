@@ -197,10 +197,12 @@ class _Job:
         return time.monotonic() - self.started
 
     def kill_tree(self):
-        """孫まで落とす。
+        """打ち切る。Windows では孫まで落とす。
 
         MCP サーバや llama-cli を起こすテストがあるので、直接の子だけ殺すと
         孫が残って次のスイープに紛れ込む。Windows は taskkill /T が唯一の手。
+        POSIX 側は**直接の子しか落とさない** (プロセスグループを作っていないため)。
+        このリポジトリの実行環境は Windows なので、そこまではやらない。
         """
         self.timed_out = True
         if os.name == "nt":
@@ -210,7 +212,12 @@ class _Job:
             self.proc.kill()
 
     def finish(self):
-        code = self.proc.wait()
+        try:
+            # 打ち切った直後に呼ばれる経路があるので、待ちには上限を置く。
+            # taskkill が効かなかったときにスイープごと固まらせない。
+            code = self.proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            code = 124
         self._out.close()
         try:
             with open(self.out_path, encoding="utf-8", errors="replace") as f:
