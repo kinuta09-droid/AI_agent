@@ -453,8 +453,51 @@ def test_render_progress_shared_by_both_entrypoints():
 # [15] 静的検査
 # ---------------------------------------------------------
 
+_POOL_NAME = "ThreadPoolExecutor"
+
+
+def _uses_threadpool(src):
+    """ast で「実際に使っている」ものだけを拾う。
+
+    文字列走査だと **この検査を避けた理由を書いた docstring / コメント自体**が
+    違反として報告される (実際 scripts/run_test_sweep.py で踏んだ)。
+    CLAUDE.md の「検査は文字列走査ではなく ast で書く」と同じ話で、
+    そうなると「教訓を書けなくする検査」になり、外される方向に力が働く。
+
+    構文エラーのファイルは判定できないので False を返す (構文は
+    verify_project の [2] の担当)。
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == _POOL_NAME:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr == _POOL_NAME:
+            return True
+        if isinstance(node, ast.ImportFrom):
+            if any(a.name == _POOL_NAME for a in node.names):
+                return True
+    return False
+
+
 def test_threadpool_usage_is_confined():
     print("\n[15] ThreadPoolExecutor の使用箇所を限定する")
+
+    # 検出器が飾りになっていないことの両方向確認。「違反0件でした」は
+    # 検出器が壊れていても同じ出力になる。
+    check("実際に使っていれば拾う",
+          _uses_threadpool("from concurrent.futures import ThreadPoolExecutor\n"
+                           "ThreadPoolExecutor(max_workers=2)\n"), "")
+    check("属性参照でも拾う",
+          _uses_threadpool("import concurrent.futures\n"
+                           "concurrent.futures.ThreadPoolExecutor(max_workers=2)\n"), "")
+    check("名前に言及しただけの docstring / コメントは拾わない",
+          not _uses_threadpool('"""ThreadPoolExecutor を使わない理由"""\n'
+                               "# ThreadPoolExecutor は使わない\n"
+                               'x = "ThreadPoolExecutor"\n'), "")
+
     allowed = {
         os.path.join("engine_plan_execute.py"),
         os.path.join("tools", "tool_curator.py"),
@@ -486,7 +529,7 @@ def test_threadpool_usage_is_confined():
                         src = f.read()
                 except (OSError, UnicodeDecodeError):
                     continue
-                if "ThreadPoolExecutor" in src:
+                if _uses_threadpool(src):
                     offenders.append(rel)
     check("許可された3ファイル以外で使っていない", not offenders, str(offenders))
     check("走査が空振りしていない (engine を実際に読んでいる)",
