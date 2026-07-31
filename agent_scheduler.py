@@ -78,6 +78,14 @@ except ImportError as _e:
     def update_activity_index():
         return f"Activity Index: tool_activity_index not available ({_activity_index_err})"
 
+# Document Conversion (Phase 3-0 — docling 未導入でもスケジューラ全体を壊さない)
+try:
+    from tools.tool_document_sidecar import sync_document_sidecars
+except ImportError as _e:
+    _doc_sidecar_err = str(_e)
+    def sync_document_sidecars():
+        return f"Document Conversion: tool_document_sidecar not available ({_doc_sidecar_err})"
+
 # User Memory Distillation (optional)
 try:
     from tools.tool_user_memory import distill_daily_memory
@@ -422,6 +430,14 @@ SCHEDULE = [
         "time": "02:45",
         "name": "User Memory Distillation",
         "func": distill_daily_memory,
+    },
+    # Document Conversion (Phase 3-0): Vault内のPDF/DOCX/PPTXをdoclingでMarkdown化し
+    # 99_Assets/Converted/ に配置する。03:15 の Vault Semantic Index より前に置くことで、
+    # 変換済みノートが同じ夜のインデックス更新に間に合う (順序が逆だと1日遅れて反映される)。
+    {
+        "time": "03:05",
+        "name": "Document Conversion",
+        "func": sync_document_sidecars,
     },
     # Vault Semantic Index (ローカルOllama埋め込み、API課金なし。:15分台は他ジョブと衝突しない)
     {

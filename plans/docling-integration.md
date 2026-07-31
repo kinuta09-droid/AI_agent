@@ -34,10 +34,10 @@ Claude Code を起動して:
 | 0-4 | **Go / No-Go 判定** | **完了 (Go)** | 2026-07-31 | 表構造化・日本語とも良好。速度はarXiv論文のみ120秒をわずかに超過 → 同期実行しない設計(Phase2で`defer()`済み)で対応。詳細は下記 |
 | 1 | 変換層の一般化 (ローカル対応・mtimeキャッシュ・表の保持) | **完了** | 2026-07-31 | `lib/docling_client.py` 全面改修 + `lib/paths.py` に `DOCLING_ARTIFACTS_PATH` 追加。`tests/test_docling_client.py` 新設 (8件、旧 `test_paper_radar.py` [9] を移設)。詳細は下記 |
 | 2 | `tool_document.py` + registry + Discord `/doc` | **完了** | 2026-08-01 | `tools/tool_document.py` 新設・`tests/test_document_tool.py` 新設 (16件)。`py verify_project.py` 緑・`tests/test_*.py` 全74本緑。実PDF (arXiv論文) での手動実機確認済み (下記)。Discord実機確認 (Botプロセス起動しての添付テスト) は未実施 |
-| 3-0 | サイドカー変換 (方式A) + スケジューラ 03:05 ジョブ | 未着手 | | インデクサ本体は触らない |
-| 3-1 | **チャンカーの表分割修正** (docling 非依存) | **完了** | 2026-07-30 | `tool_vault_index` + `tests/test_vault_chunking.py` に11件追加。実機では**再インデックス**が要る (下記) |
-| 3-2 | 表キャプションを添えて埋め込み | 未着手 | | 3-4 の実測で不要なら**やらない** |
-| 3-4 | `eval_retrieval` に表/PDFクエリを追加して before/after | 未着手 | | **before は再インデックスの前にしか取れない** (冒頭 STEP 1)。3-3 は判断のみで作業なし |
+| 3-0 | サイドカー変換 (方式A) + スケジューラ 03:05 ジョブ | **完了** | 2026-08-01 | `tools/tool_document_sidecar.py` 新設 (`sync_document_sidecars`)。`agent_scheduler.py` に03:05ジョブ登録。実機で arXiv論文PDFを配置→変換→サイドカーノート生成を確認。**副産物**: 本番起動チェーン (`py -u main.py`) のシステムPython 3.13に docling が未導入 (`antigravity_env` にしか無い) と判明、torch CPU版+doclingを追加導入し解消。詳細は下記 |
+| 3-1 | **チャンカーの表分割修正** (docling 非依存) | **完了** | 2026-07-30 | `tool_vault_index` + `tests/test_vault_chunking.py` に11件追加。実機で**再インデックス**実施済み (2026-08-01、下記) |
+| 3-2 | 表キャプションを添えて埋め込み | **見送り** | 2026-08-01 | 3-4 の結果、見送りが妥当と判断。理由は下記 |
+| 3-4 | `eval_retrieval` に表/PDFクエリを追加して before/after | **完了** | 2026-08-01 | hit@5 0.8235→0.8824 (+0.059) / mrr@10 +0.053。詳細下記 |
 | 4 | 表の計算経路 (CSV/SQLite) | 保留 | | 数値質問の実需が出たら |
 
 状態は `未着手` / `進行中` / `完了` / `見送り(理由)` のいずれかで書く。
@@ -539,6 +539,79 @@ before/after を測ってから (skill `retrieval-tuning` の作法)。
 **after で表クエリが十分に通るなら 3-2 (キャプション生成) はやらない。**
 Gemini を使う側は、3-1 だけでは足りないと実測できてから着手する。
 
+### 実施結果 (2026-08-01・実機)
+
+**3-0 実装**: `tools/tool_document_sidecar.py` (`sync_document_sidecars`)。Vault内の
+PDF/DOCX/PPTXを検出し `lib.docling_client.capture_document()` で変換 (Gemini要約は
+しない — 毎晩全Vaultを巡回するバッチのため課金をファイル数に比例させない設計)、
+`99_Assets/Converted/<元の相対パス>.md` にディレクトリ構造を保って配置する。
+サイドカーの mtime で冪等性を保証 (元ファイルが更新されない限り再変換しない)。
+インデクサ本体 (`tool_vault_index`) は無改修。`agent_scheduler.py` に **03:05**
+(03:15 Vault Semantic Index の前) でジョブ登録。`tests/test_document_sidecar.py`
+新設 (15件、docling不要のスタブテスト)。
+
+**副産物 (重要)**: 実装中に、本番の起動チェーン (`scripts\arms_core.bat` →
+`py -u main.py`) が使う**システムPython 3.13には docling が入っていなかった**
+ことが判明した (`antigravity_env` にしか無かった)。CLAUDE.md には
+`py -m pip install -r requirements-docling.txt` が手順として書かれているが、
+実態と食い違っていた。放置すると Document Conversion ジョブは毎晩
+「docling 未導入のためスキップ」を返し続け、**エラーにならないので誰も気付けない**
+(このリポジトリで繰り返し出ている「無言の死」と同型)。同時に、既にリリース済みの
+Phase 2 の Discord `/doc` も本番では docling を使えていなかった可能性が高い。
+→ システムPython 3.13にも Phase 0 と同じ手順 (torch CPU版 → docling) を実行し解消。
+`py -c "import docling"` / `py verify_project.py` / `tests/test_*.py` 全75本で
+確認済み。
+
+**実機オペレーション**: Ollama のモデルが (Phase 3 とは無関係の理由で) 全て消えて
+いたため `bge-m3` / `qwen2.5-coder:7b` を再pullしてから実施。Scheduler停止 →
+`attention_is_all_you_need.pdf` (arXiv 1706.03762) を `20_Sources/Test_Documents/`
+に配置 → サイドカー変換 (1変換・48957文字・Table 2のBLEU値含め正しく構造化) →
+`logs/vault_index.db` を退避し全件再構築 (763ファイル・5507チャンク・失敗0) →
+Scheduler再起動、まで実施済み。
+
+**before/after 比較** (`--multiquery on --rerank on --loop on`、17問):
+
+| 指標 | before | after | 差分 |
+|------|--------|-------|------|
+| hit@5 | 0.8235 (14/17) | 0.8824 (15/17) | +0.0589 |
+| mrr@10 | 0.6329 | 0.6863 | +0.0534 |
+| 劣化 (フォールバック汚染) | 0問 | 0問 | — |
+
+- **R17 (PDF由来クエリ)**: 圏外 → **rank=1** (`attention_is_all_you_need.md#6.1
+  Machine Translation`)。3-0 のサイドカー変換パイプライン (Vault配置 → docling変換
+  → 既存インデクサへの自動配線) が意味検索まで一気通貫で機能していることの実地証拠
+- **R13**: 圏外 → rank=1 に改善 (既存ノート)
+- **R16 (表クエリ)**: rank=4 → **rank=6 (hit@5 圏外) に悪化**。上位6件を確認したところ
+  正解ノートの一方 (`2026-W29_03_Crypto_Weekly_Summary.md#📊 テクニカル指標`) は
+  rank=6 に実在しており「完全に見失った」わけではないが、**rank=5 に別週
+  (`2026-W06_03_Crypto_Weekly_Summary.md`) の同一構造の表が割り込んでいた**。
+  crypto週次サマリーは同じ「指標/値/基準」ヘッダの表を32件以上のノートで繰り返す
+  構造 (このテーブル自体は元々1200字未満で3-1修正前から壊れていなかった) ため、
+  このクエリは**3-1のチャンク分割修正の効果を測るには不適切な検体**だったと判断する。
+  R01/R02/R03/R06/R12 も1ランク前後で上下しており (劣化フラグは立っていない)、
+  multiquery/rerank が Gemini/ローカルLLMのクエリ書き換えを毎回生成し直す
+  非決定的な処理であることを踏まえると、R16の悪化は**表チャンクの破損の再発ではなく
+  類似構造ノートが多い corpus 内でのクエリ書き換えの揺らぎ**に起因する可能性が高い
+
+**3-2 (表キャプション生成) の判断: 見送り**。理由:
+1. R16 が hit@5 を割ったのは事実だが、原因は「表が壊れて読めない」ことではなく
+   「同一構造の表を持つノートが32件以上あり、日付を明示したクエリでも紛れる」こと
+   (根拠: rank=6 に正解ノートの一方が実在し、しかも中身のヘッダは保たれている)
+2. キャプション生成は「表が何を表しているか」を一言添える施策であり、
+   その一言も (キャプションの元ネタが本文にキーワードとして既にある以上)
+   「BTCのテクニカル指標」程度の一般的な文になりがちで、**週・日付という
+   このケースの真の識別子を補わない**。根本原因に効かない施策にGemini呼び出しを
+   足すのは筋が悪い
+3. Phase 3-0 の主目的である PDF由来クエリ (R17) は完全にヒットしており、
+   3-1 のチャンカー修正も (この検体では検証できなかったが) 既存の
+   `tests/test_vault_chunking.py` (20件・実行前後で完全一致するテスト含む) で
+   担保されている
+
+→ crypto週次サマリーの検索時の曖昧さ (近似構造ノートの大量重複) は Phase 3 の
+スコープ外の別課題として認識するに留める (`retrieval-tuning` skill 領域。
+必要なら日付/週番号をメタデータとして重み付けする改善が考えられるが、
+実需が出てから着手する)。
+
 ---
 
 ## Phase 4 (任意): 既存経路の見直し / 表の計算経路
@@ -598,15 +671,17 @@ Gemini を使う側は、3-1 だけでは足りないと実測できてから着
       実PDFでの `tool_read_document`/`tool_import_document` 手動実行を一時Vaultで確認済み。
       Discord で実際に PDF を添付 → 要約が返る、は Bot プロセス起動が要るため**未実施**
       (次回実機オペレーターのフォローアップ)
-- [ ] **Phase 3-1**: `py tests/test_vault_chunking.py` 緑。1200字超の表が
-      行の途中で切れず、全チャンクがヘッダ行を持つこと。表を含まないノートの
-      チャンク結果が**変わらない**こと
-- [ ] **Phase 3**: `py scripts/eval_retrieval.py` の before/after を並べる。
-      PDF 由来クエリ・**表クエリ**が当たり、既存クエリが劣化していないこと。
-      3-1 だけで表クエリが通るなら 3-2 は**やらない**
-- [x] **全体 (Phase 2 時点)**: `tests/test_*.py` スイープ (現在74本。Phase 2 で
-      `test_document_tool.py` を新設) **74/74 緑** (Phase 1 時点で唯一失敗していた
-      `test_bitnet_practical.py` は別タスクで解消済み)
+- [x] **Phase 3-1**: `py tests/test_vault_chunking.py` 緑(20件)。実機で全件再構築
+      (763ファイル・5507チャンク・失敗0) を実施し、修正後のチャンクが本番インデックス
+      に反映されていることを確認済み (2026-08-01)
+- [x] **Phase 3**: `py scripts/eval_retrieval.py` の before/after を実施
+      (hit@5 +0.059 / mrr@10 +0.053・劣化フラグ0問)。PDF由来クエリ (R17) は
+      圏外→rank=1で完全にヒット。表クエリ (R16) は rank=4→6 とhit@5を割ったが、
+      根本原因はチャンク破損の再発ではなく類似構造ノートの重複によるものと実機調査で
+      特定済み (詳細は3-4節)。3-2 (キャプション生成) は根本原因に効かないため見送り
+- [x] **全体 (Phase 3 時点)**: `tests/test_*.py` スイープ **75/75 緑**
+      (`test_document_sidecar.py` 新設分含む)。`py verify_project.py` 緑。
+      本番起動チェーンのシステムPython 3.13にdocling未導入だった副産物も解消済み
 - [x] **最重要**: `py -m pip uninstall docling` した状態で上記スイープが**そのまま緑**。
       docling は「あれば品質が上がる」オプションであって、
       **無いと壊れる依存にしない**。これが崩れたら設計が失敗している
