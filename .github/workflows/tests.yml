@@ -6,6 +6,25 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 同じ PR ブランチの古い run を殺す (2026-07-31)。PR に push し直したとき、
+# 既に無意味になった run が最後まで走り切って課金だけしていく。
+#
+# **master への push は絶対にグループへ入れない** — マージ結果が緑だったかは
+# 後から «その commit で CI が通ったのか» を答える唯一の証跡で、連続マージで
+# 消えると「CI と実機の失敗一覧の一致」で切り分ける手順が使えなくなる。
+#
+# ここで `group: ...ref` + `cancel-in-progress: <PRのときだけtrue>` と書くのは
+# **誤り**。cancel-in-progress が false でもグループ自体は master に掛かり、
+# GitHub は «1グループにつき pending は1つ» なので、run 1 が実行中に
+# マージ2・マージ3 が来ると **マージ2の run はキャンセルされる**
+# (待たされるのではない)。上のコメントが実態と食い違う典型パターンになる。
+# → master push には run_id を混ぜて **毎回ユニークなグループ** にし、
+#    グルーピングそのものを無効化する。こうすれば cancel-in-progress: true が
+#    master に対して構造的に何もできない (同居する run が存在しないため)。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   guardian:
     # 構造的な整合性 (構文/エンコーディング/未定義名/import/StringIOアンチパターン/
@@ -17,6 +36,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          # pip のダウンロードキャッシュを復元する (2026-07-31)。
+          # 実測: docs 3行だけの run 30623715101 で、pip install が
+          # guardian 72秒 / tests 68秒 = 合計140秒 (全体 358秒の39%) だった。
+          # verify_project 本体は8秒なので、**検査より段取りの方が9倍高い**状態。
+          # キーは requirements.txt のハッシュ (setup-python の既定。
+          # このリポジトリの requirements.txt はルートに1本だけ)。
+          #
+          # **これはバージョンの固定ではない**: requirements.txt はほぼ
+          # 未固定なので、pip は毎回 PyPI に解決を問い合わせる。上流に新しい版が
+          # 出ればそれは普通にダウンロードされる (そのホイールだけキャッシュミス)。
+          # キャッシュしているのはホイールの実体 (numpy/pandas/ccxt が大半) だけで、
+          # 「CI が古い依存を掴んだまま緑になる」経路は作っていない。
+          #
+          # guardian と tests は同じキーになるので、初回は両ジョブが同時に
+          # save を試みて片方が "Unable to reserve cache" を warning で出す。
+          # **これは失敗ではない** (先に保存した方が勝ち、次回から両方 hit する)。
+          cache: pip
       - run: pip install -r requirements.txt
       - name: verify_project.py
         env:
@@ -83,6 +119,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip  # 理由は guardian ジョブ側のコメント参照
       - run: pip install -r requirements.txt
       - name: Run tests/test_*.py (script exit-code semantics)
         env:
