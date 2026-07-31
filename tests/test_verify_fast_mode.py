@@ -10,7 +10,9 @@
 
   そこで2方向から縛る:
     - **飛ばしてよいもの**: [3] import整合性 / [4] TOOLSレジストリ /
-      [6] Briefing は --fast では実行されない (これらがフル174秒の主因)
+      [6] Briefing は --fast では実行されない (かつてフル174秒の主因だった部分。
+      2026-07-31 のバッチ化でフルは約8秒になったが、コミット毎に1.3秒→8秒は
+      6倍の後退なのでフックは --fast のまま)
     - **飛ばしてはいけないもの**: [1] 構造 / [2] 構文・エンコーディング・未定義名 /
       [5] Discord アンチパターン・例外握りつぶし は --fast でも実行される
   さらに、壊れたファイルを置いたら --fast が実際に赤くなることを確認する
@@ -28,7 +30,13 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-LAUNCHER = "py" if os.name == "nt" else "python3"
+# 子プロセスは「このテストを動かしている interpreter」で起動する。
+# `py` (Windows の Python Launcher) は別の Python を指しうるので、CI の
+# toolcache Python でテストを実行しつつ `py` が素の system Python を指す、
+# という食い違いが起きる (test_guardian_batch_import.py が 2026-07-31 に
+# これで CI だけ赤くなった)。--fast は stdlib しか使わないので現状は
+# たまたま無事だが、「たまたま」に依存しない。
+LAUNCHER = sys.executable
 VERIFY = os.path.join(_PROJECT_ROOT, "verify_project.py")
 
 # guard_git_commit.py の VERIFY_TIMEOUT_SEC と同じ意図の上限。
@@ -81,7 +89,7 @@ def test_fast_skips_only_the_expensive_sections():
         check(
             f"--fast は {marker} {label} を飛ばす",
             f"\n{marker} " not in out,
-            "重いセクションが実行されている (フックが174秒コースに戻っている)",
+            "重いセクションが実行されている (フックがフル実行コースに戻っている)",
         )
 
     check(

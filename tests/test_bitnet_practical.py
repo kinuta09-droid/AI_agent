@@ -15,6 +15,11 @@
   CI は前提不在で SKIP・開発機は opt-in 未指定で SKIP と、両方必要。
 """
 import sys, os
+# LEVEL 0 (スクリプト単位)。BitNet の生成結果には日本語に混じって簡体字 (仅 等) が
+# 出ることがあり、stdout がパイプだと cp932 で復号できず UnicodeEncodeError で落ちる。
+# 生成内容次第で赤くなる = 同じコードが実行ごとに緑にも赤にもなるので、
+# スイープの結果そのものが信用できなくなる (2026-07-31 に実際に踏んだ)。
+sys.stdout.reconfigure(encoding='utf-8')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # このファイルだけ stdout の再設定が抜けていた。SKIP 行の ⏭️ が cp932 で
 # エンコードできず UnicodeEncodeError で落ちる (LEVEL 0 の対処)。

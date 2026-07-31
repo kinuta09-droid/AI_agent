@@ -204,7 +204,10 @@ def test_commit_guard_uses_fast_mode():
 
     with open(os.path.join(HOOK_DIR, "guard_git_commit.py"), encoding="utf-8") as f:
         src = f.read()
-    check("verify_project.py を --fast で呼ぶ", '"--fast"' in src, "フル実行のままでは174秒かかる")
+    # フルはバッチ化で 172秒 -> 約8秒 になったが、コミット毎に 1.3秒 -> 8秒 は
+    # 6倍の後退なのでフックは --fast のまま (2026-07-31)。
+    check("verify_project.py を --fast で呼ぶ", '"--fast"' in src,
+          "フル実行はコミット毎に払うには重い (--fast 約1.3秒 に対し約8秒)")
 
     # 文字列一致で "timeout=180" を探すと、なぜ180が駄目だったかを説明した
     # docstring 自身に当たってしまう。実際に subprocess.run へ渡している値を ast で取る。
@@ -230,9 +233,9 @@ def test_commit_guard_uses_fast_mode():
                         and isinstance(node.value, ast.Constant)):
                     effective = node.value.value
     check(
-        "timeout が実測フル時間 (174秒) に張り付いていない",
+        "timeout が実測時間に張り付いていない",
         isinstance(effective, (int, float)) and effective <= 60,
-        f"実効 timeout={effective} — フル174秒に対し余裕が無いと間欠的に全コミットが封鎖される",
+        f"実効 timeout={effective} — 実測に余裕が無いと間欠的に全コミットが封鎖される",
     )
     check(
         "TimeoutExpired と OSError を別メッセージで扱う",
