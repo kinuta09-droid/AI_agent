@@ -80,6 +80,22 @@ jobs:
           # guardian と tests は同じキーになるので、初回は両ジョブが同時に
           # save を試みて片方が "Unable to reserve cache" を warning で出す。
           # **これは失敗ではない** (先に保存した方が勝ち、次回から両方 hit する)。
+          #
+          # **効果は見込みより遥かに小さかった (実測・訂正 2026-07-31)**:
+          # 導入時に「140秒 -> 15秒」と見込んだが、cache hit した run 30626073521 は
+          # 66秒 + 62秒 = 128秒で、**縮んだのは12秒だけ**。内訳を追うと:
+          #     0.0 -> 11.8秒  解決 + メタデータ (全て "Using cached" = DL ゼロ)
+          #    11.8 -> 64.6秒  **Installing collected packages (78個)**
+          # つまり律速はダウンロードではなく **Windows の site-packages への展開**で、
+          # pip のダウンロードキャッシュは原理的にここを縮められない。
+          # (キャッシュ復元自体にも 102MB / 約6秒かかっており、その分を食っている)
+          #
+          # 本気で潰すなら **venv ごとキャッシュする** (actions/cache で
+          # site-packages を保存) しかないが、requirements.txt はほぼ未固定なので
+          # 「requirements.txt が変わるまで CI が同じ依存を掴み続ける」状態になる。
+          # それは下の «バージョンを固定しない» という性質と真っ向から衝突するので、
+          # **やるなら «依存を pin する» とセットで判断すること**。
+          # 12秒のために意味論を変えない、と判断して今はここで止めてある。
           cache: pip
       - run: pip install -r requirements.txt
       - name: verify_project.py
