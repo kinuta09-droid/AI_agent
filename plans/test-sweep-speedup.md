@@ -1,5 +1,19 @@
 # テストスイープを 476秒 → 80秒前後にする
 
+> **実行済み (2026-07-31・ブランチ `perf/test-sweep-parallel`)。**
+> 実測: 直列 **484.9秒** → ③適用後 直列 **305.4秒** → ④8並列 **89.1秒** (FAIL 0 / 71本)。
+> 計画との差分:
+> - **④ で `ThreadPoolExecutor` を使えなかった。** `tests/test_parallel_execute.py`
+>   の [15] が使用箇所を3ファイルに限定しており、走査対象に `scripts/` が入っている。
+>   Popen をポーリングする形に変更 (親は CPU 仕事をしないのでスレッドは不要)。
+>   さらにこの [15] は**文字列走査**だったため、「なぜ使わないか」を書いた docstring
+>   自体が違反として報告された → ast へ書き換えた (CLAUDE.md の既知の類型)。
+> - **直列レーンは3本になった。** 判明済みの2本に加え、
+>   `test_diagnostic_subprocess_encoding` も `tests/` に一時ファイルを書くので隔離した。
+> - 並列可否は `scripts/run_test_sweep.py` に宣言を置き、未分類は直列へ倒す。
+>   分類漏れは `tests/test_sweep_runner.py` [1] が赤にする。
+> - ⑤ (`lib_shared` の `google.genai` 遅延 import) は**未着手**。別 PR のまま。
+
 ## このセッションの始め方
 
 ```

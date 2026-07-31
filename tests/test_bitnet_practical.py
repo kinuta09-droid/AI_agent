@@ -4,12 +4,32 @@
 外部前提 (C:\\BitNet の llama-cli.exe + 量子化モデル) が要る手動デバッグスクリプト。
 前提が無い環境 (CI 等) では SKIP して正常終了する — 以前はルートを直書きしていて
 `No module named 'tools'` で落ち、直した後も FileNotFoundError で落ちる状態だった。
+
+さらに ARMS_SLOW_TESTS=1 のときだけ実行する (2026-07-31):
+  アサーションを持たない計時ベンチで、ローカル LLM 推論に約78秒かかる。
+  スイープ484.9秒のうち BitNet 3本だけで185秒 = 38.9% を占めていた。
+  推論時間は固有の計算量なので速くはできない -> opt-in の後ろへ置く。
+  **ARMS_LIVE_TESTS と混同しないこと** — あちらは「課金・外部副作用がある」、
+  こちらは「遅いだけで無料・無副作用」。統合すると、課金ゲートを緩めたいときに
+  遅いベンチまで一緒に走る。前提のゲート (下の LLAMA_CLI 存在確認) とも別物で、
+  CI は前提不在で SKIP・開発機は opt-in 未指定で SKIP と、両方必要。
 """
 import sys, os
+# LEVEL 0 (スクリプト単位)。BitNet の生成結果には日本語に混じって簡体字 (仅 等) が
+# 出ることがあり、stdout がパイプだと cp932 で復号できず UnicodeEncodeError で落ちる。
+# 生成内容次第で赤くなる = 同じコードが実行ごとに緑にも赤にもなるので、
+# スイープの結果そのものが信用できなくなる (2026-07-31 に実際に踏んだ)。
+sys.stdout.reconfigure(encoding='utf-8')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# このファイルだけ stdout の再設定が抜けていた。SKIP 行の ⏭️ が cp932 で
+# エンコードできず UnicodeEncodeError で落ちる (LEVEL 0 の対処)。
 sys.stdout.reconfigure(encoding='utf-8')
 from tools.tool_bitnet import route_tool, summarize, draft_message, LLAMA_CLI, MODEL_PATH
 import time
+
+if os.getenv("ARMS_SLOW_TESTS", "").strip() != "1":
+    print("⏭️ SKIP: 遅い実測ベンチ (BitNet 推論で約78秒)。ARMS_SLOW_TESTS=1 で実行します")
+    sys.exit(0)
 
 if not (os.path.exists(LLAMA_CLI) and os.path.exists(MODEL_PATH)):
     print("⏭️ SKIP: BitNet の実行環境が見つかりません")

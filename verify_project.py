@@ -11,10 +11,13 @@ Antigravity Guardian (Stability Verifier)
     py verify_project.py --fast     # 静的検査のみ (git commit フック用)
 
 --fast は「サブプロセスを1つも起動しない検査」だけを走らせる。
-実測 (2026-07-30 実機 Windows): フル 174秒 / --fast 数秒。
-フルの所要時間の大半は [3][4][6] が ccxt/pandas/google.genai を含む
-重量級モジュールを37回ロードし直すことに費やされており、
-これを `git commit` のたびに払うのは実用に耐えない (判断ゲートA)。
+実測 (2026-07-31 実機 Windows): フル 約10秒 / --fast 約1秒。
+フルが 164.69秒 かかっていた頃の主因は [3][4][6] が
+「1モジュール = 1サブプロセス」で ccxt/pandas/google.genai を含む重量級スタックを
+27回ゼロからロードし直していたことで、これは1プロセスへのバッチ化で解消した
+(run_import_batch のコメント参照)。
+それでもフックは --fast のまま維持する: コミット毎に1秒→10秒は10倍の後退で、
+「気軽に細かくコミットする」という行動を潰すため。
 --fast が緑でもフルが緑とは限らないので、**--fast はフルの代用ではない**。
 import 整合性は CI (.github/workflows/tests.yml の guardian ジョブ) と
 リリース前の手動フル実行が担保する。
@@ -23,6 +26,7 @@ import 整合性は CI (.github/workflows/tests.yml の guardian ジョブ) と
 import os
 import re
 import sys
+import json
 import subprocess
 import importlib.util
 import warnings
@@ -356,9 +360,20 @@ def check_hardcoded_abs_paths(file_path, rel_path):
 
 
 def check_import(module_name):
-    """モジュールが正常にインポート可能か確認する"""
+    """モジュール1件を単独のサブプロセスで import してみる (隔離再検査用)。
+
+    通常経路はこれではなく run_import_batch() の一括 import。ここは
+    **バッチが赤かった / 途中で死んだモジュールだけ** を単独で再実行し、
+    他モジュールの影響を受けていない正確な traceback を得るために残してある。
+
+    かつてこの関数は「現在のプロセスを汚さず」という理由で全モジュールに使われて
+    いたが、その建前は [4] のレジストリ検査が `importlib.import_module()` で
+    Guardian 自身のプロセスに import して hasattr を見ていた時点で既に破れていた
+    (= 各モジュールはサブプロセスとインプロセスで二重に import されていた)。
+    現在は [4] の hasattr 判定もバッチ側 (子プロセス) に寄せてあるので、
+    Guardian 本体は検査対象モジュールを一切 import しない。
+    """
     try:
-        # サブプロセスで実行することで、現在のプロセスを汚さず、かつパス解決を検証
         cmd = [PYTHON_EXE, "-c", f"import {module_name}; print('OK')"]
         # encoding/errors は必須 (LEVEL 1)。text=True だけだとロケール既定で復号するため、
         # 日本語を含む traceback が cp1252 ロケール (GitHub Actions の runner) で
@@ -370,9 +385,232 @@ def check_import(module_name):
                                 cwd=str(ROOT_DIR))
         if result.returncode == 0:
             return True, ""
-        return False, result.stderr
+        # stderr が空でも「理由なし」で返さない。os._exit() やクラッシュで死んだ
+        # モジュールは traceback を残さないので、これを素通しすると
+        # 「Import Error: <mod>」だけが出て理由が一行も無い状態になる
+        # (= 診断層そのものの無言の死。cp1252 の stderr 消失と同じ結末)。
+        reason = (result.stderr or "").strip()
+        if not reason:
+            reason = (f"(stderr なし) 子プロセスが exit code {result.returncode} で終了。"
+                      f"import 中に os._exit() / プロセスクラッシュが起きた可能性")
+        return False, reason
     except Exception as e:
         return False, str(e)
+
+
+# ---------------------------------------------------------
+# [3][4][6] の一括 import (バッチ)
+# ---------------------------------------------------------
+# 旧実装は「1モジュール = 1サブプロセス」で 35 プロセス (ユニークは27。8件は
+# [3] と [4] の重複) を起動しており、フル実行 164.69秒 のほぼ全部がここだった。
+# 単価が 0.04秒 (lib.pid_guard) 〜 7.37秒 (bot_discord) とばらけるのは、重い
+# モジュールが ccxt / pandas / google.genai を引き連れてくるからで、27回とも
+# **同じ重量級スタックをゼロからロードし直していた**のが本当の原因。
+#
+# 実測:
+#   旧実装のフル (35プロセス) ... 164.69秒 (master 241c8e3) / 172.40秒 (master d6a3f46)
+#   ユニーク27件を8並列 ....... 30.03秒
+#   ユニーク27件を1プロセス ... **6.98秒** (バッチ化後のフル実測 7.5秒)
+# つまり並列化はバッチ化に4倍負ける。16コアあっても、各プロセスが同じ依存を
+# 独立にロードする無駄は消えないため。**ここを取り違えて並列化に走らないこと。**
+#
+# バッチ化で検出力が落ちないことは細工モジュールで検証済み (5/5):
+#   存在しないモジュール / import 時 sys.exit(1) / その後続モジュールへの到達 /
+#   import 時の sys.path 汚染 / 正常モジュールを誤検出しない。
+_BATCH_TIMEOUT_SEC = 300
+
+# 子プロセスで走るバッチワーカー。`-c` で渡すのは sys.path[0] を cwd に
+# したいため (一時ファイルにすると sys.path[0] がその一時ディレクトリになり、
+# 「リポジトリからの import 解決」を検証したいという目的が崩れる)。
+_BATCH_WORKER_SRC = r'''
+import importlib
+import json
+import sys
+import traceback
+
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+# stdin もロケール既定 (開発機は cp932) ではなく utf-8 で読む。
+# 現状 spec は ASCII のモジュール名だけだが、ここを暗黙のロケールに任せると
+# 「開発機では偶然通り CI で落ちる」型の欠陥を仕込むことになる。
+sys.stdin.reconfigure(encoding='utf-8')
+
+
+def emit(rec):
+    # 1件ずつ flush する。バッチが途中で強制終了しても (os._exit / クラッシュ)
+    # そこまでの結果は親に届き、親は「届かなかったモジュール」だけを
+    # 単独プロセスで再検査できる。まとめて最後に出すと全部巻き添えになる。
+    #
+    # 先頭の改行は必須。import 時に改行なしで stdout へ書くモジュール
+    # (「Loading...」等のバナー) があると、その続きに JSON が連結されて
+    # 行頭が `{` でなくなり、親がその1件を黙って捨てる。
+    sys.stdout.write("\n" + json.dumps(rec, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def main():
+    spec = json.loads(sys.stdin.read())
+    for entry in spec["modules"]:
+        name = entry["module"]
+        rec = {"module": name, "ok": True, "error": "",
+               "missing_attrs": [], "syspath_added": [], "keys": {}}
+        before = list(sys.path)
+        mod = None
+        try:
+            mod = importlib.import_module(name)
+        except BaseException:
+            # Exception ではなく BaseException。import 時の sys.exit() は
+            # SystemExit (Exception のサブクラスではない) なので、Exception で
+            # 受けると取り逃して検査が黙る。2026-07-30 に bot_discord.py で
+            # 直したばかりの欠陥が再発したとき、それが最悪の壊れ方になる。
+            rec["ok"] = False
+            rec["error"] = traceback.format_exc()
+        # sys.path をモジュール毎にスナップショット & 復元する。
+        # 復元しないと、先に import したモジュールが足したパスのおかげで
+        # 後続が import できてしまい、個別実行より検出が甘くなる。
+        rec["syspath_added"] = [p for p in sys.path if p not in before]
+        sys.path[:] = before
+        if mod is not None:
+            # 属性の取得自体が例外を投げうる (PEP 562 のモジュール __getattr__)。
+            # ここで素通しするとワーカーごと死に、隔離再検査は import しか見ないので
+            # **属性検査だけが黙って消える**。赤として報告する。
+            try:
+                rec["missing_attrs"] = [a for a in entry.get("attrs", []) if not hasattr(mod, a)]
+                for a in entry.get("keys_of", []):
+                    rec["keys"][a] = list(getattr(mod, a, None) or {})
+            except BaseException:
+                rec["ok"] = False
+                rec["error"] = "属性の検査中に例外:\n" + traceback.format_exc()
+        emit(rec)
+    emit({"__done__": True})
+
+
+main()
+'''
+
+# バッチが赤かったモジュールの単独再検査結果のメモ ({module: (ok, reason)})。
+# [3] と [4] の両方に出てくるモジュールで2回起動しないため。
+_ISOLATED_CACHE = {}
+
+
+def _as_text(value):
+    """TimeoutExpired.stdout 等が bytes で返る実装差を吸収する"""
+    if isinstance(value, bytes):
+        return value.decode('utf-8', 'replace')
+    return value or ""
+
+
+def run_import_batch(specs):
+    """モジュール群を1つの子プロセスでまとめて import する。
+
+    specs: [{"module": str, "attrs": [str, ...], "keys_of": [str, ...]}, ...]
+    Returns: (results, note)
+      results: {module: レコード} — **子プロセスから届いたものだけ**。
+               途中で死んだ場合、以降のモジュールは results に入らない
+               (呼び出し側が単独プロセスで再検査する)
+      note:    バッチ自体の異常を説明する文字列。正常なら ""
+    """
+    payload = json.dumps({"modules": specs}, ensure_ascii=False)
+    stdout, stderr, note = "", "", ""
+    try:
+        # encoding/errors は必須 (LEVEL 1)。text=True だけだとロケール既定で
+        # 復号するため、日本語を含む traceback が cp1252 の CI runner で
+        # UnicodeDecodeError になり **失敗の理由だけが消える** (2026-07-30 に実際に踏んだ)。
+        cmd = [PYTHON_EXE, "-c", _BATCH_WORKER_SRC]
+        proc = subprocess.run(cmd, input=payload, capture_output=True,
+                              encoding='utf-8', errors='replace',
+                              cwd=str(ROOT_DIR), timeout=_BATCH_TIMEOUT_SEC)
+        stdout, stderr = _as_text(proc.stdout), _as_text(proc.stderr)
+    except subprocess.TimeoutExpired as e:
+        stdout, stderr = _as_text(e.stdout), _as_text(e.stderr)
+        note = f"バッチが {_BATCH_TIMEOUT_SEC} 秒で終わりませんでした"
+    except Exception as e:
+        note = f"バッチを起動できませんでした ({type(e).__name__}: {e})"
+
+    results, done = {}, False
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("__done__"):
+            done = True
+        elif "module" in rec:
+            results[rec["module"]] = rec
+
+    if not done and not note:
+        tail = stderr.strip()[-400:]
+        note = ("バッチが完走しませんでした (import 中にプロセスごと落ちた可能性)"
+                + (f"\n{tail}" if tail else ""))
+    return results, note
+
+
+def _isolated(module_name):
+    """単独プロセスで再検査する (同一モジュールは1回だけ起動)"""
+    if module_name not in _ISOLATED_CACHE:
+        _ISOLATED_CACHE[module_name] = check_import(module_name)
+    return _ISOLATED_CACHE[module_name]
+
+
+def module_verdict(results, module_name):
+    """バッチ結果から (ok, 理由) を出す。赤いときだけ単独プロセスで再検査する。
+
+    緑の常態ではサブプロセスは1本 (バッチ) しか起動しないので約7秒。
+    赤いときだけ「失敗件数 × 約5秒」を払って、他モジュールに汚されていない
+    正確な traceback を得る。
+    """
+    rec = results.get(module_name)
+    if rec is not None and rec.get("ok"):
+        return True, ""
+
+    ok, err = _isolated(module_name)
+    if rec is None:
+        # バッチが途中で死んで到達しなかった。単独で通るならモジュール自体は健全。
+        if ok:
+            return True, ""
+        return False, f"(バッチ未到達のため単独プロセスで再検査)\n{err}"
+
+    if ok:
+        # 単独では通るのにバッチでは落ちた = 先行モジュールの副作用に依存/破壊されている。
+        # これはバッチ化が作った偽陽性ではなく、実際の順序依存なので赤のままにする。
+        return False, ("単独では import できるが、他モジュールと同一プロセスで"
+                       "import すると失敗する (順序依存の副作用)\n"
+                       "--- バッチ内の traceback ---\n" + rec.get("error", ""))
+
+    # どちらも赤。**片方で上書きしない** — 単独プロセスは traceback を持たない
+    # ことがある (bare `sys.exit(1)` は何も出力せず終了コードだけ返す) 一方、
+    # バッチ側は必ず traceback.format_exc() を持っている。単独の結果で上書きすると
+    # 「SystemExit だった」という一番効く情報が消える。両方あるなら両方出す。
+    parts = []
+    if rec.get("error", "").strip():
+        parts.append("--- バッチ内の traceback ---\n" + rec["error"].strip())
+    if err.strip():
+        parts.append("--- 単独プロセスでの再検査 ---\n" + err.strip())
+    return False, "\n".join(parts) or "理由を取得できませんでした"
+
+
+def report_syspath_pollution(results):
+    """import 時に sys.path へ足されたパスのうち、リポジトリルート以外を報告する。
+
+    `__file__` 相対でリポジトリルートを挿入するのは正当な作法で、実際
+    tools/tool_user_memory.py・tool_xtrend.py・tool_vault_index.py・
+    tool_activity_index.py・tool_browser_use.py・lib/engagement_log.py の6ファイルが
+    やっている。これらを違反にすると誤検知だらけになって検査ごと外されるので、
+    **ルート以外の追加だけ**を、しかもエラーではなく警告として出す。
+    """
+    root = os.path.normcase(os.path.normpath(str(ROOT_DIR)))
+    noisy = []
+    for mod in sorted(results):
+        for p in results[mod].get("syspath_added") or []:
+            if not p or os.path.normcase(os.path.normpath(p)) == root:
+                continue
+            noisy.append((mod, p))
+    for mod, p in noisy:
+        print(f"  ⚠️  {mod} が import 時に sys.path へ {p!r} を追加")
+    return noisy
+
 
 def run_verification(fast=False):
     """プロジェクト整合性を検査する。
@@ -458,11 +696,15 @@ def run_verification(fast=False):
 
     print(f"  - Total {count} source files scanned.")
 
+    batch_results = {}
     if not fast:
-        run_import_checks(errors)
+        # [3][4][6] は同じモジュール群を必要とするので、import は1回のバッチに集約し、
+        # 各セクションはその結果を読むだけにする ([6] だけ別プロセスにすると
+        # tool_briefing_manager を2回ロードすることになる)。
+        batch_results = run_import_checks(errors)
     run_discord_checks(errors)
     if not fast:
-        run_briefing_check(errors)
+        run_briefing_check(errors, batch_results)
 
     # 判定
     print("\n" + "="*50)
@@ -478,106 +720,167 @@ def run_verification(fast=False):
     return False
 
 
+BRIEFING_MODULE = 'tools.tool_briefing_manager'
+EXPECTED_PROVIDERS = ['Crypto', 'Obsidian', 'Gmail']
+
+# [3] が import できることを要求する重要モジュール。
+# 関数ローカルではなくモジュール定数にしてあるのは、
+# tests/test_guardian_batch_import.py が「壊れたモジュールを混ぜたら
+# 本当に exit 1 になるか」を差し替えで e2e 検証するため。
+CRITICAL_MODULES = [
+    'lib.lib_shared',
+    'lib.lib_obsidian_utils',
+    'lib.pid_guard',
+    'tools.tool_calendar',
+    'tools.tool_web',
+    'tools.tool_briefing_manager',
+    'tools.tool_gmail_manager',
+    'commands.bot_commands_tools',
+    'commands.bot_commands_curator',
+    'bot_discord',
+    'agent_hello',
+    'main',
+    'tools.tool_future_search',
+    'tools.tool_skill_observer',
+    'tools.tool_xtrend',
+    'tools.tool_vault_index',
+    'tools.tool_user_memory',
+    'tools.tool_crypto_stats',
+    'tools.tool_crypto_watcher',
+    'engine_plan_execute',
+]
+
+
+def load_tools_registry(errors, main_path=None):
+    """main.py の TOOLS を読み、[(name, func_path), ...] を返す。
+
+    main.py 自体は module scope が load_dotenv とパス定義だけなので、ここで
+    exec_module しても重量級の依存は引かない (重いのは TOOLS が指す先のモジュールで、
+    そちらはバッチの子プロセスが import する)。
+
+    main_path はテストが差し替えるためだけの引数 (既定は ROOT_DIR/main.py)。
+    """
+    main_path = main_path or (ROOT_DIR / "main.py")
+    try:
+        spec = importlib.util.spec_from_file_location("main_module", str(main_path))
+        main_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(main_mod)
+    except Exception as e:
+        errors.append(f"Failed to load main.py for registry verification: {e}")
+        return []
+
+    if not hasattr(main_mod, "TOOLS"):
+        errors.append("main.py does not have a TOOLS list")
+        return []
+
+    entries = []
+    for tool in main_mod.TOOLS:
+        name = tool.get("name")
+        func_path = tool.get("function")
+        if not func_path:
+            continue
+        if "." not in func_path:
+            # 黙って飛ばさない。「module.func」の形でなければレジストリの記述ミスで、
+            # 飛ばすと該当ツールだけが永久に未検査になる (無言の死)。
+            errors.append(f"Main Registry Error [{name}]: function が "
+                          f"'module.func' の形ではありません: {func_path!r}")
+            continue
+        entries.append((name, func_path))
+    return entries
+
+
 def run_import_checks(errors):
     """[3] 重要モジュールの import 整合性 と [4] main.py TOOLS レジストリ。
 
-    どちらも1モジュールにつき1サブプロセスを起動し、その中で ccxt / pandas /
-    google.genai までロードされる。合計36回で実行時間の大半を占めるため、
-    --fast では丸ごと飛ばす (判断ゲートA / 2026-07-30)。
+    どちらもモジュール単位の import を要するので、[6] Briefing の分も含めて
+    **重複を除いた27件を1つの子プロセスでまとめて import** する (run_import_batch)。
+    赤かったものだけ単独プロセスで再検査する。--fast では丸ごと飛ばす
+    (判断ゲートA / 2026-07-30)。
+
+    Returns: バッチ結果 {module: レコード} — [6] が同じ結果を読むために返す。
     """
-    # 3. 重要モジュールのインポート整合性
-    print("\n[3] Checking Import Integrity...")
-    critical_modules = [
-        'lib.lib_shared',
-        'lib.lib_obsidian_utils',
-        'lib.pid_guard',
-        'tools.tool_calendar',
-        'tools.tool_web',
-        'tools.tool_briefing_manager',
-        'tools.tool_gmail_manager',
-        'commands.bot_commands_tools',
-        'commands.bot_commands_curator',
-        'bot_discord',
-        'agent_hello',
-        'main',
-        'tools.tool_future_search',
-        'tools.tool_skill_observer',
-        'tools.tool_xtrend',
-        'tools.tool_vault_index',
-        'tools.tool_user_memory',
-        'tools.tool_crypto_stats',
-        'tools.tool_crypto_watcher',
-        'engine_plan_execute'
-    ]
-    
+    _ISOLATED_CACHE.clear()
+    registry = load_tools_registry(errors)
+    critical_modules = list(CRITICAL_MODULES)
+
+    # 重複除去: [3] の20件と [4] の15件はモジュールが8件重なっており、旧実装は
+    # 同じモジュールを2回ずつ起動していた。ユニークな27件だけを1回 import する。
+    # dict は挿入順を保つので、宣言順 = import 順 (再現性のため)。
+    specs = {}
     for mod in critical_modules:
-        success, err_msg = check_import(mod)
-        if not success:
-            errors.append(f"Import Error: {mod}\n{err_msg}")
-            print(f"  ❌ {mod}")
-        else:
+        specs.setdefault(mod, {"module": mod, "attrs": [], "keys_of": []})
+    for _name, func_path in registry:
+        module_name, func_name = func_path.rsplit(".", 1)
+        entry = specs.setdefault(module_name, {"module": module_name, "attrs": [], "keys_of": []})
+        if func_name not in entry["attrs"]:
+            entry["attrs"].append(func_name)
+    # [6] Briefing プロバイダーも同じバッチで取る (別プロセスにすると
+    # tools.tool_briefing_manager を2回ロードすることになる)
+    bm = specs.setdefault(BRIEFING_MODULE,
+                          {"module": BRIEFING_MODULE, "attrs": [], "keys_of": []})
+    if "_providers" not in bm["keys_of"]:
+        bm["keys_of"].append("_providers")
+
+    results, note = run_import_batch(list(specs.values()))
+    if note:
+        # バッチ自体の異常はエラーにしない: 到達しなかったモジュールは
+        # module_verdict() が単独プロセスで再検査するので検出力は落ちない。
+        # ただし黙って遅くなる/甘くなるのは避けたいので必ず出力する。
+        print(f"  ⚠️  バッチ実行が正常終了しませんでした — {note}")
+
+    print("\n[3] Checking Import Integrity...")
+    for mod in critical_modules:
+        ok, reason = module_verdict(results, mod)
+        if ok:
             print(f"  ✅ {mod}")
+        else:
+            errors.append(f"Import Error: {mod}\n{reason}")
+            print(f"  ❌ {mod}")
 
     # 4. main.py の TOOLS レジストリ検証
     print("\n[4] Verifying main.py TOOLS registry...")
-    try:
-        # main.py をモジュールとして一時的に読み込み
-        spec = importlib.util.spec_from_file_location("main_module", str(ROOT_DIR / "main.py"))
-        main_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(main_mod)
-        
-        if hasattr(main_mod, "TOOLS"):
-            for tool in main_mod.TOOLS:
-                name = tool.get("name")
-                func_path = tool.get("function")
-                if not func_path:
-                    continue
-                
-                # インポートテスト
-                success, err = check_import(func_path.rsplit(".", 1)[0])
-                if not success:
-                    errors.append(f"Main Registry Error [{name}]: Module {func_path} not found\n{err}")
-                    print(f"  ❌ {name} ({func_path})")
-                else:
-                    # 関数存在チェック
-                    try:
-                        module_name, func_name = func_path.rsplit(".", 1)
-                        mod = importlib.import_module(module_name)
-                        if not hasattr(mod, func_name):
-                            errors.append(f"Main Registry Error [{name}]: Function {func_name} not found in {module_name}")
-                            print(f"  ❌ {name} ({func_name} missing)")
-                        else:
-                            print(f"  ✅ {name}")
-                    except Exception as e:
-                        errors.append(f"Main Registry Error [{name}]: {e}")
-                        print(f"  ❌ {name} (Error: {e})")
+    for name, func_path in registry:
+        module_name, func_name = func_path.rsplit(".", 1)
+        ok, reason = module_verdict(results, module_name)
+        if not ok:
+            errors.append(f"Main Registry Error [{name}]: Module {func_path} not found\n{reason}")
+            print(f"  ❌ {name} ({func_path})")
+            continue
+        # 関数存在チェック。旧実装は Guardian 自身のプロセスに import して
+        # hasattr を見ていたが、判定はバッチの子プロセスで済ませてある。
+        if func_name in (results.get(module_name, {}).get("missing_attrs") or []):
+            errors.append(f"Main Registry Error [{name}]: Function {func_name} not found in {module_name}")
+            print(f"  ❌ {name} ({func_name} missing)")
         else:
-            errors.append("main.py does not have a TOOLS list")
-    except Exception as e:
-        errors.append(f"Failed to load main.py for registry verification: {e}")
+            print(f"  ✅ {name}")
+
+    report_syspath_pollution(results)
+    return results
 
 
-def run_briefing_check(errors):
+def run_briefing_check(errors, results):
     """[6] Briefing プロバイダー登録チェック。
 
-    tools.tool_briefing_manager の import を伴うサブプロセスなので --fast では飛ばす。
+    かつては専用のサブプロセスを1本起動していたが、必要な情報 (_providers のキー)
+    は [3][4] のバッチが同じ子プロセス内で既に取っているので、ここではその結果を
+    読むだけにする。--fast では [3][4] ごと飛ばすので results が空になり、
+    このセクション自体呼ばれない。
     """
     print("\n[6] Checking Briefing Providers...")
-    expected_providers = ['Crypto', 'Obsidian', 'Gmail']
-    cmd = [PYTHON_EXE, "-c",
-        "from tools.tool_briefing_manager import _providers; "
-        f"missing=[p for p in {expected_providers} if p not in _providers]; "
-        "print('MISSING:'+','.join(missing) if missing else 'OK:'+','.join(_providers.keys()))"
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True,
-                            encoding='utf-8', errors='replace',
-                            cwd=str(ROOT_DIR))
-    if result.returncode != 0 or result.stdout.startswith('MISSING:'):
-        msg = f"Briefing providers missing: {result.stdout.strip() or result.stderr.strip()}"
+    rec = results.get(BRIEFING_MODULE)
+    if rec is None or not rec.get("ok"):
+        # import 自体の失敗は [3] が既にエラーとして積んでいる。ここで二重に
+        # 積むと件数が水増しされるので、事実だけ出して判定は [3] に委ねる。
+        print(f"  ❌ {BRIEFING_MODULE} を import できないため未検査 ([3] のエラーを参照)")
+        return
+    registered = rec.get("keys", {}).get("_providers") or []
+    missing = [p for p in EXPECTED_PROVIDERS if p not in registered]
+    if missing:
+        msg = f"Briefing providers missing: {','.join(missing)} (登録済み: {','.join(registered) or 'なし'})"
         errors.append(msg)
         print(f"  ❌ {msg}")
     else:
-        print(f"  ✅ Registered: {result.stdout.strip().replace('OK:','')}")
+        print(f"  ✅ Registered: {','.join(registered)}")
 
 
 def run_discord_checks(errors):

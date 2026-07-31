@@ -30,6 +30,7 @@
 ## Commands
 ```bash
 py verify_project.py           # Pre-flight check (MANDATORY before release)
+py scripts\run_test_sweep.py   # tests/test_*.py を8並列でスイープ (CI と同じ実装)
 scripts\arms.bat               # ワンクリック制御 (引数なし=メニュー / start|stop|restart|status|logs)
 py main.py                     # Universal launcher
 py tools/tool_paper_radar.py --field ai_agent --top 5   # 注目論文レーダー (課金ゼロ)
@@ -78,6 +79,7 @@ claude mcp add --transport http github https://api.githubcopilot.com/mcp/ --head
 - **stacked PR の base ブランチを `--delete-branch` 付きでマージすると、積んでいた PR が自動クローズされる**。閉じた PR は base の変更も再オープンもできない (`Cannot change the base branch of a closed pull request`) ので作り直しになる。**stack しているときは `--delete-branch` を後回しにする**
 - **「表示と実態の食い違い」はテスト層とCI設定でも起きる**。bot層 → engine → 最終要約 → 採点器と潰してきた同じ類型が、次は **テスト自身** で見つかった (2026-07-30)。(a) `tests/test_moc_auto_link.py` 等は判定結果を print するだけで **終了コードに反映していなかった**ため、全ケース FAIL でも exit 0 = CI からは永久に緑。`tests.yml` が「スクリプトとして実行し終了コードで判定する」設計なのに、その終了コードが嘘をついていた。(b) `tests.yml` の `PYTHONPATH: ${{ github.workspace }}` が、`sys.path` bootstrap の欠陥 (`dirname` が1段足りず `tests/` 自身を追加している3ファイル + bootstrap が全く無い1ファイル) を丸ごと隠しており、**実機で ImportError になるテストが CI では通っていた**。「CI の失敗一覧が実機と一致するか」で切り分ける手順が原理的に成立しなくなる。→ 各テストは自前で `sys.path.insert(0, dirname(dirname(abspath(__file__))))` し、CI 側に下駄を履かせない。**判定は必ず `sys.exit(1 if _FAIL else 0)` まで通す**
 - **「CI と実機の失敗一覧が一致しない」とき、疑うのは CI ではなく実機側の下駄**。CI の `PYTHONPATH: ${{ github.workspace }}` を外して「今度は一致するはず」と予測した直後の CI 初起動が、実機 69/0 に対し **58/11** だった (2026-07-30)。11件のうち6件は `sys.path.insert(0, r'C:\AI_agent')` という**ルートの直書き**で、開発機ではリポジトリが実際にそこにあるので永久に緑になる。つまり CI 側の下駄を外しても、**同じ下駄がテストファイルの中に移っていただけ**。ローカルの緑は「このマシンでは動く」以上を意味しない。`verify_project.py` の `check_machine_locked_syspath()` が再混入を止める (純 ast なので `--fast` にも乗り commit hook で捕まる)。**検査は文字列走査ではなく ast で書く** — この欠陥を説明する docstring/コメント自体が `sys.path.insert(0, r'C:\AI_agent')` を含むので、grep 的な検査は「教訓を書いた行」を違反として報告する。回帰は `tests/test_verify_fast_mode.py` の [3] (違反を置くと赤 + 教訓コメントは緑の両方向)
+- **CI を「速くする」変更は、速さの根拠と安全の根拠を別々に出す**。「docs 3行の更新に CI 全部が要るのか」から3件やって、3件とも別の形で足をすくわれかけた (2026-07-31)。(a) **path filter は前提の上に乗る**: `paths-ignore: ['**.md']` が安全なのは「追跡下の `.md` を読む Python が1本も無い」からで、導入時は実際に0件だった。だが**前提が崩れても skip は黙って続く** — 将来「テストが読む `.md`」が1本入れば、それを編集した PR はそのテストを一度も走らせずにマージされる (所見2「無言の死」と同型)。→ 前提そのものを `tests/test_ci_docs_exemption.py` の検査に変え、**破壊して赤くなることまで確認**してから入れる。検査は ast で書く (この教訓の文章自体が違反の形をしている・テスト側もサンプル名を `"CLAUDE" + ".md"` と実行時に組み立てている)。なお `**/*.md` はルート直下を取りこぼす実装があるので `**.md` と書く。(b) **`concurrency` は `cancel-in-progress: false` でもグループが効く**: GitHub は «1グループにつき pending は1つ» なので、`group: ...{{ github.ref }}` と書くと連続マージ時に**間の master run がキャンセルされる**(待たされるのではない) = CI 記録の無い commit が master に生まれ、上の「失敗一覧の一致」で切り分ける手順が壊れる。→ master push には `github.run_id` を混ぜて**毎回ユニークなグループ**にし、グルーピング自体を無効化する。(c) **「速くなるはず」を根拠として残さない**: `cache: pip` を「140秒→15秒」と見込んだが cache hit 時の実測は128秒で、**縮んだのは12秒**。律速はダウンロードではなく **Windows の site-packages への展開 (78パッケージで53秒)** で、ダウンロードキャッシュは原理的にここを縮められない。外れた見込みをコメントに残すと、後から読む人が「pip は対処済み」と誤解して本当の律速に手を付けられなくなる → **実測で置き換える**
 - **import 時に `sys.exit()` してはいけない**。`bot_discord.py` が module scope で `if not DISCORD_TOKEN: sys.exit(1)` していたため、`.env` を持たない環境では `import bot_discord` そのものが失敗し、(a) `verify_project.py` の import 整合性検査が原理的に成立せず、(b) コマンド定義を読むだけのテストまで巻き込まれて落ちた。**起動しようとした時に初めて落ちる** (`run_bot()` の先頭で判定する)。import は副作用でプロセスを殺さない
 - **「下駄を外した」と言えるのは sys.path だけ見たときではない**。2026-07-30 に `sys.path.insert(0, r'C:\AI_agent')` を __file__ 相対へ直し `check_machine_locked_syspath()` で門を作ったが、**同じルート直書きが「実行時に読み書きするパス」に21箇所残っていた** — `learning_db.json` / コストガードの日次カウンタ4種 / OHLCVキャッシュ / `token.json`・`credentials.json` / `load_dotenv()` 12箇所。検査が sys.path 経路しか見ていないので検出対象外だった。**症状の重さは逆**: sys.path の直書きは ImportError で派手に落ちるが、データパスの直書きは**落ちずに間違ったファイルを読み書きする** (別チェックアウトが本番の learning_db やコストガードのカウンタを更新すれば、学習DBの統計もコスト上限も静かに嘘になる = 所見2の「無言の死」と同型)。→ `lib/paths.py` に `PROJECT_ROOT`/`ENV_PATH`/`LOGS_DIR` を集約し、**絶対パスのリテラルを書いてよいのはこのファイルだけ**にした。`verify_project.check_hardcoded_abs_paths()` が再混入を止める (純 ast なので `--fast` に乗り commit hook で捕まる)。誤検知を避けるため **「パスを組み立てている文脈」(os.path.join/load_dotenv/open の引数、語尾が `_PATH`/`_DIR`/`_ROOT`/`_FILE` の代入) に限定する** — 全リテラルを赤にすると、教訓を書いた docstring・`scripts/search_dev_logs.py` の「移行の痕跡を探す検索語リスト」・唯一の宣言場所である `lib/paths.py` 自身が巻き添えになり、検査ごと外される方向に力が働く。回帰は `tests/test_verify_fast_mode.py` の [5](門に配線されているか)[6](書き方8種の網羅 + 誤検知5種)[7](検査ではなく実体側 `lib/paths.py` を縛る)
 - **リポジトリ外の絶対パス (Vault / BitNet) は `.env` 上書き + 既定値=現行値 の形で `lib/paths.py` に置く**。`D:\マイドライブ\Obsidian` (Googleドライブ同期) と `C:\BitNet` は __file__ 相対では表せないので「直書きを全廃する」ことはできない。かといって各ファイルに散らすと、Vault を移した瞬間に**このファイルだけ旧パスを見る**分裂が起きる (実際 `tool_daily_note.py`・`tool_calendar.py`・`trigger_daily_news.py`・`agent_trigger.py` の4箇所に同じリテラルが複製されていた)。`OBSIDIAN_VAULT_ROOT` / `BITNET_DIR` で上書き可・未設定なら従来値にフォールバック、とすれば **既存環境は .env を1行も足さずに挙動不変**のまま、移行時は1行で済む。**リテラルを「消す」のではなく「1箇所に集めて宣言にする」** のが外部パスの正解。なお `tools/tool_lora_factory.py` は旧Vault (`C:\obsidian\Obsidian\...`) を指したままで、書き込み先が変わる変更になるため据え置き — `verify_project._ABS_PATH_EXEMPT` に理由付きで登録してある (**新規追加禁止**)
@@ -172,16 +174,31 @@ subprocess.Popen(cmd, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
 
 ### CI (GitHub Actions)
 `.github/workflows/tests.yml` が push/PR で自動実行される (`windows-latest`)。
-- `guardian` ジョブ (ブロッキング): `verify_project.py` を実行
-- `tests` ジョブ (現状 `continue-on-error: true`): `tests/test_*.py` を1本ずつ
-  スクリプトとして実行し終了コードで判定する。**`pytest tests/` では判定しない** —
-  多くのファイルの `check()` ヘルパーは失敗時も例外を投げないため、pytest 経由だと
-  チェックが全部failしていても緑になる (このリポジトリで繰り返し出ている
+**`**.md` だけの変更では起動しない** (2026-07-31)。この skip は「追跡下の `.md` を読む
+Python が0件」という前提の上に乗っているので、`tests/test_ci_docs_exemption.py` が
+前提そのものを ast で縛っている。手動で全部走らせたいときは workflow_dispatch。
+- **ジョブは `checks` 1つだけ** (2026-07-31 に統合)。以前は guardian / tests の2ジョブで、
+  355 job秒のうち **165秒 (46%) が二重に払った段取り** (checkout + setup-python + pip)
+  だった。統合で約274 job秒 (-23%)。**`needs:` の段階ゲートは採らない** — 直列化しても
+  job 秒は減らず wall だけ +101秒で、実績も 26 run 中 guardian のみ赤は1件しかない
+- `guardian (verify_project.py)` ステップ (ブロッキング)
+- `tests (...)` ステップ (ブロッキング・`continue-on-error` は 2026-07-30 に撤去済み):
+  `if: ${{ !cancelled() }}` を付けて **guardian が赤でも必ず走らせる** — 失敗一覧が
+  片方だけになると「CI と実機の一致」で切り分ける手順が使えない。`always()` ではなく
+  `!cancelled()` なのは、PR の run をキャンセルしたときにスイープを走らせないため。
+  **手元と同じ `py scripts/run_test_sweep.py` を呼ぶ**。1ファイル1プロセスで実行し
+  終了コードで判定する。**`pytest tests/` では判定しない** — 多くのファイルの
+  `check()` ヘルパーは失敗時も例外を投げないため、pytest 経由だとチェックが
+  全部failしていても緑になる (このリポジトリで繰り返し出ている
   「表示と実態の食い違い」パターンそのもの)
-- `tests` が bootstrap 扱いなのは、`tests/` に実ネットワーク/実APIキー/外部バイナリ
-  (gws CLI等) が要る「手動デバッグスクリプト」が混在するため
-  (Architecture 節の "tests/: Unit tests and debugging stubs" 参照)。
-  一度実行結果を確認し、要否を仕分けてから `continue-on-error` を外すこと
+- **実行方法は1つしか持たない**。CI と手元で別々に書くと、Session 3 でようやく
+  成立させた「失敗一覧の一致で CI 固有の問題を切り分ける」が壊れる
+- 並列可否は `scripts/run_test_sweep.py` の `SERIAL_TESTS`/`PARALLEL_TESTS` で
+  **宣言する**。未分類は直列レーンへ倒れる (安全側) が、
+  `tests/test_sweep_runner.py` が「未分類がある」状態を赤にする
+- 遅いだけのベンチは `ARMS_SLOW_TESTS=1`、課金・外部副作用のあるものは
+  `ARMS_LIVE_TESTS=1`。**この2つを統合しない** — 課金ゲートを緩めたいときに
+  遅いベンチまで走ってしまう
 
 ### Backtest Gate (crypto logic)
 - `lib/quant_core.py` / `tools/tool_crypto.py` の変更は **before/after バックテスト比較が必須**。
