@@ -38,11 +38,29 @@ def check(label: str, ok: bool, detail: str = ""):
 # スタブ
 # ---------------------------------------------------------
 
-def _sleepy(seconds: float, ret: str = "Success: done"):
+def _sleepy(seconds: float, ret: str = "Success: done", intervals: list = None):
+    """指定秒だけ眠るツールのスタブ。
+
+    intervals を渡すと (start, end) を追記する。**同時実行の判定に壁時計の
+    しきい値を使わないため** — 詳細は test_wave_actually_runs_in_parallel。
+    """
     def _tool(query: str = "") -> str:
+        started = time.monotonic()
         time.sleep(seconds)
+        if intervals is not None:
+            intervals.append((started, time.monotonic()))
         return ret
     return _tool
+
+
+def _peak_concurrency(intervals):
+    """重なった区間の最大本数。逐次実行なら必ず 1 になる。"""
+    events = sorted([(a, 1) for a, _ in intervals] + [(b, -1) for _, b in intervals])
+    peak = cur = 0
+    for _t, delta in events:
+        cur += delta
+        peak = max(peak, cur)
+    return peak
 
 
 def _step(n: int, tool: str, args_json: str = '{"query": "x"}', hint: str = ""):
@@ -200,20 +218,41 @@ def test_results_keep_plan_order_regardless_of_completion():
 
 
 def test_wave_actually_runs_in_parallel():
-    print("\n[8] 本当に同時実行されている (壁時計)")
+    """同時実行を **壁時計のしきい値ではなく実測の重なり** で判定する。
+
+    初版は `wall < 1.0` (0.5秒 x 3本 = 逐次なら1.5秒) だった。開発機では
+    0.5秒台なので余裕があるが、2026-07-31 にスイープ自体が8並列になってから
+    **CI で 1.42秒** を記録して赤くなった (master 30621803361)。
+    ツール3本が同時に走っていても、8プロセスがコアを取り合う runner では
+    スレッドの起動と復帰が遅れて壁時計が伸びる。
+    「開発機の速さ」を暗黙の前提にした判定はこのリポジトリが繰り返し潰してきた
+    下駄そのもので、実際 tests/test_sweep_runner.py も同じ形で flaky だった。
+
+    ツール側で (start, end) を記録し、**重なった本数 (peak concurrency)** で見る。
+    逐次に戻れば peak は必ず 1 になるので、3本の fan-out が壊れれば確実に赤くなる。
+    壁時計は参考値としてメッセージに残す。
+    """
+    print("\n[8] 本当に同時実行されている (区間の重なり)")
+    seen = []
     tools = _fake_map(
-        tool_a=_sleepy(0.5), tool_b=_sleepy(0.5), tool_c=_sleepy(0.5),
+        tool_a=_sleepy(0.5, intervals=seen),
+        tool_b=_sleepy(0.5, intervals=seen),
+        tool_c=_sleepy(0.5, intervals=seen),
     )
     plan = [_step(1, "tool_a"), _step(2, "tool_b"), _step(3, "tool_c")]
     with _patched(tools), contextlib.redirect_stdout(_io.StringIO()):
         t0 = time.time()
         res = engine.execute_plan(plan)
         wall = time.time() - t0
-    check(f"1.5秒分の仕事が1.0秒未満で終わる (実測 {wall:.2f}秒)", wall < 1.0,
-          f"{wall:.2f}s")
+
+    peak = _peak_concurrency(seen)
+    check(f"3本が同時に走っている (peak={peak} / 壁時計 {wall:.2f}秒)", peak == 3,
+          f"peak={peak} — 逐次なら1。fan-out が効いていない")
     check("全ステップ成功", res["success"], str(res["results"]))
     check("parallel.waves が1", res["parallel"]["waves"] == 1, str(res["parallel"]))
-    check("saved_seconds が正", res["parallel"]["saved_seconds"] > 0.5,
+    # 「正」と名乗っている以上、しきい値も正であること。0.5 を要求すると
+    # これも壁時計依存になる (saved_seconds は所要時間の総和 - 実測 wall)。
+    check("saved_seconds が正", res["parallel"]["saved_seconds"] > 0,
           str(res["parallel"]))
 
 
@@ -222,15 +261,25 @@ def test_kill_switch_serializes_execution():
     saved = os.environ.get("AGENT_PARALLEL")
     os.environ["AGENT_PARALLEL"] = "0"
     try:
+        seen = []
         tools = _fake_map(
-            tool_a=_sleepy(0.2), tool_b=_sleepy(0.2), tool_c=_sleepy(0.2),
+            tool_a=_sleepy(0.2, intervals=seen),
+            tool_b=_sleepy(0.2, intervals=seen),
+            tool_c=_sleepy(0.2, intervals=seen),
         )
         plan = [_step(1, "tool_a"), _step(2, "tool_b"), _step(3, "tool_c")]
         with _patched(tools), contextlib.redirect_stdout(_io.StringIO()):
             t0 = time.time()
             res = engine.execute_plan(plan)
             wall = time.time() - t0
-        check(f"逐次相当の時間がかかる (実測 {wall:.2f}秒)", wall >= 0.55, f"{wall:.2f}s")
+        # `wall >= 0.55` だけでは「逐次である」証明にならない。混雑した runner では
+        # **並列実行でも** 0.55秒を軽く超えるため (実測: 0.5秒 x 3本の並列が 1.42秒)、
+        # fan-out が誤って有効なままでもこの assert は緑になりうる。
+        # 区間の重なりで見れば逐次は必ず peak==1 になり、方向が確定する。
+        # これは [8] の peak==3 の逆方向の証明でもある。
+        peak = _peak_concurrency(seen)
+        check(f"1本ずつ順に走っている (peak={peak} / 壁時計 {wall:.2f}秒)", peak == 1,
+              f"peak={peak} — AGENT_PARALLEL=0 なのに同時実行されている")
         check("parallel.waves が0", res["parallel"]["waves"] == 0, str(res["parallel"]))
         check("結果は同じ", [r["step"] for r in res["results"]] == [1, 2, 3],
               str(res["results"]))
