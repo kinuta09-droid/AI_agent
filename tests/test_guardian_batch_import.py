@@ -39,7 +39,17 @@ if _PROJECT_ROOT not in sys.path:
 
 import verify_project as v  # noqa: E402
 
-LAUNCHER = "py" if os.name == "nt" else "python3"
+# **`py` / `python3` と書かないこと。** このテストは子プロセスで
+# verify_project を実走させるが、`py` (Windows の Python Launcher) は
+# 「このテストを動かしている interpreter」とは限らない。
+# CI では actions/setup-python の toolcache Python がテストを実行する一方
+# `py` は別のシステム Python を指すので、pip install した依存が見えず
+# `ModuleNotFoundError: No module named 'dotenv'` で落ちる (2026-07-31 の
+# CI 初起動で実際に踏んだ)。開発機は `py tests/...` で走らせるので
+# `py` == 同じ interpreter となり、**開発機だけ緑**になっていた。
+# verify_project.py 自身は `PYTHON_EXE = sys.executable` で正しく、
+# 下駄を履いていたのはこのテストだけだった。
+LAUNCHER = sys.executable
 
 # フル実行の上限。ローカル実測は 7.5秒 (基準 172.40秒) だが、CI の runner は
 # 数倍遅いので余裕を持たせる。ここを超えるなら「1モジュール1プロセス」に
@@ -412,12 +422,13 @@ def test_e2e_every_failure_shape_turns_red():
           out[-1500:])
 
 
-def test_e2e_green_when_nothing_is_broken():
-    """逆方向。「検査が常に赤いだけ」を防ぐ。"""
-    print("\n[3b] e2e: 壊れていなければ緑")
-    code, out = _e2e(registry=[("probe_tool", "lib.paths.PROJECT_ROOT")])
-    check("exit 0 になる", code == 0, f"exit={code}\n{out[-1000:]}")
-    check("実在する属性を missing 扱いしない", "no_such" not in out, out[-800:])
+# 逆方向 (「検査が常に赤いだけ」ではないこと) は [7] の
+# test_full_run_stays_fast_and_green が担う。あちらは **本物の27モジュールと
+# 本物の TOOLS 15件** を同じ missing_attrs 経路に通して緑を確認するので、
+# スタブしたレジストリ1件で緑を見るより強い。
+# 専用の e2e を別に持つと、6秒 (= [2] の全走査 + genai の固定費) を
+# **直列レーンに**上乗せするだけになる (このファイルは共有資源の競合で
+# scripts/run_test_sweep.py の SERIAL_TESTS に入っており、クリティカルパス上にある)。
 
 
 # ---------------------------------------------------------------------------
@@ -496,7 +507,6 @@ if __name__ == "__main__":
         test_registry_rejects_malformed_function_path()
         test_module_verdict_reports_order_dependency()
         test_e2e_every_failure_shape_turns_red()
-        test_e2e_green_when_nothing_is_broken()
         test_briefing_reads_batch_result_without_extra_process()
         test_full_run_stays_fast_and_green()
     finally:

@@ -30,7 +30,13 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-LAUNCHER = "py" if os.name == "nt" else "python3"
+# 子プロセスは「このテストを動かしている interpreter」で起動する。
+# `py` (Windows の Python Launcher) は別の Python を指しうるので、CI の
+# toolcache Python でテストを実行しつつ `py` が素の system Python を指す、
+# という食い違いが起きる (test_guardian_batch_import.py が 2026-07-31 に
+# これで CI だけ赤くなった)。--fast は stdlib しか使わないので現状は
+# たまたま無事だが、「たまたま」に依存しない。
+LAUNCHER = sys.executable
 VERIFY = os.path.join(_PROJECT_ROOT, "verify_project.py")
 
 # guard_git_commit.py の VERIFY_TIMEOUT_SEC と同じ意図の上限。
