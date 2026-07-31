@@ -152,12 +152,28 @@ def test_failure_reaches_the_exit_code_and_lanes_do_not_overlap():
         check("成功した5本は Failed files に出ない",
               "test_probe_p1.py" not in out.split("Failed files:")[-1], out[-800:])
 
-        # 直列1秒 + 並列4本(各2秒)。逐次なら 9秒超。4並列 + 直列で 4秒前後になる。
-        check(f"並列レーンが実際に並列 (wall {wall:.1f}s < 7.0s)", wall < 7.0,
-              f"{wall:.1f}s — 逐次実行に戻っている可能性がある")
-
         iv = _intervals(log)
         check("6本すべての区間が記録された", len(iv) == 6, f"{sorted(iv)}")
+
+        # 「並列になっているか」を **wall clock のしきい値で見ない**。
+        # 初版は `wall < 7.0` だった (逐次なら 9.2秒 / 理想の並列なら 4秒) が、
+        # CI runner ではプロセス起動の固定費だけで 3秒近く乗るため 7.0 に届き、
+        # **同じコミットが緑と赤を行き来する** 状態になっていた
+        # (2026-07-31: master の push は赤・PR の再実行は緑)。
+        # 「開発機の速さ」を暗黙の前提にした判定はこのリポジトリが繰り返し
+        # 潰してきた下駄そのもの。区間ログを既に持っているので、
+        # **実際に重なった本数 (peak concurrency)** で判定する。
+        # 逐次に戻れば peak は必ず 1 になるので、しきい値 >= 2 で厳密に捕まる。
+        par = [iv[n] for n in ("test_probe_p1.py", "test_probe_p2.py",
+                               "test_probe_p3.py", "test_probe_p4.py") if n in iv]
+        events = sorted([(a, 1) for a, _ in par] + [(b, -1) for _, b in par])
+        peak, cur = 0, 0
+        for _t, delta in events:
+            cur += delta
+            peak = max(peak, cur)
+        check(f"並列レーンが実際に並列 (同時実行 peak={peak} / wall {wall:.1f}s)",
+              peak >= 2,
+              f"peak={peak} — 逐次実行に戻っている (並列なら必ず 2 以上になる)")
         s = iv.get("test_probe_serial.py")
         overlaps = [n for n, (a, b) in iv.items()
                     if s and n != "test_probe_serial.py" and a < s[1] and s[0] < b]
