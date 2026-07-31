@@ -30,8 +30,8 @@ Claude Code を起動して:
 | 0-0 | ベンチスクリプトの用意 | **完了** | 2026-07-30 | `scripts/bench_docling.py` (リモートで実装・docling 不在時は手順を出して exit 1) |
 | 0-1 | torch (CPU版) + docling インストール | **完了** | 2026-07-31 | `torch==2.13.0+cpu` (`cuda.is_available()==False`) / `docling==2.117.0` |
 | 0-2 | モデル事前DL + `DOCLING_ARTIFACTS_PATH` 設定 | **完了** | 2026-07-31 | `models/docling` (1.3GB・gitignore対象) に配置。`.env` に `DOCLING_ARTIFACTS_PATH=C:\AI_agent\models\docling` を追記 (Phase 1 で `lib/paths.py` 経由の読み込みを実装予定) |
-| 0-3 | 実物3検体でベンチ (`scripts/bench_docling.py`) | 未着手 | | 出力の Markdown 表を下の記入欄に貼る |
-| 0-4 | **Go / No-Go 判定** | 未着手 | | |
+| 0-3 | 実物3検体でベンチ (`scripts/bench_docling.py`) | **完了** | 2026-07-31 | 3検体成功・目視確認済 (下記記入欄)。副産物でCドライブ枯渇(250MB)を発見・復旧 |
+| 0-4 | **Go / No-Go 判定** | **完了 (Go)** | 2026-07-31 | 表構造化・日本語とも良好。速度はarXiv論文のみ120秒をわずかに超過 → 同期実行しない設計(Phase2で`defer()`済み)で対応。詳細は下記 |
 | 1 | 変換層の一般化 (ローカル対応・mtimeキャッシュ・表の保持) | 未着手 | | |
 | 2 | `tool_document.py` + registry + Discord `/doc` | 未着手 | | |
 | 3-0 | サイドカー変換 (方式A) + スケジューラ 03:05 ジョブ | 未着手 | | インデクサ本体は触らない |
@@ -85,13 +85,30 @@ py -c "from tools.tool_vault_hybrid import tool_vault_hybrid_search as s; print(
 
 ### Phase 0-3 ベンチ結果 (実機が記入する)
 
+- 実施日: 2026-07-31 23:11
+- 検体: arXiv `attention_is_all_you_need.pdf` (公開論文PDF) / `aboutmidori-jp.pdf`
+  (JITCO「技能実習生のための日本語 みどり」案内・公開PDF) / `0022006-083_11.docx`
+  (国税庁 電子帳簿保存法 事例集・公開Office文書)
+
 | 検体 | 変換秒数 | 出力文字数 | 表の数 | 日本語の可否 | 表がMarkdown tableか |
 |---|---|---|---|---|---|
-| arXiv 英語 PDF | | | | | |
-| 日本語 PDF | | | | | |
-| .docx / .pptx | | | | | |
+| arXiv 英語 PDF | 122.9 | 41376 | 4 | (英語のみ) | ✅ 複雑な数値表4個すべて正しく構造化 (目視確認済) |
+| 日本語 PDF | 116.8 | 3775 | 0 | ✅ 化けなし (CJK率0.759・U+FFFD=0、目視確認済) | (原文に表なし・該当なし) |
+| .docx | 0.3 | 567 | 0 | ✅ 化けなし (CJK率0.806) | (原文に表なし・該当なし) |
 
-`torch.cuda.is_available()` = (記入)  /  docling バージョン = (記入)
+`torch.cuda.is_available()` = **False**  /  docling バージョン = **2.117.0**  /  torch = **2.13.0+cpu**
+
+**新しい所見 (計画書の Go/No-Go 表にない事象)**: 英語PDF変換中、ページ11〜15で
+`Stage preprocess failed for run 1, pages [11-15]: std::bad_alloc` が発生し、docling内部の
+自動リトライ (run 2) で最終的に成功した。**ディスク容量が十分ある状態 (18GB空き) での再現**
+なので、初回遭遇時 (空き250MB) のディスク枯渇とは別要因。原因未特定だが自動リトライで
+救済されるため今回は成功扱いとする。Phase 2 でDiscord実運用に載せる際は、
+この種の一時的失敗が**リトライなしで初回失敗する**ケースに備え、変換失敗時のエラー表示
+(`Error:` 前置詞) を確実に返す経路を用意すること。
+
+**副産物**: 実測中に C:ドライブの空き容量が約250MBまで逼迫していることが判明し、
+Temp/npm-cache/pipキャッシュの削除で約18GBまで回復させた (docling本体とは無関係の
+環境問題。日次のディスク監視は本計画の範囲外)。
 
 ---
 
@@ -211,6 +228,27 @@ Python 側ピークメモリ (torch のネイティブ確保は含まない) / �
 > 表が Markdown table にならなかった場合でも、**Phase 3-1 (チャンカーの表分割修正)
 > だけは実施する**。あれは docling とは独立に、既に Vault にある Markdown の表が
 > 壊れている問題を直すものなので、No-Go でも価値が残る。
+
+### 実測結果 (2026-07-31・実機) — 判定: **Go**
+
+| 条件 | 実測 | 判定 |
+|---|---|---|
+| 120秒以内 | arXiv論文 122.9秒 (わずかに超過) / 日本語PDF 116.8秒 / docx 0.3秒 | **条件付きGo**: 超過は英語論文1件のみ、かつ僅差 (+2.9秒)。もともと Phase 2 は `interaction.response.defer()` 前提でDiscord同期実行しない設計なので、実害はない |
+| 日本語が化けない | CJK率0.759・U+FFFD=0、目視で文字化けなし | ✅ Go |
+| 表がMarkdown tableになる | arXiv論文の複雑な数値表4個すべて正しく構造化 (目視確認済) | ✅ Go |
+| torchがPython 3.13に入る | `torch==2.13.0+cpu` 正常インストール | ✅ Go |
+
+**総合判定: Go — Phase 1 に進む。**
+
+**Phase 1 への申し送り事項**:
+1. `DOCLING_ARTIFACTS_PATH` は現状 `bench_docling.py` では表示のみで変換処理には未配線。
+   Phase 1 で `lib/docling_client.py` が実際に `DocumentConverter` へ渡すこと
+   (配線しないと毎回 HuggingFace Hub へダウンロードを試み、オフライン環境や
+   ディスク逼迫時に無言で失敗する)
+2. 変換中に `std::bad_alloc` が一時的に発生し内部リトライで救済されるケースを実機で観測
+   (詳細は上の「Phase 0-3 ベンチ結果」の所見)。**リトライなしで失敗した場合に備え**、
+   `lib/docling_client.py` の変換失敗経路が確実に `CaptureError`/`Error:` 前置詞を
+   返すことをテストで固定する (Phase 1 のテスト項目に追加)
 
 ---
 
