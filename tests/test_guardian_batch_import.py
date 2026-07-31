@@ -240,7 +240,9 @@ def test_batch_timeout_is_reported():
     """
     print("\n[2c] バッチがタイムアウトしたとき")
     original = v._BATCH_TIMEOUT_SEC
-    v._BATCH_TIMEOUT_SEC = 5
+    # 3秒。子の起動 + 軽量モジュール1件の import は 0.2秒程度なので、
+    # 遅い CI runner でも「1件目が届いてから」タイムアウトする余裕がある。
+    v._BATCH_TIMEOUT_SEC = 3
     try:
         results, note = v.run_import_batch([
             _spec("tests._tmp_gbi_ok"),
@@ -346,12 +348,25 @@ def _e2e(extra_modules=(), registry=None):
     CRITICAL_MODULES / load_tools_registry だけを差し替える。verify_project 側に
     テスト専用の抜け道を作らずに「壊れたら赤くなるか」を通しで見るため。
     cwd=リポジトリルートなので sys.path をいじる必要はない。
+
+    **CRITICAL_MODULES は本物の27件に足すのではなく置き換える。** ここで見たいのは
+    「赤が終了コードまで配線されているか」であって、実在27モジュールが import
+    できるかではない (それは [7] のフル実行が本物で見る)。
+
+    **プローブを先頭・実在モジュール (`lib.paths`) を末尾**に置くこと。逆にすると
+    「後続の実在モジュールも検査される」の assert が何も証明しなくなる
+    (プローブが最後なので後続が存在しない = 常に緑)。
+
+    e2e 1本の下限は約6秒で、内訳は [2] の全ソース走査 (1.2秒) と
+    [6] が要求する tools.tool_briefing_manager -> google.genai (3.5秒)。
+    **CRITICAL_MODULES をいくら削ってもここは消えない**ので、
+    赤いケースは1本にまとめる (実測: 4本 32秒 -> 2本 12秒)。
     """
     code = (
         "import sys\n"
         "sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
         "import verify_project as v\n"
-        f"v.CRITICAL_MODULES = v.CRITICAL_MODULES + {list(extra_modules)!r}\n"
+        f"v.CRITICAL_MODULES = {list(extra_modules)!r} + ['lib.paths']\n"
     )
     if registry is not None:
         code += f"v.load_tools_registry = lambda errors: {registry!r}\n"
@@ -362,38 +377,47 @@ def _e2e(extra_modules=(), registry=None):
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
-def test_e2e_missing_module_turns_red():
-    print("\n[3] e2e: 存在しないモジュールを混ぜる")
-    # 後続に実在モジュールを置き、1件目の失敗で検査が止まらないことも同時に見る
-    code, out = _e2e([MISSING_MODULE, "lib.paths"])
-    check("exit 1 になる", code == 1, f"exit={code}")
-    check("モジュール名が出力される", MISSING_MODULE in out, out[-500:])
-    check("理由 (ModuleNotFoundError) が読める", "ModuleNotFoundError" in out, out[-800:])
-    check("後続の実在モジュールも検査される", "✅ lib.paths" in out, out[-800:])
+def test_e2e_every_failure_shape_turns_red():
+    """壊れたものを混ぜたら run_verification() が本当に exit 1 になり、理由が読めること。
 
-
-def test_e2e_module_that_exits_on_import_turns_red():
-    print("\n[4] e2e: import 時に sys.exit(1) するモジュールを混ぜる")
-    code, out = _e2e(["tests._tmp_gbi_exit", "lib.paths"])
+    3つの壊し方を1回の実走にまとめてある。終了コードは共有になるが、**判別は
+    出力内容の assert が担う** (どれか1つしか検出されていなければ、その行の
+    assert が落ちる)。e2e 1本あたり約6秒の固定費 ([2] の全走査 + genai) を
+    3回払う理由が無い。
+    """
+    print("\n[3] e2e: 壊れたものを混ぜたら赤くなるか")
+    code, out = _e2e(
+        [MISSING_MODULE, "tests._tmp_gbi_exit"],
+        registry=[("probe_tool", "lib.pid_guard.no_such_function")],
+    )
     check("exit 1 になる", code == 1, f"exit={code}")
-    check("モジュール名が出力される", "_tmp_gbi_exit" in out, out[-500:])
+
+    check("存在しないモジュール: 名前が出る", MISSING_MODULE in out, out[-800:])
+    check("存在しないモジュール: 理由 (ModuleNotFoundError) が読める",
+          "ModuleNotFoundError" in out, out[-800:])
+
+    check("import 時 sys.exit: 名前が出る", "_tmp_gbi_exit" in out, out[-800:])
     # bare `sys.exit(1)` は単独プロセスでは traceback を残さない (stderr が空・
     # 終了コードだけ)。単独再検査の結果でバッチの traceback を上書きすると
     # 「SystemExit だった」という一番効く情報が消える。両方出ること。
-    check("SystemExit として説明される", "SystemExit" in out, out[-1200:])
-    check("単独再検査の結果も併記される", "単独プロセスでの再検査" in out, out[-1200:])
-    check("後続の実在モジュールも検査される", "✅ lib.paths" in out, out[-800:])
+    check("import 時 sys.exit: SystemExit として説明される", "SystemExit" in out, out[-1500:])
+    check("import 時 sys.exit: 単独再検査の結果も併記される",
+          "単独プロセスでの再検査" in out, out[-1500:])
+
+    check("TOOLS の存在しない関数名が出る", "no_such_function" in out, out[-1500:])
+
+    # プローブは CRITICAL_MODULES の先頭にあるので、`lib.paths` は「後続」。
+    # 1件目の失敗で検査が止まっていればここが落ちる。
+    check("先行が失敗しても後続の実在モジュールが検査される", "✅ lib.paths" in out,
+          out[-1500:])
 
 
-def test_e2e_missing_registry_function_turns_red():
-    print("\n[5] e2e: TOOLS の function が存在しない関数名")
-    code, out = _e2e(registry=[("probe_tool", "lib.pid_guard.no_such_function")])
-    check("exit 1 になる", code == 1, f"exit={code}")
-    check("関数名が出力される", "no_such_function" in out, out[-800:])
-
-    # 逆方向: 実在する関数なら緑 (検査が常に赤いだけ、を防ぐ)
-    code2, out2 = _e2e(registry=[("probe_tool", "lib.paths.PROJECT_ROOT")])
-    check("実在する属性なら緑", code2 == 0, f"exit={code2}\n{out2[-800:]}")
+def test_e2e_green_when_nothing_is_broken():
+    """逆方向。「検査が常に赤いだけ」を防ぐ。"""
+    print("\n[3b] e2e: 壊れていなければ緑")
+    code, out = _e2e(registry=[("probe_tool", "lib.paths.PROJECT_ROOT")])
+    check("exit 0 になる", code == 0, f"exit={code}\n{out[-1000:]}")
+    check("実在する属性を missing 扱いしない", "no_such" not in out, out[-800:])
 
 
 # ---------------------------------------------------------------------------
@@ -471,9 +495,8 @@ if __name__ == "__main__":
         test_isolated_recheck_always_gives_a_reason()
         test_registry_rejects_malformed_function_path()
         test_module_verdict_reports_order_dependency()
-        test_e2e_missing_module_turns_red()
-        test_e2e_module_that_exits_on_import_turns_red()
-        test_e2e_missing_registry_function_turns_red()
+        test_e2e_every_failure_shape_turns_red()
+        test_e2e_green_when_nothing_is_broken()
         test_briefing_reads_batch_result_without_extra_process()
         test_full_run_stays_fast_and_green()
     finally:
