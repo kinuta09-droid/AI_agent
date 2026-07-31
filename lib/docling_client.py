@@ -26,6 +26,9 @@ lib/docling_client.py — 論文PDF等を Markdown 化する層 (docling 優先�
   を含める — ローカルファイルは同じパスのまま更新されうるので、URL のみをキーに
   すると「更新したのに古い変換結果が返る」無言の嘘になる
   (CLAUDE.md 所見「表示と実態の食い違い」の同型)。
+  この形式変更 (2026-07-31) より前に書かれた logs/paper_cache/*.md はキー形式が
+  違うため二度と参照されない (孤児化する)。実害は無い (キャッシュミスして
+  再変換するだけ) が、掃除する仕組みは無いので溜まる。数十本規模なら放置可。
 
 例外方針:
   ここは lib 層なので "Error: ..." 文字列は返さない (それは tools/ の戻り値契約)。
@@ -35,6 +38,7 @@ import hashlib
 import json
 import os
 import re
+import stat as stat_module
 import threading
 
 import requests
@@ -141,14 +145,20 @@ def _resolve_cache_key(source: str, ocr: bool, table_structure: bool) -> str:
     従来どおり URL 文字列のみ (docling 側は毎回フェッチするので鮮度の問題は無い)。
     ocr/table_structure もキーに含める — 同じソースでもオプションが違えば
     出力が変わるため。
+
+    判定は os.stat() 一発で行う (os.path.isfile() → os.stat() の2段にすると、
+    間にファイルが消える/ロックされる TOCTOU で os.stat() 側が未捕捉の例外を
+    投げうる。Phase 2 で Discord 添付を一時ファイルに落として即変換する経路が
+    できると、この隙間が現実的なタイミングになる)。os.path.isfile() 相当の
+    判定 (ディレクトリを除外する) も同じ stat 結果から行う。
     """
     try:
-        is_local = os.path.isfile(source)
-    except (TypeError, ValueError):
-        is_local = False
-    if is_local:
-        stat = os.stat(source)
-        location = f"{source}::{stat.st_mtime_ns}::{stat.st_size}"
+        st = os.stat(source)
+        is_file = stat_module.S_ISREG(st.st_mode)
+    except (OSError, TypeError, ValueError):
+        is_file = False
+    if is_file:
+        location = f"{source}::{st.st_mtime_ns}::{st.st_size}"
     else:
         location = source
     return f"docling::{location}::ocr={ocr}::ts={table_structure}"

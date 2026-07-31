@@ -15,6 +15,7 @@ lib/docling_client.py (Phase 1: 変換層の一般化) のユニットテスト
 import os
 import sys
 import tempfile
+import types
 
 sys.stdout.reconfigure(encoding='utf-8')
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -244,6 +245,109 @@ def test_tables_survive_cache_roundtrip():
             docling_client.is_available = orig_available
             docling_client.convert_with_docling = orig_convert
     print("✅ [4] capture_document: tables がキャッシュを跨いで保持される")
+
+
+# ---------------------------------------------------------
+# [6] _resolve_cache_key の stat 一発判定 (grill 指摘の TOCTOU 修正)
+# ---------------------------------------------------------
+
+def test_resolve_cache_key_treats_directories_as_non_local():
+    """ディレクトリは os.stat() が成功するが S_ISREG ではないので、URL 扱い
+    (mtime を含めない) に落ちること。os.path.isfile() 相当の区別を保つ。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        key = docling_client._resolve_cache_key(tmp, False, True)
+    assert key == f"docling::{tmp}::ocr=False::ts=True", key
+    print("✅ [6] _resolve_cache_key: ディレクトリはローカルファイル扱いしない")
+
+
+def test_resolve_cache_key_survives_stat_race():
+    """isfile→stat の間にファイルが消える (TOCTOU) を模しても例外を伝播しないこと。
+
+    Phase 2 で Discord 添付を一時ファイルへ落として即変換する経路ができると、
+    ウイルススキャン等でこの隙間が現実的なタイミングになる。
+    """
+    orig_stat = docling_client.os.stat
+
+    def _boom(path, *a, **kw):
+        raise FileNotFoundError(f"gone: {path}")
+
+    docling_client.os.stat = _boom
+    try:
+        key = docling_client._resolve_cache_key("some/vanished/file.pdf", False, True)
+    finally:
+        docling_client.os.stat = orig_stat
+    assert key == "docling::some/vanished/file.pdf::ocr=False::ts=True", key
+    print("✅ [6] _resolve_cache_key: stat 中の例外を握りつぶしURL扱いへ落ちる")
+
+
+# ---------------------------------------------------------
+# [7] _get_converter の実体 (PdfPipelineOptions への配線)
+# ---------------------------------------------------------
+
+def test_get_converter_wires_pipeline_options_via_stubbed_docling_modules():
+    """_get_converter 自体を検証する。
+
+    他のテストは _get_converter をまるごとスタブへ差し替えているため、
+    do_ocr/do_table_structure/artifacts_path を実際に PdfPipelineOptions へ
+    渡す配線そのものは一度も実行されていなかった (grill 指摘)。ここでは
+    docling の該当モジュールを sys.modules に差し込み、_get_converter の
+    中身 (import 文を含む) を実際に走らせて検証する。
+    """
+    created_options = []
+    created_format_options = []
+
+    class _FakePdfPipelineOptions:
+        def __init__(self, **kwargs):
+            created_options.append(kwargs)
+
+    class _FakePdfFormatOption:
+        def __init__(self, pipeline_options=None):
+            self.pipeline_options = pipeline_options
+
+    class _FakeDocumentConverter:
+        def __init__(self, format_options=None):
+            created_format_options.append(format_options)
+
+    class _FakeInputFormat:
+        PDF = "PDF"
+
+    fake_base_models = types.ModuleType("docling.datamodel.base_models")
+    fake_base_models.InputFormat = _FakeInputFormat
+    fake_pipeline_options_mod = types.ModuleType("docling.datamodel.pipeline_options")
+    fake_pipeline_options_mod.PdfPipelineOptions = _FakePdfPipelineOptions
+    fake_document_converter_mod = types.ModuleType("docling.document_converter")
+    fake_document_converter_mod.DocumentConverter = _FakeDocumentConverter
+    fake_document_converter_mod.PdfFormatOption = _FakePdfFormatOption
+
+    injected = {
+        "docling": types.ModuleType("docling"),
+        "docling.datamodel": types.ModuleType("docling.datamodel"),
+        "docling.datamodel.base_models": fake_base_models,
+        "docling.datamodel.pipeline_options": fake_pipeline_options_mod,
+        "docling.document_converter": fake_document_converter_mod,
+    }
+    orig_modules = {name: sys.modules.get(name) for name in injected}
+    orig_converters = dict(docling_client._CONVERTERS)
+    sys.modules.update(injected)
+    docling_client._CONVERTERS.clear()
+    try:
+        docling_client._get_converter(ocr=True, table_structure=False)
+    finally:
+        for name, mod in orig_modules.items():
+            if mod is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = mod
+        docling_client._CONVERTERS.clear()
+        docling_client._CONVERTERS.update(orig_converters)
+
+    assert created_options == [{
+        "do_ocr": True,
+        "do_table_structure": False,
+        "artifacts_path": docling_client.DOCLING_ARTIFACTS_PATH,
+    }], created_options
+    assert len(created_format_options) == 1, created_format_options
+    print("✅ [7] _get_converter: PdfPipelineOptions/DocumentConverter への配線を検証")
 
 
 # ---------------------------------------------------------

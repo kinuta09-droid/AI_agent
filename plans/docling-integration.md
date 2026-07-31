@@ -332,6 +332,28 @@ Python 側ピークメモリ (torch のネイティブ確保は含まない) / �
 UnicodeEncodeError + 実 BitNet バイナリ依存) と切り分け済み。別タスクとして
 起票した (このリポジトリの範囲外の修正なので Phase 1 の一部にはしない)。
 
+### /grill 指摘と修正 (2026-08-01)
+
+1. **`_resolve_cache_key()` の TOCTOU** (Critical): `os.path.isfile()` →
+   `os.stat()` の2段呼び出しだったため、間にファイルが消える/ロックされると
+   `os.stat()` が未捕捉の例外を投げ `capture_document()` ごと落ちる経路があった。
+   Phase 2 で Discord 添付を一時ファイルへ落として即変換する運用が入ると、
+   ウイルススキャン等でこの隙間が現実的なタイミングになる。
+   → `os.stat()` 一発 + `stat.S_ISREG()` で判定する形に統一 (ディレクトリを
+   ファイル扱いしてしまう副作用も同時に解消)。回帰テスト2件追加
+   (`test_resolve_cache_key_survives_stat_race` / `_treats_directories_as_non_local`)
+2. **`_get_converter()` の実体が一度もテストされていなかった** (Test Coverage):
+   既存テストは全て `_get_converter` 自体をスタブに差し替えており、
+   `do_ocr`/`do_table_structure`/`artifacts_path` を `PdfPipelineOptions` へ
+   渡す配線そのものは検証対象外だった。`sys.modules` に docling 系モジュールの
+   フェイクを差し込み、`_get_converter` の中身 (import 文含む) を実際に実行させる
+   テストを追加 (`test_get_converter_wires_pipeline_options_via_stubbed_docling_modules`)
+3. **孤児化するキャッシュ** (Nit・対応せず): キー形式変更で旧キャッシュが
+   二度と参照されなくなる。実害は無いので放置 (module docstring に注記のみ追加)
+
+修正後も `tests/test_docling_client.py` (11件に増加) / `tests/test_paper_radar.py`
+(15件) / `verify_project.py` いずれも緑。
+
 ---
 
 ## Phase 2: エージェントのツールにする
