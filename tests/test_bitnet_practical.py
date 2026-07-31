@@ -7,6 +7,7 @@
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.stdout.reconfigure(encoding='utf-8')
 from tools.tool_bitnet import route_tool, summarize, draft_message, LLAMA_CLI, MODEL_PATH
 import time
 
