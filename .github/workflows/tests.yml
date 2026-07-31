@@ -54,10 +54,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  guardian:
+  # **1ジョブに統合した (2026-07-31)**。以前は guardian と tests を別ジョブにして
+  # 並列に走らせていたが、実測 (master run 30626677543) の内訳はこうだった:
+  #
+  #     guardian 101秒 = 段取り17 + pip 72 + verify_project **8**
+  #     tests    254秒 = 段取り17 + pip 59 + sweep        **175**
+  #     合計 355 job秒 — うち **165秒 (46%) が二重に払った段取り**
+  #
+  # private + Windows なので課金は実時間の2倍。段取りを1回にすると
+  # 355 -> 約274 job秒 (-23%) になる。wall は 254 -> 約274秒 と 20秒だけ伸びるが、
+  # 課金されるのは job 秒の合計なのでこちらを取る。
+  #
+  # **`needs: guardian` (段階ゲート) は採らなかった**。直列化するだけなので
+  # 緑のときの job 秒は 355 のまま変わらず、wall だけ +101秒になる。
+  # 得をするのは guardian が赤いときに tests の175秒を払わずに済む場合だけだが、
+  # 実績は **26 run 中 失敗7件で、tests のみ赤が6件・guardian のみ赤が1件**。
+  # 期待値は約10秒/run の節約に対し約88秒/run の待ちで、割に合わない。
+  #
+  # ジョブを1つにすると「どちらが赤か」がチェック一覧から消えるが、
+  # **ステップ名は残る**ので `gh run view --log` でも UI でも判別できる。
+  checks:
     # 構造的な整合性 (構文/エンコーディング/未定義名/import/StringIOアンチパターン/
-    # 例外握りつぶし)。CLAUDE.md の「Guardian: MANDATORY before any significant
-    # commit」を実行担保にする。これはブロッキング。
+    # 例外握りつぶし) と、tests/test_*.py のスイープ。CLAUDE.md の
+    # 「Guardian: MANDATORY before any significant commit」を実行担保にする。
+    # どちらのステップもブロッキング。
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,9 +97,6 @@ jobs:
           # キャッシュしているのはホイールの実体 (numpy/pandas/ccxt が大半) だけで、
           # 「CI が古い依存を掴んだまま緑になる」経路は作っていない。
           #
-          # guardian と tests は同じキーになるので、初回は両ジョブが同時に
-          # save を試みて片方が "Unable to reserve cache" を warning で出す。
-          # **これは失敗ではない** (先に保存した方が勝ち、次回から両方 hit する)。
           #
           # **効果は見込みより遥かに小さかった (実測・訂正 2026-07-31)**:
           # 導入時に「140秒 -> 15秒」と見込んだが、cache hit した run 30626073521 は
@@ -90,6 +107,11 @@ jobs:
           # pip のダウンロードキャッシュは原理的にここを縮められない。
           # (キャッシュ復元自体にも 102MB / 約6秒かかっており、その分を食っている)
           #
+          # なお 1ジョブ統合後は pip install の回数自体が2回->1回になったので、
+          # **run あたりの pip コストは 128秒 -> 約72秒**。ただし上のとおり
+          # 残った72秒の内訳は「解決12秒 + 展開60秒」で、キャッシュが効いている
+          # のは12秒側だけ、という関係は変わらない。
+          #
           # 本気で潰すなら **venv ごとキャッシュする** (actions/cache で
           # site-packages を保存) しかないが、requirements.txt はほぼ未固定なので
           # 「requirements.txt が変わるまで CI が同じ依存を掴み続ける」状態になる。
@@ -98,74 +120,75 @@ jobs:
           # 12秒のために意味論を変えない、と判断して今はここで止めてある。
           cache: pip
       - run: pip install -r requirements.txt
-      - name: verify_project.py
+      - name: guardian (verify_project.py)
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY || 'ci-placeholder-key' }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY || 'ci-placeholder-key' }}
         run: python verify_project.py
 
-  tests:
-    # tests/test_*.py を実行する。**手元と同じ scripts/run_test_sweep.py を呼ぶ**
-    # (2026-07-31)。以前はここに pwsh の逐次ループを直接書いていたが、片方だけ
-    # 並列化すると「CI の失敗一覧が実機と一致するか」で CI 固有の問題を切り分ける、
-    # という判定基準がまた壊れる。実行方法は1つしか持たない。
-    # 並列可否の宣言 (SERIAL_TESTS / PARALLEL_TESTS) もランナー側にあり、
-    # tests/test_sweep_runner.py が「未分類のテストがある」状態を赤にする。
-    #
-    # 重要: このリポジトリの test_*.py は
-    # pytest のネイティブ assert ではなく、独自の check()/PASS-FAIL リストヘルパーで
-    # 失敗を記録するだけの箇所が多く、失敗しても例外を投げない。そのため
-    # `pytest tests/` で集めて流すと「チェックが全部failしていても緑」になる
-    # (このリポジトリで繰り返し出ている「表示と実態の食い違い」パターンそのもの)。
-    # 各ファイルが自前で持つ `if __name__ == "__main__": ... sys.exit(1 if _FAIL else 0)`
-    # を信頼し、スクリプトとして1本ずつ実行して終了コードで判定する。
-    #
-    # continue-on-error を外した (2026-07-30・CI 初起動の実結果を見た上で):
-    # 初回実行は PASS 58 / FAIL 11 だった (実機は 69/0)。11件の内訳と処置:
-    #   - 6件 sys.path.insert(0, r'C:\AI_agent') とルートを直書き
-    #     -> __file__ 相対に修正。verify_project.py の
-    #        check_machine_locked_syspath() が再混入を止める (--fast にも乗る)
-    #   - 1件 scripts/eval_agent.py が固定パスの fixture を開いていた -> __file__ 相対
-    #   - 1件 bot_discord.py が import 時に sys.exit(1) していた (.env が無いと
-    #     モジュールごと死ぬ) -> 判定を run_bot() へ移動
-    #   - 2件 外部プロセス依存 (gws CLI / MCP サーバ) -> 前提が無ければ SKIP。
-    #     うち Drive にフォルダを作るものは ARMS_LIVE_TESTS=1 の後ろへ
-    #   - 1件 実行機のタイムゾーンに依存した回帰再現 -> 明示的な +9h に置換
-    # BitNet バイナリ (C:\BitNet) 依存3件は SKIP して正常終了する。
-    # **再び continue-on-error を足さないこと** — 落ちるものが出たら原因を潰すか、
-    # 前提の不在なら SKIP + exit 0 に分類する。この2択以外に逃げ道を作らない。
-    #
-    # PYTHONPATH を敢えて設定しない (2026-07-30):
-    # 以前は PYTHONPATH: ${{ github.workspace }} を渡していたが、これは
-    # tests/ 側の sys.path bootstrap の欠陥 (dirname が1段足りず tests/ 自身を
-    # 追加していた3ファイル、bootstrap が全く無い1ファイル) を丸ごと隠していた。
-    # 結果、実機では ImportError で落ちるテストが CI では通ってしまい、
-    # 「CI の失敗一覧が実機と一致するか」で CI 固有の問題を切り分ける、という
-    # 判定基準が原理的に成立しなくなっていた。各テストが自前で
-    # sys.path.insert(0, dirname(dirname(__file__))) する形に統一したので、
-    # CI 側の下駄は外す。**再び追加しないこと** — 隠れるのは実機の欠陥の方。
-    #
-    # ARMS_LIVE_TESTS を設定しない:
-    # 本物の Discord へ投稿する / YouTube へ実アクセスする / 受信箱を Gemini で
-    # 要約する (課金) といった副作用のあるテストは、この環境変数が "1" のときだけ
-    # 実行される。CI では設定しないので SKIP して正常終了する。
-    #
-    # ARMS_SLOW_TESTS も設定しない (2026-07-31):
-    # BitNet の実測ベンチ3本 (合計185秒 = 全体の38.9%) がこのゲートの後ろにある。
-    # **ARMS_LIVE_TESTS と統合しないこと** — あちらは「課金・外部副作用がある」、
-    # こちらは「遅いだけで無料・無副作用」。1つにまとめると、課金ゲートを
-    # 緩めたいときに遅いベンチまで一緒に走る。
-    # なお CI ではそもそも C:\BitNet が無いので、前提不在でも SKIP する
-    # (前提のゲートと opt-in のゲートは別物・両方必要)。
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-          cache: pip  # 理由は guardian ジョブ側のコメント参照
-      - run: pip install -r requirements.txt
-      - name: Run tests/test_*.py (script exit-code semantics)
+      # tests/test_*.py を実行する。**手元と同じ scripts/run_test_sweep.py を呼ぶ**
+      # (2026-07-31)。以前はここに pwsh の逐次ループを直接書いていたが、片方だけ
+      # 並列化すると「CI の失敗一覧が実機と一致するか」で CI 固有の問題を切り分ける、
+      # という判定基準がまた壊れる。実行方法は1つしか持たない。
+      # 並列可否の宣言 (SERIAL_TESTS / PARALLEL_TESTS) もランナー側にあり、
+      # tests/test_sweep_runner.py が「未分類のテストがある」状態を赤にする。
+      #
+      # 重要: このリポジトリの test_*.py は
+      # pytest のネイティブ assert ではなく、独自の check()/PASS-FAIL リストヘルパーで
+      # 失敗を記録するだけの箇所が多く、失敗しても例外を投げない。そのため
+      # `pytest tests/` で集めて流すと「チェックが全部failしていても緑」になる
+      # (このリポジトリで繰り返し出ている「表示と実態の食い違い」パターンそのもの)。
+      # 各ファイルが自前で持つ `if __name__ == "__main__": ... sys.exit(1 if _FAIL else 0)`
+      # を信頼し、スクリプトとして1本ずつ実行して終了コードで判定する。
+      #
+      # continue-on-error を外した (2026-07-30・CI 初起動の実結果を見た上で):
+      # 初回実行は PASS 58 / FAIL 11 だった (実機は 69/0)。11件の内訳と処置:
+      #   - 6件 sys.path.insert(0, r'C:\AI_agent') とルートを直書き
+      #     -> __file__ 相対に修正。verify_project.py の
+      #        check_machine_locked_syspath() が再混入を止める (--fast にも乗る)
+      #   - 1件 scripts/eval_agent.py が固定パスの fixture を開いていた -> __file__ 相対
+      #   - 1件 bot_discord.py が import 時に sys.exit(1) していた (.env が無いと
+      #     モジュールごと死ぬ) -> 判定を run_bot() へ移動
+      #   - 2件 外部プロセス依存 (gws CLI / MCP サーバ) -> 前提が無ければ SKIP。
+      #     うち Drive にフォルダを作るものは ARMS_LIVE_TESTS=1 の後ろへ
+      #   - 1件 実行機のタイムゾーンに依存した回帰再現 -> 明示的な +9h に置換
+      # BitNet バイナリ (C:\BitNet) 依存3件は SKIP して正常終了する。
+      # **再び continue-on-error を足さないこと** — 落ちるものが出たら原因を潰すか、
+      # 前提の不在なら SKIP + exit 0 に分類する。この2択以外に逃げ道を作らない。
+      #
+      # PYTHONPATH を敢えて設定しない (2026-07-30):
+      # 以前は PYTHONPATH: ${{ github.workspace }} を渡していたが、これは
+      # tests/ 側の sys.path bootstrap の欠陥 (dirname が1段足りず tests/ 自身を
+      # 追加していた3ファイル、bootstrap が全く無い1ファイル) を丸ごと隠していた。
+      # 結果、実機では ImportError で落ちるテストが CI では通ってしまい、
+      # 「CI の失敗一覧が実機と一致するか」で CI 固有の問題を切り分ける、という
+      # 判定基準が原理的に成立しなくなっていた。各テストが自前で
+      # sys.path.insert(0, dirname(dirname(__file__))) する形に統一したので、
+      # CI 側の下駄は外す。**再び追加しないこと** — 隠れるのは実機の欠陥の方。
+      #
+      # ARMS_LIVE_TESTS を設定しない:
+      # 本物の Discord へ投稿する / YouTube へ実アクセスする / 受信箱を Gemini で
+      # 要約する (課金) といった副作用のあるテストは、この環境変数が "1" のときだけ
+      # 実行される。CI では設定しないので SKIP して正常終了する。
+      #
+      # ARMS_SLOW_TESTS も設定しない (2026-07-31):
+      # BitNet の実測ベンチ3本 (合計185秒 = 全体の38.9%) がこのゲートの後ろにある。
+      # **ARMS_LIVE_TESTS と統合しないこと** — あちらは「課金・外部副作用がある」、
+      # こちらは「遅いだけで無料・無副作用」。1つにまとめると、課金ゲートを
+      # 緩めたいときに遅いベンチまで一緒に走る。
+      # なお CI ではそもそも C:\BitNet が無いので、前提不在でも SKIP する
+      # (前提のゲートと opt-in のゲートは別物・両方必要)。
+      - name: tests (tests/test_*.py, script exit-code semantics)
+        # **guardian が赤でも必ず走らせる**。`if` を書かない (= 前のステップが
+        # 成功したときだけ走る) と、guardian が赤い run では失敗一覧が
+        # guardian の分しか出なくなる。このリポジトリの切り分けは
+        # 「CI の失敗一覧が実機と一致するか」で行うので、片方だけの一覧では
+        # その手順が使えない。**実績上も guardian 赤 ⇒ tests 赤ではない**
+        # (唯一の guardian 失敗 run 30527547316 は tests=success だった)。
+        # `always()` ではなく `!cancelled()` を使う — always() だと
+        # concurrency で PR の run をキャンセルしたときにも175秒のスイープが
+        # 走ってしまい、上の cancel-in-progress が無意味になる。
+        if: ${{ !cancelled() }}
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY || 'ci-placeholder-key' }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY || 'ci-placeholder-key' }}

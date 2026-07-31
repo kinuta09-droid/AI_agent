@@ -168,8 +168,18 @@ subprocess.Popen(cmd, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
 
 ### CI (GitHub Actions)
 `.github/workflows/tests.yml` が push/PR で自動実行される (`windows-latest`)。
-- `guardian` ジョブ (ブロッキング): `verify_project.py` を実行
-- `tests` ジョブ (ブロッキング・`continue-on-error` は 2026-07-30 に撤去済み):
+**`**.md` だけの変更では起動しない** (2026-07-31)。この skip は「追跡下の `.md` を読む
+Python が0件」という前提の上に乗っているので、`tests/test_ci_docs_exemption.py` が
+前提そのものを ast で縛っている。手動で全部走らせたいときは workflow_dispatch。
+- **ジョブは `checks` 1つだけ** (2026-07-31 に統合)。以前は guardian / tests の2ジョブで、
+  355 job秒のうち **165秒 (46%) が二重に払った段取り** (checkout + setup-python + pip)
+  だった。統合で約274 job秒 (-23%)。**`needs:` の段階ゲートは採らない** — 直列化しても
+  job 秒は減らず wall だけ +101秒で、実績も 26 run 中 guardian のみ赤は1件しかない
+- `guardian (verify_project.py)` ステップ (ブロッキング)
+- `tests (...)` ステップ (ブロッキング・`continue-on-error` は 2026-07-30 に撤去済み):
+  `if: ${{ !cancelled() }}` を付けて **guardian が赤でも必ず走らせる** — 失敗一覧が
+  片方だけになると「CI と実機の一致」で切り分ける手順が使えない。`always()` ではなく
+  `!cancelled()` なのは、PR の run をキャンセルしたときにスイープを走らせないため。
   **手元と同じ `py scripts/run_test_sweep.py` を呼ぶ**。1ファイル1プロセスで実行し
   終了コードで判定する。**`pytest tests/` では判定しない** — 多くのファイルの
   `check()` ヘルパーは失敗時も例外を投げないため、pytest 経由だとチェックが
