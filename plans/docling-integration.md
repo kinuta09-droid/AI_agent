@@ -29,7 +29,7 @@ Claude Code を起動して:
 |---|---|---|---|---|
 | 0-0 | ベンチスクリプトの用意 | **完了** | 2026-07-30 | `scripts/bench_docling.py` (リモートで実装・docling 不在時は手順を出して exit 1) |
 | 0-1 | torch (CPU版) + docling インストール | **完了** | 2026-07-31 | `torch==2.13.0+cpu` (`cuda.is_available()==False`) / `docling==2.117.0` |
-| 0-2 | モデル事前DL + `DOCLING_ARTIFACTS_PATH` 設定 | 未着手 | | **実機のみ** |
+| 0-2 | モデル事前DL + `DOCLING_ARTIFACTS_PATH` 設定 | **完了** | 2026-07-31 | `models/docling` (1.3GB・gitignore対象) に配置。`.env` に `DOCLING_ARTIFACTS_PATH=C:\AI_agent\models\docling` を追記 (Phase 1 で `lib/paths.py` 経由の読み込みを実装予定) |
 | 0-3 | 実物3検体でベンチ (`scripts/bench_docling.py`) | 未着手 | | 出力の Markdown 表を下の記入欄に貼る |
 | 0-4 | **Go / No-Go 判定** | 未着手 | | |
 | 1 | 変換層の一般化 (ローカル対応・mtimeキャッシュ・表の保持) | 未着手 | | |
