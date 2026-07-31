@@ -74,6 +74,11 @@ SERIAL_TESTS = {
     "test_diagnostic_subprocess_encoding.py":
         "tests/_tmp_subproc_probe.py を書く。中身は意図的に規約違反の subprocess 呼び出し"
         "なので、tests/ を走査する検査が将来1つ増えただけで上の2本と同じ競合になる",
+    "test_guardian_batch_import.py":
+        "競合の**両側**を持つ。(a) tests/_tmp_gbi_*.py を7本置く — うち "
+        "_tmp_gbi_exit は import 時に sys.exit(1)、_tmp_gbi_crash は os._exit(3) する。"
+        "(b) その状態で verify_project.py を**フルで**実走させる (import 整合性まで)。"
+        "つまり上の3本にとっての加害者であり、同時に被害者でもある",
 }
 
 # 共有する可変資源を持たないことを確認済みのもの。書き込み先は tempfile.mkdtemp か、
