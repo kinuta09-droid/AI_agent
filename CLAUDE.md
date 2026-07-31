@@ -28,6 +28,7 @@
 ## Commands
 ```bash
 py verify_project.py           # Pre-flight check (MANDATORY before release)
+py scripts\run_test_sweep.py   # tests/test_*.py を8並列でスイープ (CI と同じ実装)
 scripts\arms.bat               # ワンクリック制御 (引数なし=メニュー / start|stop|restart|status|logs)
 py main.py                     # Universal launcher
 py bot_discord.py              # Start Discord bot
@@ -167,15 +168,20 @@ subprocess.Popen(cmd, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
 ### CI (GitHub Actions)
 `.github/workflows/tests.yml` が push/PR で自動実行される (`windows-latest`)。
 - `guardian` ジョブ (ブロッキング): `verify_project.py` を実行
-- `tests` ジョブ (現状 `continue-on-error: true`): `tests/test_*.py` を1本ずつ
-  スクリプトとして実行し終了コードで判定する。**`pytest tests/` では判定しない** —
-  多くのファイルの `check()` ヘルパーは失敗時も例外を投げないため、pytest 経由だと
-  チェックが全部failしていても緑になる (このリポジトリで繰り返し出ている
+- `tests` ジョブ (ブロッキング・`continue-on-error` は 2026-07-30 に撤去済み):
+  **手元と同じ `py scripts/run_test_sweep.py` を呼ぶ**。1ファイル1プロセスで実行し
+  終了コードで判定する。**`pytest tests/` では判定しない** — 多くのファイルの
+  `check()` ヘルパーは失敗時も例外を投げないため、pytest 経由だとチェックが
+  全部failしていても緑になる (このリポジトリで繰り返し出ている
   「表示と実態の食い違い」パターンそのもの)
-- `tests` が bootstrap 扱いなのは、`tests/` に実ネットワーク/実APIキー/外部バイナリ
-  (gws CLI等) が要る「手動デバッグスクリプト」が混在するため
-  (Architecture 節の "tests/: Unit tests and debugging stubs" 参照)。
-  一度実行結果を確認し、要否を仕分けてから `continue-on-error` を外すこと
+- **実行方法は1つしか持たない**。CI と手元で別々に書くと、Session 3 でようやく
+  成立させた「失敗一覧の一致で CI 固有の問題を切り分ける」が壊れる
+- 並列可否は `scripts/run_test_sweep.py` の `SERIAL_TESTS`/`PARALLEL_TESTS` で
+  **宣言する**。未分類は直列レーンへ倒れる (安全側) が、
+  `tests/test_sweep_runner.py` が「未分類がある」状態を赤にする
+- 遅いだけのベンチは `ARMS_SLOW_TESTS=1`、課金・外部副作用のあるものは
+  `ARMS_LIVE_TESTS=1`。**この2つを統合しない** — 課金ゲートを緩めたいときに
+  遅いベンチまで走ってしまう
 
 ### Backtest Gate (crypto logic)
 - `lib/quant_core.py` / `tools/tool_crypto.py` の変更は **before/after バックテスト比較が必須**。

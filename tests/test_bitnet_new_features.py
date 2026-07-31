@@ -4,6 +4,11 @@
 TEST 1 (quick_filter_discord) は BitNet バイナリを使わないのでどこでも動く。
 TEST 2 以降は C:\\BitNet の llama-cli.exe + 量子化モデルが要るので、前提が無い
 環境 (CI 等) では TEST 1 だけ実行して SKIP で正常終了する。
+
+TEST 2 以降は ARMS_SLOW_TESTS=1 のときだけ実行する (2026-07-31):
+  推論で約71秒かかる計時ベンチだから。**TEST 1 は必ず残す** — 唯一の
+  アサーション付きテストで、BitNet バイナリを必要としない。
+  ARMS_LIVE_TESTS との違いは tests/test_bitnet_practical.py の冒頭を参照。
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -15,6 +20,7 @@ from tools.tool_bitnet import (
 import time
 
 _BITNET_AVAILABLE = os.path.exists(LLAMA_CLI) and os.path.exists(MODEL_PATH)
+_SLOW_ENABLED = os.getenv("ARMS_SLOW_TESTS", "").strip() == "1"
 _FAIL = []
 
 print("=" * 55)
@@ -46,11 +52,18 @@ for msg, expected_action, label in filter_cases:
 
 print(f"\n  正解率: {ok}/{len(filter_cases)}\n")
 
-if not _BITNET_AVAILABLE:
-    # TEST 2 以降は BitNet の実行環境が要る。ここまでの判定は終了コードに載せる。
-    print("⏭️ SKIP: TEST 2 以降は BitNet の実行環境が必要です")
-    print(f"   llama-cli: {LLAMA_CLI}")
-    print(f"   model    : {MODEL_PATH}")
+if not _BITNET_AVAILABLE or not _SLOW_ENABLED:
+    # TEST 2 以降は (a) BitNet の実行環境と (b) 遅いベンチの opt-in の両方が要る。
+    # どちらで止まったのかを書き分ける — 「SKIP されている」だけ見えても、
+    # 意図した理由で止まっているのか分からないと、ゲートを付けた側が
+    # 「永久に走らなくなった」ことに気付けない。
+    # ここまでの TEST 1 の判定は終了コードに載せる。
+    if not _BITNET_AVAILABLE:
+        print("⏭️ SKIP: TEST 2 以降は BitNet の実行環境が必要です")
+        print(f"   llama-cli: {LLAMA_CLI}")
+        print(f"   model    : {MODEL_PATH}")
+    else:
+        print("⏭️ SKIP: TEST 2 以降は遅い実測ベンチ (約71秒)。ARMS_SLOW_TESTS=1 で実行します")
     print(f"\n=== 結果: FAIL {len(_FAIL)} ===")
     sys.exit(1 if _FAIL else 0)
 
