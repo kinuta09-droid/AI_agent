@@ -25,7 +25,14 @@ jobs:
         run: python verify_project.py
 
   tests:
-    # tests/test_*.py (70ファイル) を実行する。重要: このリポジトリの test_*.py は
+    # tests/test_*.py を実行する。**手元と同じ scripts/run_test_sweep.py を呼ぶ**
+    # (2026-07-31)。以前はここに pwsh の逐次ループを直接書いていたが、片方だけ
+    # 並列化すると「CI の失敗一覧が実機と一致するか」で CI 固有の問題を切り分ける、
+    # という判定基準がまた壊れる。実行方法は1つしか持たない。
+    # 並列可否の宣言 (SERIAL_TESTS / PARALLEL_TESTS) もランナー側にあり、
+    # tests/test_sweep_runner.py が「未分類のテストがある」状態を赤にする。
+    #
+    # 重要: このリポジトリの test_*.py は
     # pytest のネイティブ assert ではなく、独自の check()/PASS-FAIL リストヘルパーで
     # 失敗を記録するだけの箇所が多く、失敗しても例外を投げない。そのため
     # `pytest tests/` で集めて流すと「チェックが全部failしていても緑」になる
@@ -62,6 +69,14 @@ jobs:
     # 本物の Discord へ投稿する / YouTube へ実アクセスする / 受信箱を Gemini で
     # 要約する (課金) といった副作用のあるテストは、この環境変数が "1" のときだけ
     # 実行される。CI では設定しないので SKIP して正常終了する。
+    #
+    # ARMS_SLOW_TESTS も設定しない (2026-07-31):
+    # BitNet の実測ベンチ3本 (合計185秒 = 全体の38.9%) がこのゲートの後ろにある。
+    # **ARMS_LIVE_TESTS と統合しないこと** — あちらは「課金・外部副作用がある」、
+    # こちらは「遅いだけで無料・無副作用」。1つにまとめると、課金ゲートを
+    # 緩めたいときに遅いベンチまで一緒に走る。
+    # なお CI ではそもそも C:\BitNet が無いので、前提不在でも SKIP する
+    # (前提のゲートと opt-in のゲートは別物・両方必要)。
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -73,24 +88,7 @@ jobs:
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY || 'ci-placeholder-key' }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY || 'ci-placeholder-key' }}
-          PYTHONIOENCODING: utf-8
-        shell: pwsh
-        run: |
-          $failed = @()
-          $passed = @()
-          Get-ChildItem tests/test_*.py | ForEach-Object {
-            Write-Host "`n=== $($_.Name) ==="
-            python $_.FullName
-            if ($LASTEXITCODE -ne 0) {
-              $failed += $_.Name
-            } else {
-              $passed += $_.Name
-            }
-          }
-          Write-Host "`n============================================"
-          Write-Host "PASS: $($passed.Count)  FAIL: $($failed.Count)"
-          if ($failed.Count -gt 0) {
-            Write-Host "`nFailed files:"
-            $failed | ForEach-Object { Write-Host "  - $_" }
-            exit 1
-          }
+        # PYTHONIOENCODING はここでは設定しない。ランナーが自分の stdout を
+        # reconfigure し (LEVEL 0)、子プロセスには env= で1本ずつ渡す (LEVEL 1)。
+        # ジョブ全体に被せるのは CLAUDE.md のスコープ階層で1段上になる。
+        run: python scripts/run_test_sweep.py
