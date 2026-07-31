@@ -739,10 +739,17 @@ def load_tools_registry(errors):
 
     entries = []
     for tool in main_mod.TOOLS:
+        name = tool.get("name")
         func_path = tool.get("function")
-        if not func_path or "." not in func_path:
+        if not func_path:
             continue
-        entries.append((tool.get("name"), func_path))
+        if "." not in func_path:
+            # 黙って飛ばさない。「module.func」の形でなければレジストリの記述ミスで、
+            # 飛ばすと該当ツールだけが永久に未検査になる (無言の死)。
+            errors.append(f"Main Registry Error [{name}]: function が "
+                          f"'module.func' の形ではありません: {func_path!r}")
+            continue
+        entries.append((name, func_path))
     return entries
 
 
