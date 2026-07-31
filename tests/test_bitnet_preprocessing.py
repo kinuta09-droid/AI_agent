@@ -3,12 +3,20 @@
 
 外部前提 (C:\\BitNet の llama-cli.exe + 量子化モデル) が要る手動デバッグスクリプト。
 前提が無い環境 (CI 等) では SKIP して正常終了する。
+
+さらに ARMS_SLOW_TESTS=1 のときだけ実行する (2026-07-31):
+  アサーションを持たない計時ベンチで、約43秒かかる。理由と ARMS_LIVE_TESTS との
+  違いは tests/test_bitnet_practical.py の冒頭に書いてある。
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.stdout.reconfigure(encoding='utf-8')
 from tools.tool_bitnet import _run_bitnet, LLAMA_CLI, MODEL_PATH
 import time, json
+
+if os.getenv("ARMS_SLOW_TESTS", "").strip() != "1":
+    print("⏭️ SKIP: 遅い実測ベンチ (BitNet 推論で約43秒)。ARMS_SLOW_TESTS=1 で実行します")
+    sys.exit(0)
 
 if not (os.path.exists(LLAMA_CLI) and os.path.exists(MODEL_PATH)):
     print("⏭️ SKIP: BitNet の実行環境が見つかりません")
