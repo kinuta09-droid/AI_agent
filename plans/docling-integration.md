@@ -577,7 +577,7 @@ Scheduler再起動、まで実施済み。
 | mrr@10 | 0.6329 | 0.6863 | +0.0534 |
 | 劣化 (フォールバック汚染) | 0問 | 0問 | — |
 
-- **R17 (PDF由来クエリ)**: 圏外 → **rank=1** (`attention_is_all_you_need.md#6.1
+- **R17 (PDF由来クエリ)**: 圏外 → **rank=1** (`attention_is_all_you_need.pdf.md#6.1
   Machine Translation`)。3-0 のサイドカー変換パイプライン (Vault配置 → docling変換
   → 既存インデクサへの自動配線) が意味検索まで一気通貫で機能していることの実地証拠
 - **R13**: 圏外 → rank=1 に改善 (既存ノート)
@@ -611,6 +611,19 @@ Scheduler再起動、まで実施済み。
 スコープ外の別課題として認識するに留める (`retrieval-tuning` skill 領域。
 必要なら日付/週番号をメタデータとして重み付けする改善が考えられるが、
 実需が出てから着手する)。
+
+### /grill 指摘と修正 (2026-08-01)
+
+**`_sidecar_path()` の拡張子衝突** (Critical): `os.path.splitext()` で元拡張子を
+`.md` に置換していたため、同名幹・拡張子違いのファイル (`foo.pdf` と `foo.docx`)
+がサイドカーパスで衝突し、片方がもう片方を無言で上書きする経路があった。
+`_needs_conversion()` の mtime 比較も「相手のサイドカー」を見てしまうため、
+最悪交互に無駄な再変換を繰り返す。冪等性を謳った設計意図と矛盾する実害のある
+バグだったため、拡張子を**削らず継ぎ足す** (`foo.pdf` → `foo.pdf.md`) 形に修正し、
+元パスへの単射を保証した。回帰テスト
+(`test_sidecar_path_does_not_collide_across_extensions`) を追加。
+実機で既に変換済みだった `attention_is_all_you_need.md` も新命名へリネームし、
+`retrieval_eval.json` の R17 expected パスと差分再インデックスで整合を取った。
 
 ---
 

@@ -67,9 +67,22 @@ def test_walk_source_documents_excludes_generated_and_template_dirs():
 def test_sidecar_path_preserves_directory_structure():
     with tempfile.TemporaryDirectory() as tmp:
         path = doc_sidecar._sidecar_path(tmp, "30_Main/foo.pdf")
-    expected = os.path.join(tmp, "99_Assets", "Converted", "30_Main", "foo.md")
+    expected = os.path.join(tmp, "99_Assets", "Converted", "30_Main", "foo.pdf.md")
     assert path == expected, (path, expected)
     print("✅ [2] サイドカーパスがディレクトリ構造を保って組み立てられる")
+
+
+def test_sidecar_path_does_not_collide_across_extensions():
+    """同名幹・拡張子違い (foo.pdf / foo.docx) が同じサイドカーパスに潰れないこと。
+
+    拡張子を置換ではなく継ぎ足す実装であることの回帰テスト — 置換実装に戻すと
+    片方がもう片方を無言で上書きする (/grill 2026-08-01 指摘)。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = doc_sidecar._sidecar_path(tmp, "30_Main/foo.pdf")
+        docx_path = doc_sidecar._sidecar_path(tmp, "30_Main/foo.docx")
+    assert pdf_path != docx_path, (pdf_path, docx_path)
+    print("✅ [2] 拡張子違いの同名幹ファイルはサイドカーパスが衝突しない")
 
 
 def test_needs_conversion_true_when_sidecar_missing():
@@ -161,7 +174,7 @@ def test_sync_document_sidecars_converts_and_writes_sidecar():
         with tempfile.TemporaryDirectory() as tmp:
             _touch(os.path.join(tmp, "30_Main", "foo.pdf"))
             result = doc_sidecar.sync_document_sidecars(vault_root=tmp)
-            sidecar = os.path.join(tmp, "99_Assets", "Converted", "30_Main", "foo.md")
+            sidecar = os.path.join(tmp, "99_Assets", "Converted", "30_Main", "foo.pdf.md")
             assert os.path.exists(sidecar), sidecar
             with open(sidecar, encoding="utf-8") as f:
                 content = f.read()
@@ -223,7 +236,7 @@ def test_sync_document_sidecars_capped_file_is_not_converted():
         with tempfile.TemporaryDirectory() as tmp:
             _touch(os.path.join(tmp, "30_Main", "huge.pdf"))
             result = doc_sidecar.sync_document_sidecars(vault_root=tmp)
-            sidecar = os.path.join(tmp, "99_Assets", "Converted", "30_Main", "huge.md")
+            sidecar = os.path.join(tmp, "99_Assets", "Converted", "30_Main", "huge.pdf.md")
             assert not os.path.exists(sidecar), "上限超過ファイルが変換されてしまった"
     finally:
         _restore(orig)
@@ -247,7 +260,7 @@ def test_sync_document_sidecars_one_failure_does_not_block_others():
             _touch(os.path.join(tmp, "bad.pdf"))
             _touch(os.path.join(tmp, "good.pdf"))
             result = doc_sidecar.sync_document_sidecars(vault_root=tmp)
-            good_sidecar = os.path.join(tmp, "99_Assets", "Converted", "good.md")
+            good_sidecar = os.path.join(tmp, "99_Assets", "Converted", "good.pdf.md")
             assert os.path.exists(good_sidecar), "失敗した1件に巻き込まれて残りが処理されていない"
     finally:
         _restore(orig)
@@ -265,7 +278,7 @@ def test_sync_document_sidecars_empty_result_counts_as_failure():
         with tempfile.TemporaryDirectory() as tmp:
             _touch(os.path.join(tmp, "empty.pdf"))
             result = doc_sidecar.sync_document_sidecars(vault_root=tmp)
-            sidecar = os.path.join(tmp, "99_Assets", "Converted", "empty.md")
+            sidecar = os.path.join(tmp, "99_Assets", "Converted", "empty.pdf.md")
             assert not os.path.exists(sidecar)
     finally:
         _restore(orig)

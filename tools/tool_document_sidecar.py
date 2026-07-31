@@ -52,11 +52,14 @@ def _walk_source_documents(vault_root: str):
 def _sidecar_path(vault_root: str, rel_path: str) -> str:
     """元ファイルの相対パスから、拡張子を .md に変えたサイドカー保存先を作る。
 
-    ディレクトリ構造を保つ (例: 30_Main/foo.pdf -> 99_Assets/Converted/30_Main/foo.md)。
-    同名別フォルダのファイルが衝突しないようにするため。
+    ディレクトリ構造を保つ (例: 30_Main/foo.pdf -> 99_Assets/Converted/30_Main/foo.pdf.md)。
+    拡張子は**削らず** `.md` を継ぎ足す (元の拡張子を捨てて置き換えると、同名幹で
+    拡張子違いのファイル (`foo.pdf` と `foo.docx` 等) がサイドカーパスで衝突し、
+    片方がもう片方を無言で上書きする — mtime比較の相手も入れ替わるため、
+    最悪交互に無駄な再変換を繰り返す)。拡張子込みで継ぎ足せば元パスへの
+    単射になり、衝突しようがない。
     """
-    base, _ext = os.path.splitext(rel_path)
-    md_rel = f"{base}.md"
+    md_rel = f"{rel_path}.md"
     return os.path.join(vault_root, *SIDECAR_ROOT_REL.split("/"), *md_rel.split("/"))
 
 

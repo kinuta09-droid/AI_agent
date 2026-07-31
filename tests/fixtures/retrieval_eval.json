@@ -120,7 +120,7 @@
     {
       "id": "R17",
       "query": "Transformerアーキテクチャを提案した論文で、大きいモデル(big)が英独翻訳(WMT2014 En-De)で出したBLEUスコアはいくつだったか",
-      "expected": ["99_Assets/Converted/20_Sources/Test_Documents/attention_is_all_you_need.md"],
+      "expected": ["99_Assets/Converted/20_Sources/Test_Documents/attention_is_all_you_need.pdf.md"],
       "why": "Phase 3-0 でdoclingサイドカー変換したarXiv論文 (Attention Is All You Need) のTable 2にある実測値 (Transformer(big) BLEU EN-DE=28.4、logs/docling_bench/attention_is_all_you_need.md で確認済み)。ノートタイトル語 (Attention/All/You/Need) を避け、内容から特定させる。3-0のサイドカー変換パイプラインが意味検索に載っているかを検証するクエリ。before測定時点ではファイルが存在しないため『圏外』になるのが正しい"
     }
   ]
