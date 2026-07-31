@@ -6,6 +6,11 @@
 `No module named 'tools'` で落ち、直した後も FileNotFoundError で落ちる状態だった。
 """
 import sys, os
+# LEVEL 0 (スクリプト単位)。BitNet の生成結果には日本語に混じって簡体字 (仅 等) が
+# 出ることがあり、stdout がパイプだと cp932 で復号できず UnicodeEncodeError で落ちる。
+# 生成内容次第で赤くなる = 同じコードが実行ごとに緑にも赤にもなるので、
+# スイープの結果そのものが信用できなくなる (2026-07-31 に実際に踏んだ)。
+sys.stdout.reconfigure(encoding='utf-8')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.tool_bitnet import route_tool, summarize, draft_message, LLAMA_CLI, MODEL_PATH
 import time
