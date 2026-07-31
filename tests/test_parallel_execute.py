@@ -229,15 +229,30 @@ def test_wave_actually_runs_in_parallel():
     下駄そのもので、実際 tests/test_sweep_runner.py も同じ形で flaky だった。
 
     ツール側で (start, end) を記録し、**重なった本数 (peak concurrency)** で見る。
-    逐次に戻れば peak は必ず 1 になるので、3本の fan-out が壊れれば確実に赤くなる。
-    壁時計は参考値としてメッセージに残す。
+
+    しきい値は `>= 2` であって `== 3` ではない。**主張を2つに分ける**:
+      - 構造 (3本が1ウェーブに入り、3本幅のプールへ submit された)
+        -> `parallel.waves == 1`。`_run_wave` は `min(len(wave), fanout_workers())`
+           = min(3, DEFAULT_FANOUT_WORKERS=3) で、CPU 数から導出していないので
+           コア数に関係なく3本幅になる
+      - 挙動 (逐次ではなく実際に重なった) -> `peak >= 2`
+
+    `peak == 3` にすると **runner のスレッド起動の速さ**を測ることになる。
+    実際 master 30622755909 で `peak=2 / 壁時計 1.92秒` を記録した (0.5秒の sleep に
+    対し約1.4秒の遅延)。3本とも submit されていても、3本目が走り出す前に1本目が
+    眠り終われば重なりは2止まりになる。fan-out が逐次に戻れば peak は必ず 1 なので、
+    退行は `>= 2` で確実に捕まる。壁時計は参考値としてメッセージに残す。
     """
     print("\n[8] 本当に同時実行されている (区間の重なり)")
     seen = []
+    # sleep は **runner のスレッド起動の遅れより長く** すること。ここが観測ウィンドウで、
+    # 遅延がこれを超えると「3本 submit したのに重なりが観測されない」が起きる。
+    # 初版の 0.5秒 は master 30622755909 (約0.7秒の遅延) で peak=2 まで落ちた。
+    # 1.5秒あれば2倍の余裕がある。伸ばした分 (+1秒) はこの1本にしか乗らない。
     tools = _fake_map(
-        tool_a=_sleepy(0.5, intervals=seen),
-        tool_b=_sleepy(0.5, intervals=seen),
-        tool_c=_sleepy(0.5, intervals=seen),
+        tool_a=_sleepy(1.5, intervals=seen),
+        tool_b=_sleepy(1.5, intervals=seen),
+        tool_c=_sleepy(1.5, intervals=seen),
     )
     plan = [_step(1, "tool_a"), _step(2, "tool_b"), _step(3, "tool_c")]
     with _patched(tools), contextlib.redirect_stdout(_io.StringIO()):
@@ -246,10 +261,13 @@ def test_wave_actually_runs_in_parallel():
         wall = time.time() - t0
 
     peak = _peak_concurrency(seen)
-    check(f"3本が同時に走っている (peak={peak} / 壁時計 {wall:.2f}秒)", peak == 3,
+    check(f"逐次ではなく重なって走っている (peak={peak} / 壁時計 {wall:.2f}秒)", peak >= 2,
           f"peak={peak} — 逐次なら1。fan-out が効いていない")
     check("全ステップ成功", res["success"], str(res["results"]))
+    # 構造側の主張。3本が1ウェーブ = 3本幅のプールへ submit された、を保証する
+    # (peak は runner の都合で 2 に落ちうるので、本数はこちらで縛る)。
     check("parallel.waves が1", res["parallel"]["waves"] == 1, str(res["parallel"]))
+    check("3ステップ全部が結果に含まれる", len(res["results"]) == 3, str(res["results"]))
     # 「正」と名乗っている以上、しきい値も正であること。0.5 を要求すると
     # これも壁時計依存になる (saved_seconds は所要時間の総和 - 実測 wall)。
     check("saved_seconds が正", res["parallel"]["saved_seconds"] > 0,
