@@ -1,6 +1,6 @@
 # SNS 運用マネタイズ ロードマップ — 累計10万円まで
 
-> 作成: 2026-07-31 / ブランチ: `plans/sns-monetization-roadmap`
+> 作成: 2026-07-31 / 更新: 2026-08-01 / ブランチ: `plans/sns-monetization-roadmap`
 > **目標: 累計10万円（手取り）**。月次の継続収入ではなく、まず一度到達すること。
 > 経路: X アカウント開設 → note 有料記事 → SNS運用代行 → BOOTH でツール販売
 
@@ -16,7 +16,7 @@
 |---|---|---|---|---|
 | 0-1 | ニッチ・ペルソナ確定 + X アカウント開設 | 未着手 | | **AI に丸投げ不可。全 Phase の前提** |
 | 0-2 | Agent Reach 実機導入 | 未着手 | | `plans/agent-reach-setup.md` の STEP 1〜5 |
-| 0-3 | docling Phase 0 の Go/No-Go 判定 | 未着手 | | `plans/docling-integration.md`。**再インデックス前に before を取る** |
+| 0-3 | docling Phase 0 の Go/No-Go 判定 | **完了 (Go)** | 2026-08-01 | 想定より前進: Phase 0〜3全体が完了し[PR #42](https://github.com/kinuta09-droid/AI_agent/pull/42)でmasterへ統合済み。`tool_paper_radar.py`/`tool_paper_digest.py`もmaster上に存在。**ただしSNS投稿導線(Phase1)への接続はまだ無い** |
 | 0-4 | X Developer 登録 + 従量課金の支払い設定 | 未着手 | | テスト投稿1本が API 経由で通ること |
 | 1-1 | `tools/tool_x_post.py`（X API v2 投稿） | 未着手 | | |
 | 1-2 | 投稿コストガード（`lib/cost_guard.py` に日次カウンタ追加） | 未着手 | | 既存の Gemini カウンタ機構を流用 |
@@ -71,8 +71,9 @@ Agent Reach を収益経路の必須依存にすること。
 | Gemini | 無料枠 + 既存コストガード |
 | Tavily / agent-reach / docling | ¥0（既存 or ローカル） |
 
-**初期投資はほぼゼロ。** ただし `.env` の `DAILY_GEMINI_CALL_LIMIT` は
-2026-07-28 に 200 → 0（無効）にしたまま。Phase 2 で毎日回し始める前に**戻すこと**。
+**初期投資はほぼゼロ。** `.env` の `DAILY_GEMINI_CALL_LIMIT` は 2026-07-28 に一時解除
+（200→0）していたが **2026-07-31 に 200 へ復帰済み**（スタック再起動も実施済み）。
+Phase 2 で投稿量が増えたら、この上限とのバランスを再度確認すること。
 
 ---
 
@@ -80,8 +81,8 @@ Agent Reach を収益経路の必須依存にすること。
 
 | 資産 | 場所 | 役割 |
 |---|---|---|
-| 論文レーダー + 要約 + **X スレッド下書き + note 記事下書き** | `claude/docling-paper-capture-system-fbb3ug`（3,033行・**実機未実行**） | コンテンツ生産ライン本体 |
-| docling 変換層（PDF→Markdown・段階フォールバック） | 同ブランチ `lib/docling_client.py` | 一次情報の質での差別化 |
+| 論文レーダー + 要約 + **X スレッド下書き + note 記事下書き** | **master**（`tool_paper_radar.py`/`tool_paper_digest.py`。2026-08-01 PR #42 マージ済。**SNS投稿導線への接続はまだ無い**） | コンテンツ生産ライン本体 |
+| docling 変換層（PDF→Markdown・サイドカー変換・意味検索接続まで完了） | **master**（`lib/docling_client.py` 他。Phase 0〜3完了、hit@5 +0.059で実証済み） | 一次情報の質での差別化 |
 | Agent Reach 導入手順（地雷5件を検証済） | `claude/agent-reach-mcp-k91vmv` | X/Reddit/YouTube の生ネタ取得 |
 | XTrend / Curator / FutureSearch / Vault RAG | master | ネタの多様化 |
 | Engagement Log Phase 1（354件収集済） | master + `claude/multi-agent-rag-monetization-m1a7mx` | 反応の計測基盤 |
@@ -123,14 +124,16 @@ Phase 3 を飛ばして Phase 4 に行けないのは、営業材料が無くな
 
 **完了条件**: `agent-reach doctor` で Web / RSS / YouTube / GitHub / X が `✅`。
 
-### 0-3. docling Phase 0 の Go/No-Go 判定
-`plans/docling-integration.md`（ブランチ `claude/docling-paper-capture-system-fbb3ug`）。
+### 0-3. docling Phase 0 の Go/No-Go 判定 — ✅ 完了 (2026-08-01)
+`plans/docling-integration.md`（[PR #42](https://github.com/kinuta09-droid/AI_agent/pull/42) → master。以後は master 上のファイルを参照すればよい）。
 
-> ⚠️ **順序制約**: チャンカーの表分割修正はコード側完了済だが、既存インデックスは
-> 古いチャンクのまま。**再インデックスすると「修正前の検索品質」を測る機会が永久に
-> 失われる**ので、`py scripts\eval_retrieval.py` の before を先に取る。
+判定は Go。Phase 0 だけでなく Phase 1〜3（変換層の一般化・`tools/tool_document.py` +
+Discord `/doc`・サイドカー変換 + 意味検索接続）まで完了し、Vault 全件再構築後の
+検索評価は hit@5 +0.059。詳細は memory `docling-integration-progress.md`。
 
-**完了条件**: 実物3検体のベンチ表が埋まり、Go / No-Go が書かれている。
+**残っている差分**: 論文レーダー→docling要約→SNS下書き (`tool_paper_digest.py`) 自体は
+master にあるが、**Discord 承認キュー（Phase 1-3）や X 投稿（Phase 1-1）にはまだ
+繋がっていない**。ここを繋ぐのは本ロードマップの Phase 1 の仕事のまま変わらない。
 
 ### 0-4. X Developer 登録 + 従量課金の支払い設定
 **完了条件**: テスト投稿1本が API 経由で通り、課金が想定どおり（$0.015）計上される。
@@ -252,5 +255,5 @@ Phase 3 を飛ばして Phase 4 に行けないのは、営業材料が無くな
 | ドキュメント | ブランチ | 関係 |
 |---|---|---|
 | `plans/agent-reach-setup.md` | `claude/agent-reach-mcp-k91vmv` | Phase 0-2 の手順書 |
-| `plans/docling-integration.md` | `claude/docling-paper-capture-system-fbb3ug` | Phase 0-3 の手順書 |
+| `plans/docling-integration.md` | **master**（完了・PR #42 でマージ済み） | Phase 0-3 の実施記録（完了済み） |
 | `plans/engagement-phase2-prep.md` | `claude/multi-agent-rag-monetization-m1a7mx` | Phase 1-5 と重複。着手前に読む |
