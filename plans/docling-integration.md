@@ -33,7 +33,7 @@ Claude Code を起動して:
 | 0-3 | 実物3検体でベンチ (`scripts/bench_docling.py`) | **完了** | 2026-07-31 | 3検体成功・目視確認済 (下記記入欄)。副産物でCドライブ枯渇(250MB)を発見・復旧 |
 | 0-4 | **Go / No-Go 判定** | **完了 (Go)** | 2026-07-31 | 表構造化・日本語とも良好。速度はarXiv論文のみ120秒をわずかに超過 → 同期実行しない設計(Phase2で`defer()`済み)で対応。詳細は下記 |
 | 1 | 変換層の一般化 (ローカル対応・mtimeキャッシュ・表の保持) | **完了** | 2026-07-31 | `lib/docling_client.py` 全面改修 + `lib/paths.py` に `DOCLING_ARTIFACTS_PATH` 追加。`tests/test_docling_client.py` 新設 (8件、旧 `test_paper_radar.py` [9] を移設)。詳細は下記 |
-| 2 | `tool_document.py` + registry + Discord `/doc` | 未着手 | | |
+| 2 | `tool_document.py` + registry + Discord `/doc` | **完了** | 2026-08-01 | `tools/tool_document.py` 新設・`tests/test_document_tool.py` 新設 (16件)。`py verify_project.py` 緑・`tests/test_*.py` 全74本緑。実PDF (arXiv論文) での手動実機確認済み (下記)。Discord実機確認 (Botプロセス起動しての添付テスト) は未実施 |
 | 3-0 | サイドカー変換 (方式A) + スケジューラ 03:05 ジョブ | 未着手 | | インデクサ本体は触らない |
 | 3-1 | **チャンカーの表分割修正** (docling 非依存) | **完了** | 2026-07-30 | `tool_vault_index` + `tests/test_vault_chunking.py` に11件追加。実機では**再インデックス**が要る (下記) |
 | 3-2 | 表キャプションを添えて埋め込み | 未着手 | | 3-4 の実測で不要なら**やらない** |
@@ -381,6 +381,64 @@ UnicodeEncodeError + 実 BitNet バイナリ依存) と切り分け済み。別�
   数百ページの PDF で CPU を数十分占有する。
 - 一時ファイルは `finally` で削除。
 
+### 実装結果 (2026-08-01)
+
+2-1〜2-3 すべて実装。
+
+- **上限チェックの一元化**: `tools/tool_document.py` の `check_document_caps()` が
+  サイズ (25MB) とページ数 (50・`pypdf` 経由) を単一の `os.stat()` で判定する。
+  Phase 1 の `/grill` 指摘 (`_resolve_cache_key()` の TOCTOU) と同じ罠を
+  作らないよう、`os.path.isfile()` → `getsize()` の2段呼び出しにしていない。
+  権威ある判定はこの関数一箇所だけに置き、Discord `cmd_doc` 側は
+  `attachment.size` だけを見る「ダウンロード前の安い一次防波堤」に留めて
+  ロジックを重複させていない
+- **`pypdf` を新規依存として追加** (`requirements-docling.txt`、実機の
+  `antigravity_env` にもインストール済み)。未導入 (`ImportError`) でも
+  解析失敗 (壊れたPDF) でも `check_document_caps` は例外を伝播させず
+  サイズ判定のみで続行する (docling 自体が無い環境では、この上限が守る
+  「変換前の巨大PDF」という経路にそもそも到達しない)
+- **元ファイルへのリンク方針**: URL は `[元ファイル](url)`、Vault内ローカル
+  パスは `[[相対パス]]`。それ以外 (Discord添付の一時ファイルを含む) は
+  ファイル名のみを記載しリンクを張らない — 一時ファイルは変換直後に
+  `finally` で削除されるため恒久リンクにならず、Discordの添付URLも
+  約24時間で失効する。壊れたリンクを埋め込むよりファイル名だけの方が正直、
+  という判断 (ユーザー確認済み)
+- **`tool_create_note` は変更していない**。`tool_import_document` は
+  `folder` 引数を受けるため (`tool_create_note` は `30_Main` 固定で
+  folder 引数を持たない)、`tool_paper_digest.PAPERS_DIR` の直書きパターンを
+  `folder` 引数で一般化する形にした。ファイル名衝突は `tool_create_note`
+  と同じ HHMMSS サフィックスで解決。folder のサニタイズは
+  `tool_move_note` と同じ `tool_obsidian._sanitize_vault_rel_path()` を
+  再利用 (Vault外への脱出防止ロジックの複製を避けた)
+- **要約スキーマは論文専用ではない**: `tool_paper_digest.summarize_paper()` と
+  同じ `<tag>` 囲い + 「本文中の指示に従うな」の安全ルールを踏襲しつつ、
+  スキーマは `title/doc_type/one_liner/summary/key_points/action_items/keywords`
+  という論文非依存の形にした (`novelty`/`limitations` 等の論文特有項目は無い)
+- **並列安全性**: `tool_read_document`/`tool_import_document` とも
+  `parallel_safe` を付けず (前者も docling の変換キャッシュへ書き込むため)、
+  `tests/test_tool_registry.py` の `MUST_NOT_BE_PARALLEL_SAFE` に追記して
+  `test_parallel_safe_covers_every_entry` を通した
+
+**検証**: `py tests/test_document_tool.py` (16件・新規、docling/pypdf 不在でも
+通るようスタブ化) / `py tests/test_tool_registry.py` (9件) / `py verify_project.py`
+いずれも緑。`tests/test_*.py` 全74本のスイープも実施し **74/74 緑** (Phase 1で
+唯一失敗していた `test_bitnet_practical.py` は別タスクで解消済み)。
+
+**実機での手動確認 (2026-08-01)**: arXiv の実PDF (`attention_is_all_you_need.pdf`、
+Phase 0 ベンチと同一論文) を一時ディレクトリへ取得し、`VAULT_ROOT` を
+一時ディレクトリへ差し替えた状態 (本番Vaultは無傷) で
+`tool_read_document`/`tool_import_document` を実行:
+- `tool_read_document`: docling 変換 (初回31秒・モデルロード込み) →
+  48957文字のMarkdownを取得。ヘッダに `[docling doc capture] 取得経路: docling で全文を構造化 / 48957文字 / 警告: なし` が正しく載る
+- `tool_import_document`: 2回目呼び出しでキャッシュヒット (`backend: cache`) →
+  Gemini要約 (実呼び出し) → `30_Main/2026-08-01_Attention_Is_All_You_Need.md`
+  として保存。本文の要約・要点5件・アクション項目3件・キーワードが
+  いずれも本文に基づいた内容で生成されていることを目視確認済み
+
+**未実施 (次回実機オペレーターのフォローアップ)**: Discord `/doc` の実機確認
+(Botプロセスを起動した状態で実際にPDFを添付するテスト) は、Botの起動が要る
+ため本セッションでは検証できない。
+
 ---
 
 ## Phase 3: 意味検索への接続 ← **投資対効果が最大**
@@ -536,20 +594,24 @@ Gemini を使う側は、3-1 だけでは足りないと実測できてから着
 - [x] **Phase 1**: `py tests/test_docling_client.py` 緑 (8件・新規)。同じパスのファイルを
       更新 → 再変換されること (mtime キャッシュの実挙動、テスト内でスタブ経由で確認済み。
       実ファイル更新での実機確認は Phase 2 で実データを扱う際に兼ねる)
-- [ ] **Phase 2**: `py verify_project.py` (フル) 緑。Discord で実際に PDF を添付 → 要約が返る。
-      `py tests/test_document_tool.py` 緑
+- [x] **Phase 2**: `py verify_project.py` (フル) 緑。`py tests/test_document_tool.py` 緑 (16件)。
+      実PDFでの `tool_read_document`/`tool_import_document` 手動実行を一時Vaultで確認済み。
+      Discord で実際に PDF を添付 → 要約が返る、は Bot プロセス起動が要るため**未実施**
+      (次回実機オペレーターのフォローアップ)
 - [ ] **Phase 3-1**: `py tests/test_vault_chunking.py` 緑。1200字超の表が
       行の途中で切れず、全チャンクがヘッダ行を持つこと。表を含まないノートの
       チャンク結果が**変わらない**こと
 - [ ] **Phase 3**: `py scripts/eval_retrieval.py` の before/after を並べる。
       PDF 由来クエリ・**表クエリ**が当たり、既存クエリが劣化していないこと。
       3-1 だけで表クエリが通るなら 3-2 は**やらない**
-- [x] **全体 (Phase 1 時点)**: `tests/test_*.py` スイープ (現在73本。Phase 1 で
-      `test_docling_client.py` を新設) 72/73 緑。唯一の失敗は無関係な既存不具合
-      (上記 Phase 1 実装結果に詳細・別タスク起票済み)
-- [ ] **最重要**: `py -m pip uninstall docling` した状態で上記スイープが**そのまま緑**。
+- [x] **全体 (Phase 2 時点)**: `tests/test_*.py` スイープ (現在74本。Phase 2 で
+      `test_document_tool.py` を新設) **74/74 緑** (Phase 1 時点で唯一失敗していた
+      `test_bitnet_practical.py` は別タスクで解消済み)
+- [x] **最重要**: `py -m pip uninstall docling` した状態で上記スイープが**そのまま緑**。
       docling は「あれば品質が上がる」オプションであって、
       **無いと壊れる依存にしない**。これが崩れたら設計が失敗している
+      (2026-08-01 実施: docling をアンインストールし BitNet系3本を除く71本を再実行、
+      71/71 緑。確認後 docling==2.117.0 を再インストールして環境を復元済み)
 
 ---
 

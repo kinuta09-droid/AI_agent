@@ -101,6 +101,24 @@ def _tool_paper_digest_wrapper(index: int = 1, arxiv_id: str = "", mode: str = "
         return f"[paper_digest error] {e}"
 
 
+def _tool_read_document_wrapper(path_or_url: str, ocr: bool = False) -> str:
+    """任意のPDF/Office文書 (URL/ローカルパス) をdoclingでMarkdown化して返す (ノートは保存しない)。"""
+    try:
+        from tools.tool_document import tool_read_document
+        return tool_read_document(path_or_url, ocr=bool(ocr))
+    except Exception as e:
+        return f"[read_document error] {e}"
+
+
+def _tool_import_document_wrapper(path_or_url: str, folder: str = "30_Main") -> str:
+    """任意のPDF/Office文書を変換→Gemini要約→Vaultにノート保存する(元ファイルへの参照付き)。"""
+    try:
+        from tools.tool_document import tool_import_document
+        return tool_import_document(path_or_url, folder=folder)
+    except Exception as e:
+        return f"[import_document error] {e}"
+
+
 def _tool_curate_wrapper() -> str:
     """The Curator のトピック提案をReActツールとして公開する。"""
     try:
@@ -183,6 +201,12 @@ TOOL_ENTRIES = [
     {"name": "tool_paper_digest", "usage": "tool_paper_digest(index=1, arxiv_id='', mode='sns')",
      "description": "注目論文の本文をdoclingでキャプチャし要約→Obsidian保存→X投稿スレッド/note記事の下書きを生成 (mode: sns/note/both/none)",
      "func": _tool_paper_digest_wrapper},
+    {"name": "tool_read_document", "usage": "tool_read_document(path_or_url, ocr=False)",
+     "description": "PDF/Office文書 (URLまたはローカルパス) をdoclingでMarkdown化して返す。ノートには保存しない読み取り専用（本文を読んで判断したいときに使う）",
+     "func": _tool_read_document_wrapper},
+    {"name": "tool_import_document", "usage": "tool_import_document(path_or_url, folder='30_Main')",
+     "description": "PDF/Office文書 (URLまたはローカルパス) をdoclingで変換しGeminiで要約してObsidianにノート保存する（元ファイルへの参照付き）",
+     "func": _tool_import_document_wrapper},
     # Calendar/Task (optional — 認証情報や依存パッケージ欠落時はスキップ)
     # tool_get_calendar に parallel_safe を付けない理由 (取得系なのに例外扱い):
     #   主経路は gws CLI だが、失敗時のフォールバック _tool_get_calendar_legacy →

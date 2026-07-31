@@ -11,3 +11,8 @@
 # インストール:
 #   py -m pip install -r requirements-docling.txt
 docling>=2.0.0
+
+# tools/tool_document.py の check_document_caps() が変換前にPDFのページ数を
+# 見るために使う (純Python・軽量なのでdocling本体とは別枠でここに置く)。
+# 未導入でもページ数チェックを握りつぶしてスキップするだけなので必須ではない。
+pypdf>=4.0.0

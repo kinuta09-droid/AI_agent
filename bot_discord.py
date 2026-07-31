@@ -1043,6 +1043,16 @@ async def cmd_paper_digest(interaction: discord.Interaction, index: int = 1,
     await bot_commands_tools.cmd_paper_digest(interaction, index, arxiv_id, mode)
 
 
+@tree.command(name="doc", description="PDF/Office文書を添付してdoclingで変換→Gemini要約→Vault保存")
+@app_commands.describe(
+    attachment="変換したい文書 (PDF/DOCX/PPTX)",
+    folder="保存先フォルダ (Vault相対パス, デフォルト: 30_Main)",
+)
+async def cmd_doc(interaction: discord.Interaction, attachment: discord.Attachment,
+                  folder: str = "30_Main"):
+    await bot_commands_tools.cmd_doc(interaction, attachment, folder)
+
+
 @tree.command(name="browse", description="URLを開いてAIで情報抽出（JS動的ページ・SPAに対応）")
 @app_commands.describe(
     url="取得するURL",
