@@ -28,7 +28,7 @@ Claude Code を起動して:
 | # | 内容 | 状態 | 実施日 | 備考 / 実測値 |
 |---|---|---|---|---|
 | 0-0 | ベンチスクリプトの用意 | **完了** | 2026-07-30 | `scripts/bench_docling.py` (リモートで実装・docling 不在時は手順を出して exit 1) |
-| 0-1 | torch (CPU版) + docling インストール | 未着手 | | **実機のみ** |
+| 0-1 | torch (CPU版) + docling インストール | **完了** | 2026-07-31 | `torch==2.13.0+cpu` (`cuda.is_available()==False`) / `docling==2.117.0` |
 | 0-2 | モデル事前DL + `DOCLING_ARTIFACTS_PATH` 設定 | 未着手 | | **実機のみ** |
 | 0-3 | 実物3検体でベンチ (`scripts/bench_docling.py`) | 未着手 | | 出力の Markdown 表を下の記入欄に貼る |
 | 0-4 | **Go / No-Go 判定** | 未着手 | | |
