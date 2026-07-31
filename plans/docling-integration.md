@@ -32,7 +32,7 @@ Claude Code を起動して:
 | 0-2 | モデル事前DL + `DOCLING_ARTIFACTS_PATH` 設定 | **完了** | 2026-07-31 | `models/docling` (1.3GB・gitignore対象) に配置。`.env` に `DOCLING_ARTIFACTS_PATH=C:\AI_agent\models\docling` を追記 (Phase 1 で `lib/paths.py` 経由の読み込みを実装予定) |
 | 0-3 | 実物3検体でベンチ (`scripts/bench_docling.py`) | **完了** | 2026-07-31 | 3検体成功・目視確認済 (下記記入欄)。副産物でCドライブ枯渇(250MB)を発見・復旧 |
 | 0-4 | **Go / No-Go 判定** | **完了 (Go)** | 2026-07-31 | 表構造化・日本語とも良好。速度はarXiv論文のみ120秒をわずかに超過 → 同期実行しない設計(Phase2で`defer()`済み)で対応。詳細は下記 |
-| 1 | 変換層の一般化 (ローカル対応・mtimeキャッシュ・表の保持) | 未着手 | | |
+| 1 | 変換層の一般化 (ローカル対応・mtimeキャッシュ・表の保持) | **完了** | 2026-07-31 | `lib/docling_client.py` 全面改修 + `lib/paths.py` に `DOCLING_ARTIFACTS_PATH` 追加。`tests/test_docling_client.py` 新設 (8件、旧 `test_paper_radar.py` [9] を移設)。詳細は下記 |
 | 2 | `tool_document.py` + registry + Discord `/doc` | 未着手 | | |
 | 3-0 | サイドカー変換 (方式A) + スケジューラ 03:05 ジョブ | 未着手 | | インデクサ本体は触らない |
 | 3-1 | **チャンカーの表分割修正** (docling 非依存) | **完了** | 2026-07-30 | `tool_vault_index` + `tests/test_vault_chunking.py` に11件追加。実機では**再インデックス**が要る (下記) |
@@ -286,6 +286,52 @@ Python 側ピークメモリ (torch のネイティブ確保は含まない) / �
 - docling 不在 → HTML → 全滅で `CaptureError`、の順序 (既存 `test_paper_radar.py` [9] から移設)
 - 表を含む変換結果で `tables` が埋まり、`text` 側の互換が保たれること
 
+### 実装結果 (2026-07-31)
+
+1〜6 すべて実装。実機に docling 2.117.0 (`antigravity_env`) が入っている利点を
+使い、`PdfPipelineOptions` / `PdfFormatOption` / `TableItem` の実 API シグネチャを
+確認した上でコードを書いた (`py` = システム Python には docling が無いので、
+テストは全てスタブで完結させ、テスト実行そのものは docling 不要のまま)。
+
+- **キャッシュキー**: `_resolve_cache_key()` が `os.path.isfile()` でローカル/URLを
+  判定し、ローカルなら `(path, mtime_ns, size)`、URLなら文字列そのものをキーに使う。
+  加えて `ocr`/`table_structure` もキーに含めた (計画書にない追加判断: オプションが
+  違えば出力が変わるため、これをキーから外すと「OCR切替のつもりが古い変換結果を
+  掴む」新種の無言の嘘を作ってしまう)
+- **変換器キャッシュ**: `_get_converter(ocr, table_structure)` を `(ocr, table_structure)`
+  キーの辞書に変更 (旧実装はグローバル単一インスタンスで、オプション別の
+  変換器を作れなかった)
+- **artifacts_path**: `lib/paths.py` に `DOCLING_ARTIFACTS_PATH` を追加。
+  他の外部パス (`VAULT_ROOT`/`BITNET_DIR`) と違い**既定値を持たせていない**
+  (`.env` 未設定なら `None` → docling 本体の既定解決に委ねる。計画書 3 の
+  「未設定なら現行挙動のまま」を字義通りに実装)
+- **表の保持**: `convert_with_docling()` の戻り値を `str` → `dict` に変更
+  (`{"text":..., "tables":[...]}`)。`TableItem.export_to_markdown(doc)` /
+  `caption_text(doc)` / `export_to_dataframe(doc).to_csv()` はいずれも
+  `doc` 引数必須と実機で確認済み (docstring 上の想定どおり)。1表の抽出失敗は
+  握りつぶして残りを返す (本文と他の表を巻き込まない)
+- **表のキャッシュ**: 本文キャッシュ (`.md`) とは別に `.tables.json` サイドカーへ
+  保存。表が無い変換では書き込みをスキップする (空ファイルの氾濫を避ける)
+- **スレッド数制御 (項目4)**: `os.environ` は一切触れていない。数値を明示的に
+  制御する具体要件が計画書に無かったため、「触らない」を守るだけに留めた
+  (docling の `AcceleratorOptions` 既定に委ねる)。将来スレッド数の指定が
+  必要になったら `PdfPipelineOptions(accelerator_options=...)` に足す
+- **`convert_with_docling` の呼び出し元互換**: 戻り値の型が変わったため、
+  既存の `tests/test_paper_radar.py` の2テストがスタブの形で衝突した
+  (`lambda source: "x"*5000` が新シグネチャの `ocr`/`table_structure` kwargs を
+  受け取れず落ちた)。docling_client 内部の挙動を検証するテストなので
+  `tests/test_docling_client.py` へ移設し、新シグネチャに合わせて更新した。
+  `tools/tool_paper_digest.py` は `capture["text"]`/`capture["backend"]` しか
+  見ていないため無改修で動く (`tables` キーの追加は非破壊)
+
+**検証**: `py tests/test_docling_client.py` (8件・新規) / `py tests/test_paper_radar.py`
+(15件・移設後) いずれも緑。`py verify_project.py` 緑 (ALL SYSTEMS GO)。
+`tests/test_*.py` 全73本のスイープも実施し **72/73 緑**。唯一の失敗
+(`test_bitnet_practical.py`) は本 Phase の変更 (`docling`/`lib.paths` 未参照) と
+無関係な既存不具合 (`sys.stdout.reconfigure` 未設定によるコンソール cp932
+UnicodeEncodeError + 実 BitNet バイナリ依存) と切り分け済み。別タスクとして
+起票した (このリポジトリの範囲外の修正なので Phase 1 の一部にはしない)。
+
 ---
 
 ## Phase 2: エージェントのツールにする
@@ -463,10 +509,11 @@ Gemini を使う側は、3-1 だけでは足りないと実測できてから着
 
 ## Verification — 各フェーズで「動いた」と言える根拠
 
-- [ ] **Phase 0**: `py scripts/bench_docling.py` の出力 (3検体の秒数・文字数・表数) を
+- [x] **Phase 0**: `py scripts/bench_docling.py` の出力 (3検体の秒数・文字数・表数) を
       本計画書に貼る。`torch.cuda.is_available() == False` を確認
-- [ ] **Phase 1**: `py tests/test_docling_client.py` 緑。同じパスのファイルを
-      更新 → 再変換されること (mtime キャッシュの実挙動)
+- [x] **Phase 1**: `py tests/test_docling_client.py` 緑 (8件・新規)。同じパスのファイルを
+      更新 → 再変換されること (mtime キャッシュの実挙動、テスト内でスタブ経由で確認済み。
+      実ファイル更新での実機確認は Phase 2 で実データを扱う際に兼ねる)
 - [ ] **Phase 2**: `py verify_project.py` (フル) 緑。Discord で実際に PDF を添付 → 要約が返る。
       `py tests/test_document_tool.py` 緑
 - [ ] **Phase 3-1**: `py tests/test_vault_chunking.py` 緑。1200字超の表が
@@ -475,7 +522,9 @@ Gemini を使う側は、3-1 だけでは足りないと実測できてから着
 - [ ] **Phase 3**: `py scripts/eval_retrieval.py` の before/after を並べる。
       PDF 由来クエリ・**表クエリ**が当たり、既存クエリが劣化していないこと。
       3-1 だけで表クエリが通るなら 3-2 は**やらない**
-- [ ] **全体**: `tests/test_*.py` スイープ (現在70本) が緑
+- [x] **全体 (Phase 1 時点)**: `tests/test_*.py` スイープ (現在73本。Phase 1 で
+      `test_docling_client.py` を新設) 72/73 緑。唯一の失敗は無関係な既存不具合
+      (上記 Phase 1 実装結果に詳細・別タスク起票済み)
 - [ ] **最重要**: `py -m pip uninstall docling` した状態で上記スイープが**そのまま緑**。
       docling は「あれば品質が上がる」オプションであって、
       **無いと壊れる依存にしない**。これが崩れたら設計が失敗している

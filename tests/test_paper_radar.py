@@ -243,72 +243,8 @@ def test_digest_markdown_marks_abstract_only_capture():
     print("✅ [8] render_digest_markdown: 取得経路が本文に必ず出る")
 
 
-# ---------------------------------------------------------
-# [9] docling 不在時のフォールバック順序
-# ---------------------------------------------------------
-
-def test_capture_document_falls_back_to_html_then_raises():
-    """docling が無ければ HTML、HTML も駄目なら CaptureError。
-
-    「docling が無い環境」が既定なので、この経路が黙って壊れると
-    論文機能そのものが無言で死ぬ。
-    """
-    calls = []
-
-    class _Resp:
-        status_code = 200
-        encoding = "utf-8"
-        text = "<html><article>" + ("本文です。" * 200) + "</article></html>"
-
-        def raise_for_status(self):
-            return None
-
-    def _fake_get(url, **kwargs):
-        calls.append(url)
-        return _Resp()
-
-    orig_available, orig_get = docling_client.is_available, docling_client.requests.get
-    docling_client.is_available = lambda: False
-    docling_client.requests.get = _fake_get
-    try:
-        result = docling_client.capture_document(
-            "https://arxiv.org/pdf/2607.00060",
-            ["https://arxiv.org/html/2607.00060v1"],
-            use_cache=False,
-        )
-        assert result["backend"] == "html", result
-        assert calls == ["https://arxiv.org/html/2607.00060v1"], calls
-        assert any("docling が未インストール" in w for w in result["warnings"]), result["warnings"]
-
-        # HTML も無い → 例外 (静かに空文字を返さない)
-        raised = False
-        try:
-            docling_client.capture_document("https://arxiv.org/pdf/x", [], use_cache=False)
-        except docling_client.CaptureError:
-            raised = True
-        assert raised, "全経路失敗なのに CaptureError が飛んでいない"
-    finally:
-        docling_client.is_available = orig_available
-        docling_client.requests.get = orig_get
-    print("✅ [9] capture_document: docling→HTML→例外 の順に劣化する")
-
-
-def test_capture_document_truncates_and_reports():
-    """max_chars で切ったことを truncated と warnings で申告すること。"""
-    orig_available = docling_client.is_available
-    orig_convert = docling_client.convert_with_docling
-    docling_client.is_available = lambda: True
-    docling_client.convert_with_docling = lambda source: "x" * 5000
-    try:
-        result = docling_client.capture_document("dummy.pdf", [], max_chars=1000, use_cache=False)
-    finally:
-        docling_client.is_available = orig_available
-        docling_client.convert_with_docling = orig_convert
-    assert result["truncated"] is True and len(result["text"]) == 1000, result
-    assert result["chars"] == 5000, "chars は切る前の全長であること"
-    assert any("先頭 1000 文字" in w for w in result["warnings"]), result["warnings"]
-    print("✅ [9] capture_document: 切り詰めを申告する")
-
+# [9] docling 不在時のフォールバック順序 / 切り詰め申告は lib/docling_client.py
+# 内部の挙動なので tests/test_docling_client.py へ移設した (Phase 1)。
 
 # ---------------------------------------------------------
 # [10] 既出キャッシュ (本番 logs を汚さない)
