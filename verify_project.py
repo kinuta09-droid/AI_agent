@@ -399,8 +399,10 @@ def check_import(module_name):
 # モジュールが ccxt / pandas / google.genai を引き連れてくるからで、27回とも
 # **同じ重量級スタックをゼロからロードし直していた**のが本当の原因。
 #
-# 実測 (2026-07-30・master 241c8e3):
-#   個別27プロセス 164.69秒 / 8並列 30.03秒 / **1プロセスにまとめて 6.98秒**
+# 実測:
+#   旧実装のフル (35プロセス) ... 164.69秒 (master 241c8e3) / 172.40秒 (master d6a3f46)
+#   ユニーク27件を8並列 ....... 30.03秒
+#   ユニーク27件を1プロセス ... **6.98秒** (バッチ化後のフル実測 7.5秒)
 # つまり並列化はバッチ化に4倍負ける。16コアあっても、各プロセスが同じ依存を
 # 独立にロードする無駄は消えないため。**ここを取り違えて並列化に走らないこと。**
 #
@@ -490,7 +492,8 @@ def run_import_batch(specs):
         # encoding/errors は必須 (LEVEL 1)。text=True だけだとロケール既定で
         # 復号するため、日本語を含む traceback が cp1252 の CI runner で
         # UnicodeDecodeError になり **失敗の理由だけが消える** (2026-07-30 に実際に踏んだ)。
-        proc = subprocess.run(cmd_batch(), input=payload, capture_output=True,
+        cmd = [PYTHON_EXE, "-c", _BATCH_WORKER_SRC]
+        proc = subprocess.run(cmd, input=payload, capture_output=True,
                               encoding='utf-8', errors='replace',
                               cwd=str(ROOT_DIR), timeout=_BATCH_TIMEOUT_SEC)
         stdout, stderr = _as_text(proc.stdout), _as_text(proc.stderr)
@@ -519,10 +522,6 @@ def run_import_batch(specs):
         note = ("バッチが完走しませんでした (import 中にプロセスごと落ちた可能性)"
                 + (f"\n{tail}" if tail else ""))
     return results, note
-
-
-def cmd_batch():
-    return [PYTHON_EXE, "-c", _BATCH_WORKER_SRC]
 
 
 def _isolated(module_name):
@@ -757,6 +756,7 @@ def run_import_checks(errors):
 
     Returns: バッチ結果 {module: レコード} — [6] が同じ結果を読むために返す。
     """
+    _ISOLATED_CACHE.clear()
     registry = load_tools_registry(errors)
     critical_modules = list(CRITICAL_MODULES)
 
