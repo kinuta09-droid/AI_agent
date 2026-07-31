@@ -1,9 +1,37 @@
 name: Tests
 
+# docs だけの変更で CI を回さない (2026-07-31)。
+# 実測 (run 30623715101): docs 3行の PR が 358 job秒 = private+Windows で12課金分、
+# しかも PR run と merge push run で2回走っていた。
+#
+# **これは «下駄» ではなく «検証済みの宣言» である**ことを機械的に縛ってある:
+# `tests/test_ci_docs_exemption.py` が
+#   (a) ここの paths-ignore が下の宣言リストと一致しているか
+#   (b) 追跡下の .md を読む Python が tests/ verify_project.py scripts/ に無いか
+# を ast で検査する。将来「テストが読む .md」が1本でも入ったら、CI 設定より先に
+# そのテストが赤くなる。前提が崩れたまま黙って skip し続ける経路を作らない。
+#
+# `**.md` にしている理由: GitHub の path filter で «どこにあっても .md» を表す
+# documented な書き方はこれ。`**/*.md` はルート直下の CLAUDE.md を
+# 取りこぼす実装があるので使わない。
+#
+# workflow_dispatch には path filter が効かない = **手動なら常に全部走らせられる**。
+# docs 変更でどうしても回したいときの逃げ道はここ (UI の Run workflow)。
+#
+# 将来 Pro 化 / public 化して branch protection の required check を入れるときは
+# **この paths-ignore をそのままにしてはいけない**: skip された PR は
+# 「Expected — Waiting for status」で永久に固まる。そのときは同名のダミージョブ
+# (`if: always()` で即 success) を足す形に組み替えること。
+# 現在このリポジトリは private + 無料プランで branch protection が使えず、
+# required check が存在しないので、この形で安全。
 on:
   push:
     branches: [master, main]
+    paths-ignore:
+      - '**.md'
   pull_request:
+    paths-ignore:
+      - '**.md'
   workflow_dispatch:
 
 # 同じ PR ブランチの古い run を殺す (2026-07-31)。PR に push し直したとき、
@@ -52,6 +80,22 @@ jobs:
           # guardian と tests は同じキーになるので、初回は両ジョブが同時に
           # save を試みて片方が "Unable to reserve cache" を warning で出す。
           # **これは失敗ではない** (先に保存した方が勝ち、次回から両方 hit する)。
+          #
+          # **効果は見込みより遥かに小さかった (実測・訂正 2026-07-31)**:
+          # 導入時に「140秒 -> 15秒」と見込んだが、cache hit した run 30626073521 は
+          # 66秒 + 62秒 = 128秒で、**縮んだのは12秒だけ**。内訳を追うと:
+          #     0.0 -> 11.8秒  解決 + メタデータ (全て "Using cached" = DL ゼロ)
+          #    11.8 -> 64.6秒  **Installing collected packages (78個)**
+          # つまり律速はダウンロードではなく **Windows の site-packages への展開**で、
+          # pip のダウンロードキャッシュは原理的にここを縮められない。
+          # (キャッシュ復元自体にも 102MB / 約6秒かかっており、その分を食っている)
+          #
+          # 本気で潰すなら **venv ごとキャッシュする** (actions/cache で
+          # site-packages を保存) しかないが、requirements.txt はほぼ未固定なので
+          # 「requirements.txt が変わるまで CI が同じ依存を掴み続ける」状態になる。
+          # それは下の «バージョンを固定しない» という性質と真っ向から衝突するので、
+          # **やるなら «依存を pin する» とセットで判断すること**。
+          # 12秒のために意味論を変えない、と判断して今はここで止めてある。
           cache: pip
       - run: pip install -r requirements.txt
       - name: verify_project.py
