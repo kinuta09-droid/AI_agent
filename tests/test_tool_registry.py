@@ -89,6 +89,14 @@ MUST_NOT_BE_PARALLEL_SAFE = {
     "tool_curate_topics", "tool_xtrend", "tool_xtrend_prompt",
     "tool_future_search", "tool_browser_use", "tool_generate_briefing",
     "tool_add_event", "tool_create_task",
+    # Paper Radar は Gemini を呼ばない読み取り中心のツールだが、Obsidian の
+    # レポートと logs/paper_radar_latest.json を書く。Digest はその JSON を
+    # 読んでノート/下書きを書き、seen キャッシュも更新する (順序依存)。
+    "tool_paper_radar", "tool_paper_digest",
+    # 汎用ドキュメント変換 (Phase 2)。tool_read_document も一見読み取り専用だが
+    # docling の変換キャッシュ (logs/paper_cache) へ書き込む。tool_import_document
+    # はさらに Vault にノートを書く。
+    "tool_read_document", "tool_import_document",
 }
 
 

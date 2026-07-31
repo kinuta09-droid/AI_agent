@@ -83,6 +83,42 @@ def _tool_xtrend_prompt_wrapper(feature_index: int = 1) -> str:
         return f"[xtrend_prompt error] {e}"
 
 
+def _tool_paper_radar_wrapper(field: str = "", top_k: int = 5, days: int = 7) -> str:
+    """分野の注目論文を指標 (HF upvote / 被引用速度 / 新しさ) で判別する。"""
+    try:
+        from tools.tool_paper_radar import run_paper_radar
+        return run_paper_radar(field=field, top_k=int(top_k), days=int(days))
+    except Exception as e:
+        return f"[paper_radar error] {e}"
+
+
+def _tool_paper_digest_wrapper(index: int = 1, arxiv_id: str = "", mode: str = "sns") -> str:
+    """注目論文を docling でキャプチャ→要約→SNS/note下書きまで作る。"""
+    try:
+        from tools.tool_paper_digest import run_paper_digest
+        return run_paper_digest(index=int(index), arxiv_id=arxiv_id, mode=mode)
+    except Exception as e:
+        return f"[paper_digest error] {e}"
+
+
+def _tool_read_document_wrapper(path_or_url: str, ocr: bool = False) -> str:
+    """任意のPDF/Office文書 (URL/ローカルパス) をdoclingでMarkdown化して返す (ノートは保存しない)。"""
+    try:
+        from tools.tool_document import tool_read_document
+        return tool_read_document(path_or_url, ocr=bool(ocr))
+    except Exception as e:
+        return f"[read_document error] {e}"
+
+
+def _tool_import_document_wrapper(path_or_url: str, folder: str = "30_Main") -> str:
+    """任意のPDF/Office文書を変換→Gemini要約→Vaultにノート保存する(元ファイルへの参照付き)。"""
+    try:
+        from tools.tool_document import tool_import_document
+        return tool_import_document(path_or_url, folder=folder)
+    except Exception as e:
+        return f"[import_document error] {e}"
+
+
 def _tool_curate_wrapper() -> str:
     """The Curator のトピック提案をReActツールとして公開する。"""
     try:
@@ -157,6 +193,20 @@ TOOL_ENTRIES = [
      "func": _tool_xtrend_wrapper},
     {"name": "tool_xtrend_prompt", "usage": "tool_xtrend_prompt(feature_index=1)", "description": "XTrend分析済み機能(1始まりの番号)のClaude Code実装指示書をGeminiで生成してlogsに保存",
      "func": _tool_xtrend_prompt_wrapper},
+    # 論文レーダー/ダイジェスト。radar は Gemini を呼ばない (arXiv/HF/S2 の公開API
+    # のみ・課金ゼロ) が、Obsidian と候補JSONへ書くので parallel_safe は付けない。
+    {"name": "tool_paper_radar", "usage": "tool_paper_radar(field='ai_agent', top_k=5, days=7)",
+     "description": "指定分野の注目論文を自動判別: arXiv新着 × HuggingFace upvote × 被引用速度 × 新しさでスコアリングしてObsidianに保存",
+     "func": _tool_paper_radar_wrapper},
+    {"name": "tool_paper_digest", "usage": "tool_paper_digest(index=1, arxiv_id='', mode='sns')",
+     "description": "注目論文の本文をdoclingでキャプチャし要約→Obsidian保存→X投稿スレッド/note記事の下書きを生成 (mode: sns/note/both/none)",
+     "func": _tool_paper_digest_wrapper},
+    {"name": "tool_read_document", "usage": "tool_read_document(path_or_url, ocr=False)",
+     "description": "PDF/Office文書 (URLまたはローカルパス) をdoclingでMarkdown化して返す。ノートには保存しない読み取り専用（本文を読んで判断したいときに使う）",
+     "func": _tool_read_document_wrapper},
+    {"name": "tool_import_document", "usage": "tool_import_document(path_or_url, folder='30_Main')",
+     "description": "PDF/Office文書 (URLまたはローカルパス) をdoclingで変換しGeminiで要約してObsidianにノート保存する（元ファイルへの参照付き）",
+     "func": _tool_import_document_wrapper},
     # Calendar/Task (optional — 認証情報や依存パッケージ欠落時はスキップ)
     # tool_get_calendar に parallel_safe を付けない理由 (取得系なのに例外扱い):
     #   主経路は gws CLI だが、失敗時のフォールバック _tool_get_calendar_legacy →

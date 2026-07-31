@@ -52,3 +52,10 @@ VAULT_ROOT = os.getenv("OBSIDIAN_VAULT_ROOT", "").strip() or DEFAULT_VAULT_ROOT
 # BitNet b1.58 のインストール先 (llama-cli.exe と gguf モデルの親)
 DEFAULT_BITNET_DIR = r"C:\BitNet"
 BITNET_DIR = os.getenv("BITNET_DIR", "").strip() or DEFAULT_BITNET_DIR
+
+# docling のモデルアーティファクト置き場。他の2つと違い既定値を持たない —
+# 未設定なら docling 本体の既定 (HuggingFace Hub から都度解決) に委ね、
+# 「lib/paths.py を経由するだけで挙動が変わる」ことを避ける
+# (plans/docling-integration.md Phase 1-3)。設定する場合は .env に1行:
+#   DOCLING_ARTIFACTS_PATH=C:\AI_agent\models\docling
+DOCLING_ARTIFACTS_PATH = os.getenv("DOCLING_ARTIFACTS_PATH", "").strip() or None

@@ -211,16 +211,105 @@ def _chunk_markdown(text: str, max_chars: int = CHUNK_MAX_CHARS,
     return chunks
 
 
+def _is_table_delimiter(line: str) -> bool:
+    """Markdown 表の区切り行 (`|---|:---:|`) か。
+
+    水平線 `---` を誤検知しないよう **`|` を必須**にしてある
+    (`---` 単独は表ではなくセクション区切り)。
+    """
+    s = line.strip()
+    return bool(s) and "|" in s and "-" in s and set(s) <= set("|-: \t")
+
+
+def _table_start_index(lines: list):
+    """行リストの中で「ヘッダ行 + 区切り行」が始まる位置。無ければ None。
+
+    GFM の表はヘッダの直後に区切り行が来る、という一点だけで判定する。
+    セル内容には何が入っていてもよい。
+    """
+    for i in range(len(lines) - 1):
+        if "|" in lines[i] and _is_table_delimiter(lines[i + 1]):
+            return i
+    return None
+
+
+def _split_table_block(text: str, max_chars: int):
+    """表を含む段落を「行単位」で分割し、各片にヘッダ行を再掲する。
+
+    **なぜ必要か** (2026-07-30):
+      Markdown の表は空行を含まない1ブロックなので、_split_by_paragraphs から
+      見ると「巨大な単一段落」に見える。従来はそのままハードスプリット
+      (`para[:max_chars]`) に落ちていたため、**行の途中で切断され、2片目以降が
+      ヘッダ行を失っていた**。検索でヒットしても `| 3 | 0.82 | 0.71 |` のように
+      列名の無い数字の羅列になり、LLM には解釈できない。
+      表が壊れていること自体はログにも出ないので、誰も気付けない。
+
+    設計上の割り切り:
+      1行が単体で max_chars を超える場合、**その行は割らずにそのまま出す**
+      (max_chars を超えるチャンクが1つできる)。行の途中で切るのは、まさに今
+      直そうとしている壊れ方そのものなので、長さの制約より行の完全性を優先する。
+      埋め込みモデル (bge-m3) の入力長は 1200 字よりはるかに大きいので実害はない。
+
+    Returns:
+        [str, ...] 分割後の断片。表として解釈できなければ None
+        (呼び出し側は従来のハードスプリットにフォールバックする)
+    """
+    lines = text.split("\n")
+    start = _table_start_index(lines)
+    if start is None:
+        return None
+
+    pieces = []
+    preamble = "\n".join(lines[:start]).strip()
+    if preamble:
+        # 表の前にある地の文 (キャプション等) は表と切り離して1片にする。
+        # ここを表側に混ぜるとヘッダ再掲のたびに重複して埋め込まれる。
+        # 地の文が単体で上限を超えるときは従来どおり文字位置で割ってよい
+        # (行の完全性を守る必要があるのは表だけ)。
+        while len(preamble) > max_chars:
+            pieces.append(preamble[:max_chars])
+            preamble = preamble[max_chars:]
+        if preamble.strip():
+            pieces.append(preamble)
+
+    header = "\n".join(lines[start:start + 2])
+    rows = [ln for ln in lines[start + 2:] if ln.strip()]
+
+    current_rows = []
+    current_len = len(header)
+    for row in rows:
+        if current_rows and current_len + 1 + len(row) > max_chars:
+            pieces.append(header + "\n" + "\n".join(current_rows))
+            current_rows = []
+            current_len = len(header)
+        current_rows.append(row)
+        current_len += 1 + len(row)
+    if current_rows:
+        pieces.append(header + "\n" + "\n".join(current_rows))
+    return pieces
+
+
 def _split_by_paragraphs(text: str, max_chars: int, overlap: int) -> list:
     """段落(\\n\\n)境界で貪欲に詰めながら max_chars 以下に分割する。
 
     直前チャンクの末尾 overlap 文字を次チャンクの先頭に引き継ぐ。
     単一段落が max_chars を超える場合はハードスプリットする。
+    ただし **表だけは行単位で分割しヘッダを再掲する** (_split_table_block)。
     """
     paragraphs = text.split("\n\n")
     pieces = []
     current = ""
     for para in paragraphs:
+        # 上限超えの段落が表なら、文字位置ではなく行単位で割る
+        if len(para) > max_chars:
+            table_pieces = _split_table_block(para, max_chars)
+            if table_pieces is not None:
+                if current:
+                    pieces.append(current)
+                    current = ""
+                pieces.extend(table_pieces)
+                continue
+
         # 単一段落が上限を超える場合はハードスプリット
         while len(para) > max_chars:
             head, para = para[:max_chars], para[max_chars - overlap:]

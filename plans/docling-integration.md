@@ -1,0 +1,736 @@
+# Docling 導入計画 — エージェントの標準ドキュメント取り込み経路にする
+
+ブランチ: `claude/docling-paper-capture-system-fbb3ug`
+
+## 役割分担 — どのセッションが何をやるか
+
+| セッション | 環境 | やること |
+|---|---|---|
+| **リモートセッション** (Linux サンドボックス) | ネットワーク制限あり・GPU無し・Vault無し | この計画書のコミットと、Phase 1〜3 の**コード実装**。ただし docling 本体は入れられない (実測は不可) |
+| **実機セッション** (Windows / `C:\AI_agent`) | 本番 Vault・GPU・Ollama | **Phase 0 の実測と Go/No-Go 判定**、および各 Phase の検証 |
+
+### 実機セッションの始め方
+```
+cd C:\AI_agent
+git fetch origin claude/docling-paper-capture-system-fbb3ug
+git checkout claude/docling-paper-capture-system-fbb3ug
+```
+Claude Code を起動して:
+> `plans/docling-integration.md` を読んで、進捗表の「未着手」の先頭から始めて
+
+---
+
+## 進捗表 — **中断・再開はここを見る**
+
+各 Phase を終えたら**この表を更新してコミットする**。次のセッションは
+この表だけ読めば、どこから再開すればよいか分かる (会話履歴に依存しない)。
+
+| # | 内容 | 状態 | 実施日 | 備考 / 実測値 |
+|---|---|---|---|---|
+| 0-0 | ベンチスクリプトの用意 | **完了** | 2026-07-30 | `scripts/bench_docling.py` (リモートで実装・docling 不在時は手順を出して exit 1) |
+| 0-1 | torch (CPU版) + docling インストール | **完了** | 2026-07-31 | `torch==2.13.0+cpu` (`cuda.is_available()==False`) / `docling==2.117.0` |
+| 0-2 | モデル事前DL + `DOCLING_ARTIFACTS_PATH` 設定 | **完了** | 2026-07-31 | `models/docling` (1.3GB・gitignore対象) に配置。`.env` に `DOCLING_ARTIFACTS_PATH=C:\AI_agent\models\docling` を追記 (Phase 1 で `lib/paths.py` 経由の読み込みを実装予定) |
+| 0-3 | 実物3検体でベンチ (`scripts/bench_docling.py`) | **完了** | 2026-07-31 | 3検体成功・目視確認済 (下記記入欄)。副産物でCドライブ枯渇(250MB)を発見・復旧 |
+| 0-4 | **Go / No-Go 判定** | **完了 (Go)** | 2026-07-31 | 表構造化・日本語とも良好。速度はarXiv論文のみ120秒をわずかに超過 → 同期実行しない設計(Phase2で`defer()`済み)で対応。詳細は下記 |
+| 1 | 変換層の一般化 (ローカル対応・mtimeキャッシュ・表の保持) | **完了** | 2026-07-31 | `lib/docling_client.py` 全面改修 + `lib/paths.py` に `DOCLING_ARTIFACTS_PATH` 追加。`tests/test_docling_client.py` 新設 (8件、旧 `test_paper_radar.py` [9] を移設)。詳細は下記 |
+| 2 | `tool_document.py` + registry + Discord `/doc` | **完了** | 2026-08-01 | `tools/tool_document.py` 新設・`tests/test_document_tool.py` 新設 (16件)。`py verify_project.py` 緑・`tests/test_*.py` 全74本緑。実PDF (arXiv論文) での手動実機確認済み (下記)。Discord実機確認 (Botプロセス起動しての添付テスト) は未実施 |
+| 3-0 | サイドカー変換 (方式A) + スケジューラ 03:05 ジョブ | **完了** | 2026-08-01 | `tools/tool_document_sidecar.py` 新設 (`sync_document_sidecars`)。`agent_scheduler.py` に03:05ジョブ登録。実機で arXiv論文PDFを配置→変換→サイドカーノート生成を確認。**副産物**: 本番起動チェーン (`py -u main.py`) のシステムPython 3.13に docling が未導入 (`antigravity_env` にしか無い) と判明、torch CPU版+doclingを追加導入し解消。詳細は下記 |
+| 3-1 | **チャンカーの表分割修正** (docling 非依存) | **完了** | 2026-07-30 | `tool_vault_index` + `tests/test_vault_chunking.py` に11件追加。実機で**再インデックス**実施済み (2026-08-01、下記) |
+| 3-2 | 表キャプションを添えて埋め込み | **見送り** | 2026-08-01 | 3-4 の結果、見送りが妥当と判断。理由は下記 |
+| 3-4 | `eval_retrieval` に表/PDFクエリを追加して before/after | **完了** | 2026-08-01 | hit@5 0.8235→0.8824 (+0.059) / mrr@10 +0.053。詳細下記 |
+| 4 | 表の計算経路 (CSV/SQLite) | 保留 | | 数値質問の実需が出たら |
+
+状態は `未着手` / `進行中` / `完了` / `見送り(理由)` のいずれかで書く。
+
+### 実機で最初にやること (0-1 の前でよい)
+
+3-1 (チャンカーの表分割修正) は**コード側は完了しているが、既存のインデックスは
+古いチャンクのまま**。表を含むノートは壊れた状態で埋め込まれているので、
+**再インデックスして初めて効く**。
+
+> ⚠️ **順序が重要**: 再インデックスすると「修正前の検索品質」を測る機会が
+> 永久に失われる。**ベースライン (STEP 1) を先に取ること。**
+> いま実機のインデックスは「修正前のチャンク」なので、**今だけ before が測れる**。
+
+**STEP 1 — before を測る (再インデックスの前に必ず)**
+```bat
+py scripts\eval_retrieval.py > logs\eval_before_table_fix.txt
+```
+表の中身を問うクエリ (「手法Aの精度は」等) が eval セットに無ければ、
+**この時点で追加してから**実行する (3-4 参照)。無い状態で測った before は
+表修正の効果測定には使えない。
+
+**STEP 2 — 全件再構築**
+
+通常の `update_vault_index()` では直らない — 実装を確認済み
+(`tool_vault_index.py:483` `if stored_mtimes.get(rel_path) == mtime: continue`)。
+mtime が変わっていないノートはスキップされるため、チャンカーを直しても
+既存ノートは古いチャンクのまま残る。夜間 03:15 のジョブも差分更新なので同じ。
+
+```bat
+REM インデックスDBを退避 (消すのではなく名前を変える。失敗したら戻せる)
+move logs\vault_index.db logs\vault_index.db.bak-before-table-fix
+
+REM 全件再構築 (ローカル Ollama の埋め込みのみ = API 課金ゼロ。5000件規模で数十分)
+py -c "from tools.tool_vault_index import update_vault_index; print(update_vault_index())"
+```
+
+**STEP 3 — after を測って突き合わせる**
+```bat
+py scripts\eval_retrieval.py > logs\eval_after_table_fix.txt
+py -c "from tools.tool_vault_hybrid import tool_vault_hybrid_search as s; print(s('表 精度 比較'))"
+```
+表クエリが改善し、**既存クエリが劣化していない**ことを確認する。
+問題なければ `.bak-` は削除してよい (劣化していたら STEP 2 の `move` を戻す)。
+
+### Phase 0-3 ベンチ結果 (実機が記入する)
+
+- 実施日: 2026-07-31 23:11
+- 検体: arXiv `attention_is_all_you_need.pdf` (公開論文PDF) / `aboutmidori-jp.pdf`
+  (JITCO「技能実習生のための日本語 みどり」案内・公開PDF) / `0022006-083_11.docx`
+  (国税庁 電子帳簿保存法 事例集・公開Office文書)
+
+| 検体 | 変換秒数 | 出力文字数 | 表の数 | 日本語の可否 | 表がMarkdown tableか |
+|---|---|---|---|---|---|
+| arXiv 英語 PDF | 122.9 | 41376 | 4 | (英語のみ) | ✅ 複雑な数値表4個すべて正しく構造化 (目視確認済) |
+| 日本語 PDF | 116.8 | 3775 | 0 | ✅ 化けなし (CJK率0.759・U+FFFD=0、目視確認済) | (原文に表なし・該当なし) |
+| .docx | 0.3 | 567 | 0 | ✅ 化けなし (CJK率0.806) | (原文に表なし・該当なし) |
+
+`torch.cuda.is_available()` = **False**  /  docling バージョン = **2.117.0**  /  torch = **2.13.0+cpu**
+
+**新しい所見 (計画書の Go/No-Go 表にない事象)**: 英語PDF変換中、ページ11〜15で
+`Stage preprocess failed for run 1, pages [11-15]: std::bad_alloc` が発生し、docling内部の
+自動リトライ (run 2) で最終的に成功した。**ディスク容量が十分ある状態 (18GB空き) での再現**
+なので、初回遭遇時 (空き250MB) のディスク枯渇とは別要因。原因未特定だが自動リトライで
+救済されるため今回は成功扱いとする。Phase 2 でDiscord実運用に載せる際は、
+この種の一時的失敗が**リトライなしで初回失敗する**ケースに備え、変換失敗時のエラー表示
+(`Error:` 前置詞) を確実に返す経路を用意すること。
+
+**副産物**: 実測中に C:ドライブの空き容量が約250MBまで逼迫していることが判明し、
+Temp/npm-cache/pipキャッシュの削除で約18GBまで回復させた (docling本体とは無関係の
+環境問題。日次のディスク監視は本計画の範囲外)。
+
+---
+
+## Context — 今どこまで出来ているか
+
+| 要素 | 状態 |
+|---|---|
+| `lib/docling_client.py` (変換層・段階フォールバック) | 実装済・**未実行**。docling が無いので常に HTML 経路 |
+| `requirements-docling.txt` | 作成済 (`docling>=2.0.0` のみ)。**torch の入れ方は未定義** ← Phase 0 の主題 |
+| `tools/tool_paper_radar.py` / `tool_paper_digest.py` | 実装済。docling が入れば本文品質が上がる (入らなくても動く) |
+| Vault 意味検索 (`tool_vault_index`) | `.md` のみ走査。**PDF/Office は検索対象外** ← Phase 3 の主題 |
+| Discord の添付ファイル処理 | 無し ← Phase 2 の主題 |
+
+つまり「Docling を導入する」とは、**受け皿に本体を入れて、エージェントの3つの入口
+(ツール / Discord / 意味検索) に配線すること**を指す。
+
+---
+
+## Goal
+
+PDF・Office・画像を **Markdown に構造化して取り込む経路をエージェントの標準**にする。
+到達点は次の3つが実機で動くこと:
+
+1. `/doc` に PDF を添付 → 要約が返り、Vault にノートが残る
+2. Vault に置いた PDF が `/agent` の意味検索でヒットする
+3. docling を**アンインストールしても**全機能が HTML/要旨フォールバックで動き続ける
+   (劣化したことは backend 表示で必ず分かる)
+
+---
+
+## Phase 0: 実機で導入コストを測る ← **判断ゲート。ここが No-Go なら以降はやらない**
+
+### 0-1. torch を CPU 版で先に入れる (推奨・順序が重要)
+
+```bat
+cd C:\AI_agent
+antigravity_env\Scripts\activate
+py -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+py -m pip install -r requirements-docling.txt
+```
+
+**なぜ CPU 版か** (このマシン固有の判断):
+- GPU は Ollama (`bge-m3` 埋め込み) と ComfyUI/LoRA が既に使っている。
+  `tool_activity_index` の docstring にある通り、VRAM 競合は「実行条件が
+  直前の操作で変わる」再現性の悪いバグを生む。docling は日に数本しか回さないので
+  CPU で足りる。
+- CUDA 版 torch は 2.5GB 超。requirements-docling.txt を素で入れると CUDA 版が
+  引かれる可能性があるため、**torch を先に CPU 版で固定してから** docling を入れる。
+
+確認:
+```bat
+py -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+→ `cuda.is_available()` が **False** であること (True なら Ollama と競合しうる)。
+
+> Python 3.13 前提 (`pyrightconfig.json` / CI と同じ)。torch/docling が 3.13 の
+> ホイールを持っているかはこの手順で判明する。入らなければ **No-Go ではなく**
+> 「3.12 の別 venv を docling 専用に切って subprocess 越しに使う」案へ分岐
+> (Phase 0-4 参照)。
+
+### 0-2. モデルを事前ダウンロードする
+
+```bat
+docling-tools models download
+```
+初回変換時に ~1GB のモデル取得が走ると、Discord コマンドが数分無応答になる
+(ユーザーからは「壊れた」と区別がつかない)。**先に落として置き場を固定する**:
+
+`.env` に1行:
+```
+DOCLING_ARTIFACTS_PATH=C:\AI_agent\models\docling
+```
+(Phase 1 でこの環境変数を `lib/docling_client.py` が読むようにする。
+ リポジトリ外の絶対パスなので、**参照するのは `lib/paths.py` 経由**にすること。
+ `verify_project.check_hardcoded_abs_paths()` に引っかかる書き方をしない)
+
+### 0-3. 実物 3 本でベンチを取る
+
+`scripts/bench_docling.py` (**実装済み**) が、指定した実ファイルを変換して
+計測値を `logs/docling_bench_*.json` に、変換結果の Markdown を
+`logs/docling_bench/*.md` (目視用) に残す:
+
+```bat
+py scripts\bench_docling.py paper.pdf 日本語資料.pdf 資料.docx
+py scripts\bench_docling.py --ocr scanned.pdf     REM OCR 有無の比較
+```
+
+| 検体 | 見るところ |
+|---|---|
+| arXiv の英語論文 PDF | 所要時間・表が Markdown table になるか・数式の扱い |
+| **日本語の PDF** (請求書・行政資料など手元のもの) | **文字化けしないか** (cp932 環境で最も壊れやすい) |
+| .docx か .pptx | Office 系が同じ API で通るか |
+
+記録する値: 変換秒数 / 出力文字数 / 表の数 / CJK率 / U+FFFD の個数 /
+Python 側ピークメモリ (torch のネイティブ確保は含まない) / 注記。
+
+表の数は**インデクサと同じ判定器** (`tool_vault_index._is_table_delimiter`) で
+数える。独自に数えると「ベンチでは表3個、インデクサからは0個」という
+食い違いが起きる。
+
+**スクリプトは合否を決めない**。日本語の化けと表の可読性は
+`logs/docling_bench/*.md` を開いて人が判断する (0-4 の判定基準は数値だけでは
+埋まらない)。
+
+### 0-4. Go / No-Go の判定基準
+
+| 条件 | Go | No-Go の場合 |
+|---|---|---|
+| 1本あたり **120秒以内** (CPU) | ✅ | 週次バッチ専用に格下げ (Discord 同期実行はしない) |
+| 日本語が化けない | ✅ | OCR 有効化を試す → それでも駄目なら PDF は HTML/pdfminer 経路に留める |
+| 表が Markdown table になる | ✅ | 構造化の主目的が消えるので **導入見送り** (HTML 経路のままで十分) |
+| torch が Python 3.13 に入る | ✅ | docling 専用 venv + subprocess 経由に設計変更 (Phase 1 の実装が変わる) |
+
+**結果は冒頭の「Phase 0-3 ベンチ結果」表に記入してコミットしてから Phase 1 に進む。**
+実測値を残さないと、後から「なぜ CPU 版なのか」「なぜ週次なのか」が失われる。
+
+> 表が Markdown table にならなかった場合でも、**Phase 3-1 (チャンカーの表分割修正)
+> だけは実施する**。あれは docling とは独立に、既に Vault にある Markdown の表が
+> 壊れている問題を直すものなので、No-Go でも価値が残る。
+
+### 実測結果 (2026-07-31・実機) — 判定: **Go**
+
+| 条件 | 実測 | 判定 |
+|---|---|---|
+| 120秒以内 | arXiv論文 122.9秒 (わずかに超過) / 日本語PDF 116.8秒 / docx 0.3秒 | **条件付きGo**: 超過は英語論文1件のみ、かつ僅差 (+2.9秒)。もともと Phase 2 は `interaction.response.defer()` 前提でDiscord同期実行しない設計なので、実害はない |
+| 日本語が化けない | CJK率0.759・U+FFFD=0、目視で文字化けなし | ✅ Go |
+| 表がMarkdown tableになる | arXiv論文の複雑な数値表4個すべて正しく構造化 (目視確認済) | ✅ Go |
+| torchがPython 3.13に入る | `torch==2.13.0+cpu` 正常インストール | ✅ Go |
+
+**総合判定: Go — Phase 1 に進む。**
+
+**Phase 1 への申し送り事項**:
+1. `DOCLING_ARTIFACTS_PATH` は現状 `bench_docling.py` では表示のみで変換処理には未配線。
+   Phase 1 で `lib/docling_client.py` が実際に `DocumentConverter` へ渡すこと
+   (配線しないと毎回 HuggingFace Hub へダウンロードを試み、オフライン環境や
+   ディスク逼迫時に無言で失敗する)
+2. 変換中に `std::bad_alloc` が一時的に発生し内部リトライで救済されるケースを実機で観測
+   (詳細は上の「Phase 0-3 ベンチ結果」の所見)。**リトライなしで失敗した場合に備え**、
+   `lib/docling_client.py` の変換失敗経路が確実に `CaptureError`/`Error:` 前置詞を
+   返すことをテストで固定する (Phase 1 のテスト項目に追加)
+
+---
+
+## Phase 1: 変換層の一般化 (`lib/docling_client.py`)
+
+現状は「論文PDFのURL」を前提にしている。汎用ドキュメント取り込みに広げる。
+
+1. **ローカルファイル対応 + キャッシュキーの修正 (最優先)**
+   今のキャッシュキーは URL 文字列のみ。ローカルファイルだと
+   **同じパスのファイルを更新しても古い変換結果が返る** = 無言で嘘をつく
+   (CLAUDE.md「表示と実態の食い違い」の同型)。
+   → キーに `(パス, mtime, size)` を含める。
+2. **フォーマット別オプション**: `do_ocr` / `do_table_structure` を引数で受ける。
+   **OCR は既定 off** (数倍遅い)。`ocr=True` を明示したときだけ有効。
+3. **`artifacts_path`** を `DOCLING_ARTIFACTS_PATH` (`lib/paths.py` 経由) から読む。
+   未設定なら docling 既定 = 現行挙動のまま (既存環境に .env 追記を強制しない)。
+4. **スレッド数の制御**: docling の設定オブジェクト経由で行う。
+   `os.environ["OMP_NUM_THREADS"] = ...` は **LEVEL 2 で禁止**
+   (子プロセス全体を汚染する)。どうしても必要なら subprocess の `env=` (LEVEL 1)。
+5. `is_available()` の結果をプロセス内でキャッシュ (今は呼ぶ度に import を試みる)。
+6. **`DoclingDocument` を捨てない (表を活かすための前提)**
+   現行実装は `export_to_markdown()` **だけ**を呼んでおり、変換結果の
+   ドキュメントオブジェクトを即座に平文化して捨てている。
+   その瞬間に **表の構造とキャプションが失われる** ので、表を扱う道が塞がる。
+   → 変換結果から `tables` を別途取り出し、戻り値に
+   `{"text": ..., "tables": [{"markdown":..., "caption":..., "csv":...}, ...]}`
+   の形で同梱する。`text` 側の互換は保つ (既存の呼び出し元を壊さない)。
+   docling 側の正確な API 名 (`doc.tables` / `export_to_dataframe()` /
+   `caption_text()` 等) は **Phase 0 で実物を見て確定する**。
+   ここが取れないなら Phase 3 の L2/L3 は着手しない (材料が無い)。
+
+**テスト** `tests/test_docling_client.py` (新規・docling 不要):
+- mtime が変わったら再変換される / 変わらなければキャッシュが効く
+- `ocr=True/False` がパイプラインオプションに伝わる (スタブで受け取り確認)
+- docling 不在 → HTML → 全滅で `CaptureError`、の順序 (既存 `test_paper_radar.py` [9] から移設)
+- 表を含む変換結果で `tables` が埋まり、`text` 側の互換が保たれること
+
+### 実装結果 (2026-07-31)
+
+1〜6 すべて実装。実機に docling 2.117.0 (`antigravity_env`) が入っている利点を
+使い、`PdfPipelineOptions` / `PdfFormatOption` / `TableItem` の実 API シグネチャを
+確認した上でコードを書いた (`py` = システム Python には docling が無いので、
+テストは全てスタブで完結させ、テスト実行そのものは docling 不要のまま)。
+
+- **キャッシュキー**: `_resolve_cache_key()` が `os.path.isfile()` でローカル/URLを
+  判定し、ローカルなら `(path, mtime_ns, size)`、URLなら文字列そのものをキーに使う。
+  加えて `ocr`/`table_structure` もキーに含めた (計画書にない追加判断: オプションが
+  違えば出力が変わるため、これをキーから外すと「OCR切替のつもりが古い変換結果を
+  掴む」新種の無言の嘘を作ってしまう)
+- **変換器キャッシュ**: `_get_converter(ocr, table_structure)` を `(ocr, table_structure)`
+  キーの辞書に変更 (旧実装はグローバル単一インスタンスで、オプション別の
+  変換器を作れなかった)
+- **artifacts_path**: `lib/paths.py` に `DOCLING_ARTIFACTS_PATH` を追加。
+  他の外部パス (`VAULT_ROOT`/`BITNET_DIR`) と違い**既定値を持たせていない**
+  (`.env` 未設定なら `None` → docling 本体の既定解決に委ねる。計画書 3 の
+  「未設定なら現行挙動のまま」を字義通りに実装)
+- **表の保持**: `convert_with_docling()` の戻り値を `str` → `dict` に変更
+  (`{"text":..., "tables":[...]}`)。`TableItem.export_to_markdown(doc)` /
+  `caption_text(doc)` / `export_to_dataframe(doc).to_csv()` はいずれも
+  `doc` 引数必須と実機で確認済み (docstring 上の想定どおり)。1表の抽出失敗は
+  握りつぶして残りを返す (本文と他の表を巻き込まない)
+- **表のキャッシュ**: 本文キャッシュ (`.md`) とは別に `.tables.json` サイドカーへ
+  保存。表が無い変換では書き込みをスキップする (空ファイルの氾濫を避ける)
+- **スレッド数制御 (項目4)**: `os.environ` は一切触れていない。数値を明示的に
+  制御する具体要件が計画書に無かったため、「触らない」を守るだけに留めた
+  (docling の `AcceleratorOptions` 既定に委ねる)。将来スレッド数の指定が
+  必要になったら `PdfPipelineOptions(accelerator_options=...)` に足す
+- **`convert_with_docling` の呼び出し元互換**: 戻り値の型が変わったため、
+  既存の `tests/test_paper_radar.py` の2テストがスタブの形で衝突した
+  (`lambda source: "x"*5000` が新シグネチャの `ocr`/`table_structure` kwargs を
+  受け取れず落ちた)。docling_client 内部の挙動を検証するテストなので
+  `tests/test_docling_client.py` へ移設し、新シグネチャに合わせて更新した。
+  `tools/tool_paper_digest.py` は `capture["text"]`/`capture["backend"]` しか
+  見ていないため無改修で動く (`tables` キーの追加は非破壊)
+
+**検証**: `py tests/test_docling_client.py` (8件・新規) / `py tests/test_paper_radar.py`
+(15件・移設後) いずれも緑。`py verify_project.py` 緑 (ALL SYSTEMS GO)。
+`tests/test_*.py` 全73本のスイープも実施し **72/73 緑**。唯一の失敗
+(`test_bitnet_practical.py`) は本 Phase の変更 (`docling`/`lib.paths` 未参照) と
+無関係な既存不具合 (`sys.stdout.reconfigure` 未設定によるコンソール cp932
+UnicodeEncodeError + 実 BitNet バイナリ依存) と切り分け済み。別タスクとして
+起票した (このリポジトリの範囲外の修正なので Phase 1 の一部にはしない)。
+
+### /grill 指摘と修正 (2026-08-01)
+
+1. **`_resolve_cache_key()` の TOCTOU** (Critical): `os.path.isfile()` →
+   `os.stat()` の2段呼び出しだったため、間にファイルが消える/ロックされると
+   `os.stat()` が未捕捉の例外を投げ `capture_document()` ごと落ちる経路があった。
+   Phase 2 で Discord 添付を一時ファイルへ落として即変換する運用が入ると、
+   ウイルススキャン等でこの隙間が現実的なタイミングになる。
+   → `os.stat()` 一発 + `stat.S_ISREG()` で判定する形に統一 (ディレクトリを
+   ファイル扱いしてしまう副作用も同時に解消)。回帰テスト2件追加
+   (`test_resolve_cache_key_survives_stat_race` / `_treats_directories_as_non_local`)
+2. **`_get_converter()` の実体が一度もテストされていなかった** (Test Coverage):
+   既存テストは全て `_get_converter` 自体をスタブに差し替えており、
+   `do_ocr`/`do_table_structure`/`artifacts_path` を `PdfPipelineOptions` へ
+   渡す配線そのものは検証対象外だった。`sys.modules` に docling 系モジュールの
+   フェイクを差し込み、`_get_converter` の中身 (import 文含む) を実際に実行させる
+   テストを追加 (`test_get_converter_wires_pipeline_options_via_stubbed_docling_modules`)
+3. **孤児化するキャッシュ** (Nit・対応せず): キー形式変更で旧キャッシュが
+   二度と参照されなくなる。実害は無いので放置 (module docstring に注記のみ追加)
+
+修正後も `tests/test_docling_client.py` (11件に増加) / `tests/test_paper_radar.py`
+(15件) / `verify_project.py` いずれも緑。
+
+---
+
+## Phase 2: エージェントのツールにする
+
+### 2-1. `tools/tool_document.py` (新規)
+| 関数 | 役割 |
+|---|---|
+| `tool_read_document(path_or_url, ocr=False)` | Markdown を返すだけ (ReAct から呼ぶ材料取得) |
+| `tool_import_document(path_or_url, folder='30_Main')` | 変換 → Gemini 要約 → Vault にノート保存 (元ファイルへのリンク付き) |
+
+戻り値契約は既存どおり `"Error: ..."`。`lib.bot_errors.is_failure_result()` が
+拾うことをテストで固定する。
+
+### 2-2. レジストリ
+`lib/tool_registry.py` に 2 エントリ (lazy wrapper)。
+**どちらも `parallel_safe` は付けない** — 変換キャッシュと Vault に書くため。
+`tests/test_tool_registry.py` の `MUST_NOT_BE_PARALLEL_SAFE` に追記
+(これを忘れると `test_parallel_safe_covers_every_entry` が落ちて気付ける)。
+
+### 2-3. Discord `/doc` + 添付ファイル
+- `discord.Attachment` を受け取り、一時ディレクトリへ保存 → 変換 → 要約 → 返信。
+- **`await interaction.response.defer()` を最初に**。docling は数十秒かかるので
+  3秒の interaction token で必ず落ちる (skill `discord-bot-patterns`)。
+- 添付サイズ上限 (25MB) とページ数上限を先に弾く。無制限に受けると
+  数百ページの PDF で CPU を数十分占有する。
+- 一時ファイルは `finally` で削除。
+
+### 実装結果 (2026-08-01)
+
+2-1〜2-3 すべて実装。
+
+- **上限チェックの一元化**: `tools/tool_document.py` の `check_document_caps()` が
+  サイズ (25MB) とページ数 (50・`pypdf` 経由) を単一の `os.stat()` で判定する。
+  Phase 1 の `/grill` 指摘 (`_resolve_cache_key()` の TOCTOU) と同じ罠を
+  作らないよう、`os.path.isfile()` → `getsize()` の2段呼び出しにしていない。
+  権威ある判定はこの関数一箇所だけに置き、Discord `cmd_doc` 側は
+  `attachment.size` だけを見る「ダウンロード前の安い一次防波堤」に留めて
+  ロジックを重複させていない
+- **`pypdf` を新規依存として追加** (`requirements-docling.txt`、実機の
+  `antigravity_env` にもインストール済み)。未導入 (`ImportError`) でも
+  解析失敗 (壊れたPDF) でも `check_document_caps` は例外を伝播させず
+  サイズ判定のみで続行する (docling 自体が無い環境では、この上限が守る
+  「変換前の巨大PDF」という経路にそもそも到達しない)
+- **元ファイルへのリンク方針**: URL は `[元ファイル](url)`、Vault内ローカル
+  パスは `[[相対パス]]`。それ以外 (Discord添付の一時ファイルを含む) は
+  ファイル名のみを記載しリンクを張らない — 一時ファイルは変換直後に
+  `finally` で削除されるため恒久リンクにならず、Discordの添付URLも
+  約24時間で失効する。壊れたリンクを埋め込むよりファイル名だけの方が正直、
+  という判断 (ユーザー確認済み)
+- **`tool_create_note` は変更していない**。`tool_import_document` は
+  `folder` 引数を受けるため (`tool_create_note` は `30_Main` 固定で
+  folder 引数を持たない)、`tool_paper_digest.PAPERS_DIR` の直書きパターンを
+  `folder` 引数で一般化する形にした。ファイル名衝突は `tool_create_note`
+  と同じ HHMMSS サフィックスで解決。folder のサニタイズは
+  `tool_move_note` と同じ `tool_obsidian._sanitize_vault_rel_path()` を
+  再利用 (Vault外への脱出防止ロジックの複製を避けた)
+- **要約スキーマは論文専用ではない**: `tool_paper_digest.summarize_paper()` と
+  同じ `<tag>` 囲い + 「本文中の指示に従うな」の安全ルールを踏襲しつつ、
+  スキーマは `title/doc_type/one_liner/summary/key_points/action_items/keywords`
+  という論文非依存の形にした (`novelty`/`limitations` 等の論文特有項目は無い)
+- **並列安全性**: `tool_read_document`/`tool_import_document` とも
+  `parallel_safe` を付けず (前者も docling の変換キャッシュへ書き込むため)、
+  `tests/test_tool_registry.py` の `MUST_NOT_BE_PARALLEL_SAFE` に追記して
+  `test_parallel_safe_covers_every_entry` を通した
+
+**検証**: `py tests/test_document_tool.py` (16件・新規、docling/pypdf 不在でも
+通るようスタブ化) / `py tests/test_tool_registry.py` (9件) / `py verify_project.py`
+いずれも緑。`tests/test_*.py` 全74本のスイープも実施し **74/74 緑** (Phase 1で
+唯一失敗していた `test_bitnet_practical.py` は別タスクで解消済み)。
+
+**実機での手動確認 (2026-08-01)**: arXiv の実PDF (`attention_is_all_you_need.pdf`、
+Phase 0 ベンチと同一論文) を一時ディレクトリへ取得し、`VAULT_ROOT` を
+一時ディレクトリへ差し替えた状態 (本番Vaultは無傷) で
+`tool_read_document`/`tool_import_document` を実行:
+- `tool_read_document`: docling 変換 (初回31秒・モデルロード込み) →
+  48957文字のMarkdownを取得。ヘッダに `[docling doc capture] 取得経路: docling で全文を構造化 / 48957文字 / 警告: なし` が正しく載る
+- `tool_import_document`: 2回目呼び出しでキャッシュヒット (`backend: cache`) →
+  Gemini要約 (実呼び出し) → `30_Main/2026-08-01_Attention_Is_All_You_Need.md`
+  として保存。本文の要約・要点5件・アクション項目3件・キーワードが
+  いずれも本文に基づいた内容で生成されていることを目視確認済み
+
+**未実施 (次回実機オペレーターのフォローアップ)**: Discord `/doc` の実機確認
+(Botプロセスを起動した状態で実際にPDFを添付するテスト) は、Botの起動が要る
+ため本セッションでは検証できない。
+
+---
+
+## Phase 3: 意味検索への接続 ← **投資対効果が最大**
+
+現状 `tool_vault_index._walk_vault_md()` は `.md` しか歩かないので、
+Vault に PDF を置いても `/agent` の検索には**永久に出てこない**。
+
+### 方式A (推奨): サイドカー変換方式
+Vault の PDF/DOCX/PPTX を検出 → docling で `.md` に変換して
+`99_Assets/Converted/<元のパス>.md` に置く → **既存インデクサがそのまま拾う**。
+
+- 利点: インデクサ本体 (`tool_vault_index`) を1行も触らない = 回帰リスクが最小。
+  変換に失敗しても index は従来通り動く。
+- 変換済みノートの先頭に元ファイルへのリンクと `source: docling` を書く
+  (検索で当たったとき、それが変換物だと分かるようにする)。
+- 新規ジョブ `Document Conversion` をスケジューラの **03:05** に置く
+  (03:15 の Vault Semantic Index の前。順序が逆だと1日遅れて反映される)。
+
+### 方式B (不採用): インデクサに変換を組み込む
+再構築のたびに全 PDF を再変換しかねず、失敗が index 全体を巻き込む。
+
+### 3-1. 表がチャンカーで壊れるのを直す ← **実装済 (2026-07-30)。実機では再インデックスが必要**
+
+**現行コードの実害** (`tools/tool_vault_index.py`):
+- `CHUNK_MAX_CHARS = 1200` / 分割は `_split_by_paragraphs()` が **`\n\n` (空行) 境界**
+- ところが **Markdown の表は空行を含まない1ブロック**。1200字を超える表は
+  単一段落として扱われ、次のハードスプリットに落ちる:
+  ```python
+  while len(para) > max_chars:
+      head, para = para[:max_chars], para[max_chars - overlap:]  # 文字位置で機械的に切断
+  ```
+- 結果、**行の途中で切れ、2片目以降はヘッダ行を失う**。検索でヒットしても
+  `| 3 | 0.82 | 0.71 |` のように列名の無い数字の羅列になり、LLM は解釈できない。
+
+**実装済みの内容** (`tools/tool_vault_index.py`):
+1. `_is_table_delimiter()` / `_table_start_index()` — ヘッダ行の直後が `|---|` かで判定。
+   水平線 `---` を表と誤認しないよう `|` を必須にしてある
+2. `_split_table_block()` — 行単位で分割し、**各片にヘッダ行と区切り行を再掲**。
+   表の前の地の文は別片に分離 (各片に重複させない)
+3. `_split_by_paragraphs()` — 上限超えの段落が表なら上記へ、そうでなければ従来の
+   ハードスプリット (**表以外の挙動は変えない**)
+4. 割り切り: 1行が単体で上限を超える場合は**その行を切らない** (上限超のチャンクが
+   1つできる)。行の途中で切るのは今直している壊れ方そのものなので、
+   長さ制約より行の完全性を優先した。bge-m3 の入力長には十分収まる
+
+**修正前後の実測** (120行の表・`max_chars=1200`):
+
+| | 断片数 | ヘッダを持つ断片 | 2片目の冒頭 |
+|---|---|---|---|
+| 修正前 | 4 | **1** | `値31-4 \|` ← 行の途中から始まる |
+| 修正後 | 4 | **4** | `\| 列1 \| 列2 \| 列3 \| 列4 \|` |
+
+**テスト** `tests/test_vault_chunking.py` に11件追加 (既存9件と合わせ20件):
+- 全チャンクがヘッダ行 + 区切り行を持つ / 行が途中で切れていない
+- 200行が欠落も重複もせず保存される
+- **表を含まない5検体で修正前の実装と完全一致** (修正前のコードをテスト内に
+  `_legacy_split_by_paragraphs` として写し、両方走らせて突き合わせる。
+  宣言ではなく実行で確かめる)
+- 水平線 `---` を表と誤認しない / 上限未満の表は割らない / ヘッダだけの
+  チャンクを作らない / `_chunk_markdown` 経由でも成立する
+
+> **この項目は docling を入れなくても価値がある。** 既に Vault にある
+> Markdown の表が同じ壊れ方をしているので、Phase 0 が No-Go でも効く。
+> ただし**再インデックスするまで効果は出ない** (冒頭「実機で最初にやること」参照)。
+
+### 3-2. 表にキャプションを添えて埋め込む (docling がある場合)
+
+数値の格子はベクトルとして情報が薄く、意味検索でまず釣れない。
+**表の直前に自然文の説明を1行置いてから埋め込む**。
+
+- **第一候補は元文書のキャプション** (`Table 1: ...`)。docling が保持しているので
+  **LLM 呼び出しゼロ** (Phase 1-6 で取り出せるようにしておく)
+- キャプションが無い表**だけ** Gemini で1文生成する。変換キャッシュに乗るので
+  **同じ表につき生涯1回**。`DAILY_GEMINI_CALL_LIMIT` (既定200) を圧迫しない
+- 生成文は「この表は〜の比較で、最良は〜」の形。数値は**表にある値のみ**
+
+### 3-3. チャンク分割の乗り換え判断
+docling には構造を保つ `HybridChunker` があるが、既存の `_chunk_markdown` と二重になる。
+**まずは 3-1 を入れた既存チャンカーで通す**。乗り換えは `scripts/eval_retrieval.py` の
+before/after を測ってから (skill `retrieval-tuning` の作法)。
+
+### 3-4. 検証
+
+`scripts/eval_retrieval.py` に次のクエリを追加する:
+- **表の中身を問うクエリ** (例:「手法Aの精度は」「表の最良値は」)
+- **PDF 由来ノートを狙うクエリ** (3-0 のサイドカー変換が効いているか)
+- 既存クエリは触らない (**劣化していないこと**の確認に使う。変換ノートが
+  ノイズとして混ざる副作用はここでしか見えない)
+
+**測る順序** (3-1 のコードは既に入っているので、実機の測定機会は1回きり):
+
+| | 状態 | 測るもの |
+|---|---|---|
+| before | インデックスが**修正前のチャンク**のまま | 表クエリの現状 (壊れたチャンクでの命中率) |
+| ↓ | 全件再構築 (冒頭 STEP 2) | |
+| after | 3-1 適用後 | 表クエリの改善 / 既存クエリの非劣化 |
+
+**after で表クエリが十分に通るなら 3-2 (キャプション生成) はやらない。**
+Gemini を使う側は、3-1 だけでは足りないと実測できてから着手する。
+
+### 実施結果 (2026-08-01・実機)
+
+**3-0 実装**: `tools/tool_document_sidecar.py` (`sync_document_sidecars`)。Vault内の
+PDF/DOCX/PPTXを検出し `lib.docling_client.capture_document()` で変換 (Gemini要約は
+しない — 毎晩全Vaultを巡回するバッチのため課金をファイル数に比例させない設計)、
+`99_Assets/Converted/<元の相対パス>.md` にディレクトリ構造を保って配置する。
+サイドカーの mtime で冪等性を保証 (元ファイルが更新されない限り再変換しない)。
+インデクサ本体 (`tool_vault_index`) は無改修。`agent_scheduler.py` に **03:05**
+(03:15 Vault Semantic Index の前) でジョブ登録。`tests/test_document_sidecar.py`
+新設 (15件、docling不要のスタブテスト)。
+
+**副産物 (重要)**: 実装中に、本番の起動チェーン (`scripts\arms_core.bat` →
+`py -u main.py`) が使う**システムPython 3.13には docling が入っていなかった**
+ことが判明した (`antigravity_env` にしか無かった)。CLAUDE.md には
+`py -m pip install -r requirements-docling.txt` が手順として書かれているが、
+実態と食い違っていた。放置すると Document Conversion ジョブは毎晩
+「docling 未導入のためスキップ」を返し続け、**エラーにならないので誰も気付けない**
+(このリポジトリで繰り返し出ている「無言の死」と同型)。同時に、既にリリース済みの
+Phase 2 の Discord `/doc` も本番では docling を使えていなかった可能性が高い。
+→ システムPython 3.13にも Phase 0 と同じ手順 (torch CPU版 → docling) を実行し解消。
+`py -c "import docling"` / `py verify_project.py` / `tests/test_*.py` 全75本で
+確認済み。
+
+**実機オペレーション**: Ollama のモデルが (Phase 3 とは無関係の理由で) 全て消えて
+いたため `bge-m3` / `qwen2.5-coder:7b` を再pullしてから実施。Scheduler停止 →
+`attention_is_all_you_need.pdf` (arXiv 1706.03762) を `20_Sources/Test_Documents/`
+に配置 → サイドカー変換 (1変換・48957文字・Table 2のBLEU値含め正しく構造化) →
+`logs/vault_index.db` を退避し全件再構築 (763ファイル・5507チャンク・失敗0) →
+Scheduler再起動、まで実施済み。
+
+**before/after 比較** (`--multiquery on --rerank on --loop on`、17問):
+
+| 指標 | before | after | 差分 |
+|------|--------|-------|------|
+| hit@5 | 0.8235 (14/17) | 0.8824 (15/17) | +0.0589 |
+| mrr@10 | 0.6329 | 0.6863 | +0.0534 |
+| 劣化 (フォールバック汚染) | 0問 | 0問 | — |
+
+- **R17 (PDF由来クエリ)**: 圏外 → **rank=1** (`attention_is_all_you_need.pdf.md#6.1
+  Machine Translation`)。3-0 のサイドカー変換パイプライン (Vault配置 → docling変換
+  → 既存インデクサへの自動配線) が意味検索まで一気通貫で機能していることの実地証拠
+- **R13**: 圏外 → rank=1 に改善 (既存ノート)
+- **R16 (表クエリ)**: rank=4 → **rank=6 (hit@5 圏外) に悪化**。上位6件を確認したところ
+  正解ノートの一方 (`2026-W29_03_Crypto_Weekly_Summary.md#📊 テクニカル指標`) は
+  rank=6 に実在しており「完全に見失った」わけではないが、**rank=5 に別週
+  (`2026-W06_03_Crypto_Weekly_Summary.md`) の同一構造の表が割り込んでいた**。
+  crypto週次サマリーは同じ「指標/値/基準」ヘッダの表を32件以上のノートで繰り返す
+  構造 (このテーブル自体は元々1200字未満で3-1修正前から壊れていなかった) ため、
+  このクエリは**3-1のチャンク分割修正の効果を測るには不適切な検体**だったと判断する。
+  R01/R02/R03/R06/R12 も1ランク前後で上下しており (劣化フラグは立っていない)、
+  multiquery/rerank が Gemini/ローカルLLMのクエリ書き換えを毎回生成し直す
+  非決定的な処理であることを踏まえると、R16の悪化は**表チャンクの破損の再発ではなく
+  類似構造ノートが多い corpus 内でのクエリ書き換えの揺らぎ**に起因する可能性が高い
+
+**3-2 (表キャプション生成) の判断: 見送り**。理由:
+1. R16 が hit@5 を割ったのは事実だが、原因は「表が壊れて読めない」ことではなく
+   「同一構造の表を持つノートが32件以上あり、日付を明示したクエリでも紛れる」こと
+   (根拠: rank=6 に正解ノートの一方が実在し、しかも中身のヘッダは保たれている)
+2. キャプション生成は「表が何を表しているか」を一言添える施策であり、
+   その一言も (キャプションの元ネタが本文にキーワードとして既にある以上)
+   「BTCのテクニカル指標」程度の一般的な文になりがちで、**週・日付という
+   このケースの真の識別子を補わない**。根本原因に効かない施策にGemini呼び出しを
+   足すのは筋が悪い
+3. Phase 3-0 の主目的である PDF由来クエリ (R17) は完全にヒットしており、
+   3-1 のチャンカー修正も (この検体では検証できなかったが) 既存の
+   `tests/test_vault_chunking.py` (20件・実行前後で完全一致するテスト含む) で
+   担保されている
+
+→ crypto週次サマリーの検索時の曖昧さ (近似構造ノートの大量重複) は Phase 3 の
+スコープ外の別課題として認識するに留める (`retrieval-tuning` skill 領域。
+必要なら日付/週番号をメタデータとして重み付けする改善が考えられるが、
+実需が出てから着手する)。
+
+### /grill 指摘と修正 (2026-08-01)
+
+**`_sidecar_path()` の拡張子衝突** (Critical): `os.path.splitext()` で元拡張子を
+`.md` に置換していたため、同名幹・拡張子違いのファイル (`foo.pdf` と `foo.docx`)
+がサイドカーパスで衝突し、片方がもう片方を無言で上書きする経路があった。
+`_needs_conversion()` の mtime 比較も「相手のサイドカー」を見てしまうため、
+最悪交互に無駄な再変換を繰り返す。冪等性を謳った設計意図と矛盾する実害のある
+バグだったため、拡張子を**削らず継ぎ足す** (`foo.pdf` → `foo.pdf.md`) 形に修正し、
+元パスへの単射を保証した。回帰テスト
+(`test_sidecar_path_does_not_collide_across_extensions`) を追加。
+実機で既に変換済みだった `attention_is_all_you_need.md` も新命名へリネームし、
+`retrieval_eval.json` の R17 expected パスと差分再インデックスで整合を取った。
+
+---
+
+## Phase 4 (任意): 既存経路の見直し / 表の計算経路
+
+- **表を CSV/SQLite に落として「計算はコードでやる」経路** (表の L3)。
+  着手条件は **「表の数値計算を求める質問が実際に来たとき」**。
+  大きな表を LLM に読ませて算術させるのは精度でもコストでも負け筋なので、
+  `TableItem` → DataFrame → CSV を `99_Assets/Converted/tables/` に出し、
+  数値質問は検索ではなく計算に回す。**先回りで作らない** (使われない可能性が高い)
+- `tool_fetch_url` の HTML 抽出を docling に寄せる → **やらない方に倒す**。
+  bs4 はミリ秒、docling は秒。動的サイトは `tool_browser_use` が既に担当。
+  docling を使うのは「表・レイアウトの構造が要る」ときだけ、と線を引く。
+- 音声 (`tool_audio_automation`) との統合は別件。docling の ASR 経路は
+  既存の Whisper 系フローと二重になるので今回は触らない。
+
+---
+
+## 判断ログ: 表のためにグラフ構造化 (GraphRAG) は採らない
+
+**Decision**: 表の扱いは「チャンカー修正 (3-1) → キャプション付与 (3-2) →
+必要なら計算経路 (Phase 4)」の3層で解く。エンティティグラフは**構築しない**。
+
+**Reason**:
+1. **問題の所在が違う**。表が使えない原因は
+   「1200字超の表が文字位置で切断されヘッダを失う」という**チャンカーの欠陥**で、
+   グラフを足しても材料が壊れたままなので直らない
+2. **グラフが解くのは文書をまたぐ多段推論**
+   (「この論文の著者が過去に提案した手法を引用した別論文の結果は」)。
+   表の参照は**1文書内**の話で、道具の適用先が違う
+3. **コストが桁違い**。グラフ構築はチャンク1件ごとに LLM でエンティティ抽出が要り、
+   `DAILY_GEMINI_CALL_LIMIT` (既定200) を初回構築で突破する。
+   しかもノートを編集するたびに再構築が要る。
+   一方キャプション方式は「キャプションを持たない表だけ・生涯1回」で済む
+4. **Obsidian Vault は既にグラフである**。`[[wikilink]]` と MOC
+   (`tool_obsidian._determine_parent_moc` が自動付与) がエッジそのもの。
+   多段推論が本当に必要になったら、**まず既存のリンクを辿る実装**を試す。
+   別のグラフを建てるのは、それが足りないと実測できてから
+
+**Alternatives considered**:
+- *GraphRAG (エンティティ+関係抽出)*: 上記コストで却下。将来
+  「文書をまたぐ質問が頻発する」と実測できたら再検討
+- *docling `HybridChunker` への全面移行*: 構造保持は魅力だが既存チャンカーと
+  二重になる。3-1 で足りるかを測ってから (3-3)
+- *表を最初から全部 SQLite に*: 使われるか分からない機能に変換コストを払う。
+  実需が出てから (Phase 4)
+
+---
+
+## Verification — 各フェーズで「動いた」と言える根拠
+
+- [x] **Phase 0**: `py scripts/bench_docling.py` の出力 (3検体の秒数・文字数・表数) を
+      本計画書に貼る。`torch.cuda.is_available() == False` を確認
+- [x] **Phase 1**: `py tests/test_docling_client.py` 緑 (8件・新規)。同じパスのファイルを
+      更新 → 再変換されること (mtime キャッシュの実挙動、テスト内でスタブ経由で確認済み。
+      実ファイル更新での実機確認は Phase 2 で実データを扱う際に兼ねる)
+- [x] **Phase 2**: `py verify_project.py` (フル) 緑。`py tests/test_document_tool.py` 緑 (16件)。
+      実PDFでの `tool_read_document`/`tool_import_document` 手動実行を一時Vaultで確認済み。
+      Discord で実際に PDF を添付 → 要約が返る、は Bot プロセス起動が要るため**未実施**
+      (次回実機オペレーターのフォローアップ)
+- [x] **Phase 3-1**: `py tests/test_vault_chunking.py` 緑(20件)。実機で全件再構築
+      (763ファイル・5507チャンク・失敗0) を実施し、修正後のチャンクが本番インデックス
+      に反映されていることを確認済み (2026-08-01)
+- [x] **Phase 3**: `py scripts/eval_retrieval.py` の before/after を実施
+      (hit@5 +0.059 / mrr@10 +0.053・劣化フラグ0問)。PDF由来クエリ (R17) は
+      圏外→rank=1で完全にヒット。表クエリ (R16) は rank=4→6 とhit@5を割ったが、
+      根本原因はチャンク破損の再発ではなく類似構造ノートの重複によるものと実機調査で
+      特定済み (詳細は3-4節)。3-2 (キャプション生成) は根本原因に効かないため見送り
+- [x] **全体 (Phase 3 時点)**: `tests/test_*.py` スイープ **75/75 緑**
+      (`test_document_sidecar.py` 新設分含む)。`py verify_project.py` 緑。
+      本番起動チェーンのシステムPython 3.13にdocling未導入だった副産物も解消済み
+- [x] **最重要**: `py -m pip uninstall docling` した状態で上記スイープが**そのまま緑**。
+      docling は「あれば品質が上がる」オプションであって、
+      **無いと壊れる依存にしない**。これが崩れたら設計が失敗している
+      (2026-08-01 実施: docling をアンインストールし BitNet系3本を除く71本を再実行、
+      71/71 緑。確認後 docling==2.117.0 を再インストールして環境を復元済み)
+
+---
+
+## Rollback
+
+| Phase | 戻し方 |
+|---|---|
+| 0 / 1 | `py -m pip uninstall docling torch` のみ。コードは docling 不在で HTML 経路に落ちるので**削除不要** |
+| 3-1 (表分割) | コードを revert しただけでは**インデックスは新しいチャンクのまま**。`move logs\vault_index.db.bak-before-table-fix logs\vault_index.db` で退避したDBを戻すか、再度全件再構築する |
+| 2 | registry の2エントリと `bot_discord.py` のコマンド定義を revert (ツールファイルは残っても無害) |
+| 3 | `99_Assets/Converted/` を削除 → 次回 index で消える。スケジューラの `Document Conversion` ジョブを外す |
+
+**各フェーズを1コミットにして revert 単位を揃える** (CLAUDE.md: 動いた時点で即コミット)。
+
+---
+
+## リスク一覧
+
+| リスク | 症状 | 対処 |
+|---|---|---|
+| torch が CUDA 版で入る | Ollama 埋め込み/ComfyUI と VRAM 競合。「夜だけ遅い」等の再現しにくい劣化 | Phase 0-1 の順序 (CPU版 torch を先に固定) + `cuda.is_available()` 確認 |
+| 初回変換でモデル DL が走る | Discord が数分無応答 = 壊れたように見える | `docling-tools models download` を先に実行し `DOCLING_ARTIFACTS_PATH` を固定 |
+| 日本語 PDF の文字化け | 要約が静かに壊れる (エラーは出ない) | Phase 0-3 で実物を検体にする。目視確認を判定基準に入れてある |
+| 巨大 PDF で CPU 占有 | 他ジョブが詰まる | ページ数・サイズの上限を Phase 2 で先に弾く。重い処理は夜間バッチへ |
+| CI が重くなる | tests が数分伸びる | `requirements.txt` には**入れない** (現状維持)。CI は常に「docling 不在の経路」を検証する側に回る = フォールバックの常時テストになる |
+| docling の API が版で変わる | import/属性エラー | `lib/docling_client.py` に閉じ込め済み。バージョン確認に `context7` MCP を使いたいが**現在未認証** (使うなら `/mcp` で認証が要る) |
+
+---
+
+## 決めてほしいこと (Phase 0 の前に1つだけ)
+
+**torch を CPU 版で固定してよいか。** 推奨は CPU 版 (上記の理由)。
+GPU を使いたい場合は、Ollama の `OLLAMA_KEEP_ALIVE` を短くする等の
+VRAM 調停をセットで決める必要があり、Phase 0 の手順が変わる。

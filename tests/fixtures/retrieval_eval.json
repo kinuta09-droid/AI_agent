@@ -107,6 +107,21 @@
       "query": "eスポーツで今どんなタイトルが流行っているかを調べたメモ",
       "expected": ["30_Main/Knowledge_Base/2026-02-16_eスポーツのトレンド・国内、海外で流行りのゲームについて.md"],
       "why": "eスポーツのトレンドと流行ゲームを扱ったノート"
+    },
+    {
+      "id": "R16",
+      "query": "2026年7月19日のBTC分析で、ADXが基準の25を下回っていたときの具体的な数値を教えて",
+      "expected": [
+        "50_Archive/2026-W29/03_Crypto/Crypto_BTC_USDT_2026-07-19.md",
+        "50_Archive/Summary/2026-W29_03_Crypto_Weekly_Summary.md"
+      ],
+      "why": "2026-07-19時点のBTC分析『テクニカル指標』表 (RSI 59.9 / ADX 21.4 / Price $64,828.61 等) を実ノートで確認済み。週次サマリーは生ノートを内包する形で保存されるため同じ表が2箇所に実在し、どちらでも成立する。表の基準列(ADX>25:トレンド有)と実測値(21.4)の比較を要求するクエリで、キーワード一致だけでなく表の中身の理解を問う (Phase 3-1: チャンカーの表分割修正で表ヘッダが保たれているかの検証)"
+    },
+    {
+      "id": "R17",
+      "query": "Transformerアーキテクチャを提案した論文で、大きいモデル(big)が英独翻訳(WMT2014 En-De)で出したBLEUスコアはいくつだったか",
+      "expected": ["99_Assets/Converted/20_Sources/Test_Documents/attention_is_all_you_need.pdf.md"],
+      "why": "Phase 3-0 でdoclingサイドカー変換したarXiv論文 (Attention Is All You Need) のTable 2にある実測値 (Transformer(big) BLEU EN-DE=28.4、logs/docling_bench/attention_is_all_you_need.md で確認済み)。ノートタイトル語 (Attention/All/You/Need) を避け、内容から特定させる。3-0のサイドカー変換パイプラインが意味検索に載っているかを検証するクエリ。before測定時点ではファイルが存在しないため『圏外』になるのが正しい"
     }
   ]
 }

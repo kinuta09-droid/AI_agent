@@ -6,7 +6,7 @@
 - **`lib/`**: Core utilities, shared clients, and obsidian helpers.
 - **`tools/`**: External API integrations and specialized tools.
 - **`tests/`**: Unit tests and debugging stubs.
-- **`antigravity_env/`**: Dedicated Python virtual environment.
+- **`antigravity_env/`**: Dedicated Python virtual environment for dev/manual use. **本番プロセス (`main.py`・Bot・Scheduler) はこれを activate せず常にシステムPython (`py`) で動く** — 任意依存を追加するときは両環境のどちらに入れたか区別すること (詳細は Known Bug Patterns 末尾)。
 - **`scripts/`**: One-off scripts and data processors.
 
 ## Tools
@@ -16,6 +16,8 @@
 | `tool_calendar.py` | Google Calendar + Todoist integration (5 tools) |
 | `tool_daily_note.py` | Daily note auto-generation from template |
 | `tool_lora_factory.py` | LoRA/ComfyUI image generation |
+| `tool_paper_radar.py` | 注目論文の自動判別 (arXiv × HF upvote × 被引用速度 × 新しさ)。Gemini不使用=課金ゼロ |
+| `tool_paper_digest.py` | 論文本文を docling でキャプチャ→要約→X スレッド/note 記事の下書き生成 |
 
 ## Coding Standards & Stability
 - **Python**: PEP8. Always `# -*- coding: utf-8 -*-` and explicit `encoding='utf-8'` on file I/O.
@@ -31,6 +33,9 @@ py verify_project.py           # Pre-flight check (MANDATORY before release)
 py scripts\run_test_sweep.py   # tests/test_*.py を8並列でスイープ (CI と同じ実装)
 scripts\arms.bat               # ワンクリック制御 (引数なし=メニュー / start|stop|restart|status|logs)
 py main.py                     # Universal launcher
+py tools/tool_paper_radar.py --field ai_agent --top 5   # 注目論文レーダー (課金ゼロ)
+py tools/tool_paper_digest.py --index 1 --mode both     # 本文キャプチャ→要約→SNS/note下書き
+py -m pip install -r requirements-docling.txt           # docling (任意・未導入ならHTML抽出に劣化)
 py bot_discord.py              # Start Discord bot
 py agent_scheduler.py          # Start scheduler
 py n8n_patrol.py               # Patrol n8n workflows
@@ -82,6 +87,7 @@ claude mcp add --transport http github https://api.githubcopilot.com/mcp/ --head
 - **テストを一周回すだけで課金や実副作用が起きてはいけない**。実 Discord へ投稿する / YouTube を叩く / 受信箱を Gemini で要約する テストは、前提の有無 (`shutil.which("gws")` 等) だけをゲートにすると **開発機では前提が揃っているので必ず実行される**。副作用と課金のあるものは `ARMS_LIVE_TESTS=1` のオプトインの後ろに置き、既定は SKIP + exit 0 (`tests/test_vault_semantic_smoke.py` の作法) にそろえる (2026-07-30)
 - **「ゲートを付けた」を宣言で確かめない。カウンタと実ファイルの前後差分で確かめる**。上のゲーティングをやった後も漏れが2件残っていた: `test_grounding.py` は素で実 Gemini + Google Search を呼び、`test_create_note.py` は**本番 Vault** (`D:\マイドライブ\Obsidian`) に書き込みつつ `tool_create_note` 内部の MOC 分類で間接的に Gemini を呼んでいた。**明示的に API を呼ぶテストは目で見つかるが、ツールの内部で間接的に呼ぶものは見落とす**。`logs/gemini_daily_calls.json` のカウント差分で1本ずつ絞ると即座に特定できた。しかも `tool_create_note` は同名衝突時にタイムスタンプ接尾辞で退避する仕様なので、**上書きではなくスイープ1周ごとに1件増え**、実 Vault に19件溜まっていた (2026-07-30)
 - **スタブは「呼ばれなくする」だけでなく「設定が読まれなくなる」**。`test_curate_note_save.py` が `dotenv` をスタブしたため `lib/cost_guard.py` の `load_dotenv` が無効化され、`.env` の `DAILY_GEMINI_CALL_LIMIT=0` (無効) が読まれず**既定値200に落ちた**。一方 `GEMINI_COUNTER` は**本番の** `logs/gemini_daily_calls.json` を見続けていたため、**本番カウントが200を超えた時刻以降だけこのテストが赤くなる** = 同じコードが朝は緑・夜は赤 (実測 count 212 で再現)。テストが本番と共有する可変資源 (カウンタ・PIDファイル・Vault) は**必ず一時パスへ隔離する**。`lib_shared` は `client.models.generate_content` を予算チェックで包む (`lib_shared.py:302-308`) ので、**`google.genai` をスタブしてもカウンタは進む**点に注意 (2026-07-30)
+- **「劣化フォールバックが正しく動く」こと自体が、任意依存の導入環境の食い違いを無症状化させる**。所見の系譜 (bot層の except握りつぶし → engine の成否判定 → 最終要約 → 採点器 → リンク解決 → テストの終了コード) の次に、原因の種類が初めて「例外処理の書き方」ではなく「**同じマシンに2つある Python 環境のどちらに依存を入れたか**」で見つかった (2026-08-01, docling統合 Phase 3)。本番の起動チェーン (`scripts\arms_core.bat` → `py -u main.py`) は `antigravity_env` を一切 activate せず、しかも `main.py` は子プロセス (bot_discord.py・agent_scheduler.py 等) を `sys.executable` で spawn するため、**Bot もスケジューラも常にシステムPython (`py` が解決する `C:\Users\<user>\AppData\Local\Programs\Python\Python313\python.exe`) で動く**。一方 `plans/docling-integration.md` の Phase 0 手順は `antigravity_env\Scripts\activate` の直後に `py -m pip install -r requirements-docling.txt` を実行しており、このマシンの `py` ランチャーは activate 後の venv を解決したため docling は **antigravity_env にだけ** 入り、システムPython側には入らなかった。結果、`lib/docling_client.py.is_available()` の「import失敗→HTML抽出へ劣化フォールバック」という設計自体は正しいのに、本番では毎晩・毎回これが発火し続け、エラーは一切出ない (`✅` の見出しはそのまま)。Phase 2 の Discord `/doc` も Phase 3-0 の夜間ジョブ「Document Conversion」も、本番では「docling 未導入のためスキップ (0件)」を成功扱いのまま返し続けていた可能性が高い。発覚したのは `antigravity_env\Scripts\python.exe` と `py` で同じ関数呼び出しの結果が食い違ったため。**対処**: (a) 「入れた」と判断する前に、実際に本番が使う python (`sys.executable` で確認するか、単純には `py -m pip show <pkg>`) で確認する。`antigravity_env\Scripts\pip3.exe show` や activate 後の `pip show` は別の環境を見ている、(b) 任意依存を追加する手順には「システムPython (`py`、本番用) と `antigravity_env` (開発検証用) のどちらに入れたか」を明記し、本番機能で使うなら両方に入れる、(c) `venv\Scripts\activate` した状態で `py -m pip install` と書かない — `py` ランチャーは activate を尊重するかどうかがマシン依存で信用できない。venv へ確実に入れたいなら `python -m pip install` (activate で PATH 先頭に来た venv の python.exe を使う) にする。恒久チェックは未実装 (`verify_project.py` に「本番の python から optional dependency が import できるか」の warn を足す余地がある)
 
 ## Encoding Safety Rules (Windows Japanese Environment)
 > Lesson learned: 2026-02-27 — AI agent caused system-wide contamination by setting

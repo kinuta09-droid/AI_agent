@@ -4,6 +4,9 @@ from discord import app_commands
 import asyncio
 import datetime
 import io
+import os
+import re
+import tempfile
 
 # ツールをインポート
 from tools.tool_web import tool_fetch_daily_news
@@ -285,6 +288,112 @@ async def cmd_xtrend_prompt(interaction: discord.Interaction, index: int = 1):
     if _send_with_fallback:
         file = _make_discord_file(result, f"xtrend_prompt_{index}_{datetime.date.today().isoformat()}.md") if len(result) > 1800 else None
         await _send_with_fallback(interaction, result, title="実装指示書", emoji="📝", file=file)
+    else:
+        await interaction.followup.send(result[:2000])
+
+
+def _import_paper_radar():
+    from tools.tool_paper_radar import run_paper_radar
+    return run_paper_radar
+
+
+def _import_paper_digest():
+    from tools.tool_paper_digest import run_paper_digest
+    return run_paper_digest
+
+
+async def cmd_paper_radar(interaction: discord.Interaction, field: str = "",
+                          top_k: int = 5, days: int = 7):
+    """指定分野の注目論文を判別して Obsidian に保存"""
+    await interaction.response.defer()
+    try:
+        run_paper_radar = _import_paper_radar()
+        result = await asyncio.to_thread(run_paper_radar, field, top_k, days)
+    except Exception as e:
+        result = log_command_error("/paper-radar", e, "❌ Paper Radar Error")
+
+    if _log_to_daily_note:
+        await asyncio.to_thread(_log_to_daily_note, "command", "/paper-radar", result)
+
+    if _send_with_fallback:
+        await _send_with_fallback(interaction, result, title="Paper Radar", emoji="📡")
+    else:
+        await interaction.followup.send(result[:2000])
+
+
+async def cmd_paper_digest(interaction: discord.Interaction, index: int = 1,
+                           arxiv_id: str = "", mode: str = "sns"):
+    """注目論文をキャプチャ・要約し、SNS/note の下書きまで生成する"""
+    # docling の変換 + Gemini 2回で数分かかりうる。defer を先に返さないと
+    # interaction token が3秒で切れる (skill discord-bot-patterns)。
+    await interaction.response.defer()
+    try:
+        run_paper_digest = _import_paper_digest()
+        result = await asyncio.to_thread(run_paper_digest, index, arxiv_id, "", mode)
+    except Exception as e:
+        result = log_command_error("/paper-digest", e, "❌ Paper Digest Error")
+
+    if _log_to_daily_note:
+        await asyncio.to_thread(_log_to_daily_note, "command", "/paper-digest", result)
+
+    if _send_with_fallback:
+        file = _make_discord_file(
+            result, f"paper_digest_{datetime.date.today().isoformat()}.md"
+        ) if len(result) > 1800 else None
+        await _send_with_fallback(interaction, result, title="Paper Digest", emoji="📄", file=file)
+    else:
+        await interaction.followup.send(result[:2000])
+
+
+def _import_document():
+    from tools.tool_document import MAX_DOCUMENT_SIZE_BYTES, tool_import_document
+    return tool_import_document, MAX_DOCUMENT_SIZE_BYTES
+
+
+async def cmd_doc(interaction: discord.Interaction, attachment: discord.Attachment,
+                  folder: str = "30_Main"):
+    """添付PDF/Office文書をdoclingで変換→Gemini要約→Vault保存する"""
+    # docling は数十秒〜数分かかりうる。3秒で切れる interaction token より
+    # 先に defer() を返す (skill discord-bot-patterns)。
+    await interaction.response.defer()
+
+    tool_import_document, max_size = _import_document()
+
+    # ダウンロード前の一次防波堤 (Discordのメタデータのみ・I/Oなし)。
+    # 権威あるサイズ/ページ数チェックは tool_import_document 内部の
+    # check_document_caps 一箇所だけに置き、ここでは重複させない。
+    if attachment.size > max_size:
+        size_mb, cap_mb = attachment.size / 1_048_576, max_size / 1_048_576
+        result = f"Error: 添付ファイルが上限を超えています ({size_mb:.1f}MB > {cap_mb:.0f}MB)"
+        await _send_with_fallback(interaction, result, title="Document Import", emoji="📄")
+        return
+
+    tmp_dir = tempfile.mkdtemp(prefix="arms_doc_")
+    safe_name = re.sub(r'[\\/:*?"<>|]', '_', attachment.filename) or "document"
+    temp_path = os.path.join(tmp_dir, safe_name)
+    try:
+        await attachment.save(temp_path)
+        result = await asyncio.to_thread(tool_import_document, temp_path, folder)
+    except Exception as e:
+        result = log_command_error("/doc", e, "❌ Document Import Error")
+    finally:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        try:
+            os.rmdir(tmp_dir)
+        except OSError:
+            pass
+
+    if _log_to_daily_note:
+        await asyncio.to_thread(_log_to_daily_note, "command", f"/doc {attachment.filename}", result)
+
+    if _send_with_fallback:
+        file = _make_discord_file(
+            result, f"doc_import_{datetime.date.today().isoformat()}.md"
+        ) if len(result) > 1800 else None
+        await _send_with_fallback(interaction, result, title="Document Import", emoji="📄", file=file)
     else:
         await interaction.followup.send(result[:2000])
 

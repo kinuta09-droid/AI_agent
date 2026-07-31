@@ -1015,6 +1015,44 @@ async def cmd_xtrend_prompt(interaction: discord.Interaction, index: int = 1):
     await bot_commands_tools.cmd_xtrend_prompt(interaction, index)
 
 
+@tree.command(name="paper-radar", description="指定分野の注目論文を自動判別（arXiv×HF upvote×被引用速度）")
+@app_commands.describe(
+    field="分野プリセット or arXivクエリ (例: ai_agent, llm, rag / 空欄は.envの既定)",
+    top_k="上位何件を出すか (デフォルト: 5)",
+    days="何日以内の論文を対象にするか (デフォルト: 7)",
+)
+async def cmd_paper_radar(interaction: discord.Interaction, field: str = "",
+                          top_k: int = 5, days: int = 7):
+    await bot_commands_tools.cmd_paper_radar(interaction, field, top_k, days)
+
+
+@tree.command(name="paper-digest", description="注目論文をdoclingでキャプチャ→要約→SNS/note下書きを生成")
+@app_commands.describe(
+    index="Paper Radar 候補の番号 1始まり (デフォルト: 1)",
+    arxiv_id="arXiv IDを直接指定する場合 (例: 2401.12345)",
+    mode="出力: sns / note / both / none",
+)
+@app_commands.choices(mode=[
+    app_commands.Choice(name="Xスレッド下書き", value="sns"),
+    app_commands.Choice(name="note記事下書き", value="note"),
+    app_commands.Choice(name="両方", value="both"),
+    app_commands.Choice(name="要約ノートのみ", value="none"),
+])
+async def cmd_paper_digest(interaction: discord.Interaction, index: int = 1,
+                           arxiv_id: str = "", mode: str = "sns"):
+    await bot_commands_tools.cmd_paper_digest(interaction, index, arxiv_id, mode)
+
+
+@tree.command(name="doc", description="PDF/Office文書を添付してdoclingで変換→Gemini要約→Vault保存")
+@app_commands.describe(
+    attachment="変換したい文書 (PDF/DOCX/PPTX)",
+    folder="保存先フォルダ (Vault相対パス, デフォルト: 30_Main)",
+)
+async def cmd_doc(interaction: discord.Interaction, attachment: discord.Attachment,
+                  folder: str = "30_Main"):
+    await bot_commands_tools.cmd_doc(interaction, attachment, folder)
+
+
 @tree.command(name="browse", description="URLを開いてAIで情報抽出（JS動的ページ・SPAに対応）")
 @app_commands.describe(
     url="取得するURL",
