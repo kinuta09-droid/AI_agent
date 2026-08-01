@@ -54,8 +54,9 @@ CACHE_DIR = os.path.join(LOGS_DIR, "paper_cache")
 # max_chars と「PDFのURLを渡すかどうか」で行う。
 HTTP_TIMEOUT_SEC = 30
 
-# Gemini へ渡す上限。全文をそのまま渡すと入力トークンが跳ねるので既定で切る。
-DEFAULT_MAX_CHARS = 60000
+# Gemini へ渡す上限。gemini-3.6-flash は1Mトークン級のコンテキストがあるため
+# 極端な長文論文 (20万字級) でも収まる範囲で緩和 (2026-08-01、60000→150000)。
+DEFAULT_MAX_CHARS = 150000
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
