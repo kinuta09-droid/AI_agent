@@ -15,7 +15,7 @@
 | # | 内容 | 状態 | 実施日 | 備考 / 実測値 |
 |---|---|---|---|---|
 | 0-1 | ニッチ・ペルソナ確定 + X アカウント開設 | 未着手 | | **AI に丸投げ不可。全 Phase の前提** |
-| 0-2 | Agent Reach 実機導入 | 未着手 | | `plans/agent-reach-setup.md` の STEP 1〜5 |
+| 0-2 | Agent Reach 実機導入 | **進行中** | 2026-08-01 | `plans/agent-reach-setup.md` STEP 1〜4は実機完了(ブランチ`claude/agent-reach-mcp-k91vmv`、未push)。**残るSTEP 5(X cookie設定・この導入の主目的)が未着手** — Twitter/Xは`--from-browser`自動抽出が未対応でCookie-Editor手動エクスポートが要る |
 | 0-3 | docling Phase 0 の Go/No-Go 判定 | **完了 (Go)** | 2026-08-01 | 想定より前進: Phase 0〜3全体が完了し[PR #42](https://github.com/kinuta09-droid/AI_agent/pull/42)でmasterへ統合済み。`tool_paper_radar.py`/`tool_paper_digest.py`もmaster上に存在。**ただしSNS投稿導線(Phase1)への接続はまだ無い** |
 | 0-4 | X Developer 登録 + 従量課金の支払い設定 | 未着手 | | テスト投稿1本が API 経由で通ること |
 | 1-1 | `tools/tool_x_post.py`（X API v2 投稿） | 未着手 | | |
@@ -83,7 +83,7 @@ Phase 2 で投稿量が増えたら、この上限とのバランスを再度確
 |---|---|---|
 | 論文レーダー + 要約 + **X スレッド下書き + note 記事下書き** | **master**（`tool_paper_radar.py`/`tool_paper_digest.py`。2026-08-01 PR #42 マージ済。**SNS投稿導線への接続はまだ無い**） | コンテンツ生産ライン本体 |
 | docling 変換層（PDF→Markdown・サイドカー変換・意味検索接続まで完了） | **master**（`lib/docling_client.py` 他。Phase 0〜3完了、hit@5 +0.059で実証済み） | 一次情報の質での差別化 |
-| Agent Reach 導入手順（地雷5件を検証済） | `claude/agent-reach-mcp-k91vmv` | X/Reddit/YouTube の生ネタ取得 |
+| Agent Reach 導入手順（地雷5件を検証済） + STEP1〜4実機導入済 | `claude/agent-reach-mcp-k91vmv`（未push commit `c650c22` 含む） | X/Reddit/YouTube の生ネタ取得。**Xだけ未稼働**(STEP5待ち) |
 | XTrend / Curator / FutureSearch / Vault RAG | master | ネタの多様化 |
 | Engagement Log Phase 1（354件収集済） | master + `claude/multi-agent-rag-monetization-m1a7mx` | 反応の計測基盤 |
 | スケジューラ / Discord View 基盤 / コストガード / Verifier | master | 運用の自動化と品質ゲート |
@@ -116,13 +116,21 @@ Phase 3 を飛ばして Phase 4 に行けないのは、営業材料が無くな
 
 **完了条件**: アカウント名・プロフィール文・固定ポストが確定して公開されている。
 
-### 0-2. Agent Reach 実機導入
-`plans/agent-reach-setup.md`（ブランチ `claude/agent-reach-mcp-k91vmv`）の STEP 1〜5。
+### 0-2. Agent Reach 実機導入 — 進行中 (STEP 1〜4 完了・2026-08-01)
+`plans/agent-reach-setup.md`（ブランチ `claude/agent-reach-mcp-k91vmv`、実機作業はcommit
+`c650c22`・**まだ未push**）の STEP 1〜5。
+
+**実機で判明した計画からの差分** (`docs/agent-reach.md` に反映済み):
+- `skill --install` の書き込み先は `~/.claude/skills/` ではなく `~/.agents/skills/`
+- GitHub は `gh` CLI 導入・認証済みのため doctor の `[!]` 表示は実害なし
+- YouTube は STEP 4-a (js-runtimes 設定) 後、`yt-dlp --dump-json` で実データ取得を確認
+- **Twitter/X だけ `--from-browser` 自動抽出が未対応**。Cookie-Editor での手動エクスポートが必須
 
 > 🔐 **cookie は情報収集専用サブアカウントのものを使う。** 収益アカウントの cookie を
 > ローカルツールに渡さない（BAN = 収益源の消滅）。
 
-**完了条件**: `agent-reach doctor` で Web / RSS / YouTube / GitHub / X が `✅`。
+**残作業**: STEP 5 (X cookie 設定・**この導入の主目的**) のみ。完了条件は変わらず
+`agent-reach doctor` で Web / RSS / YouTube / GitHub / X が `✅`。
 
 ### 0-3. docling Phase 0 の Go/No-Go 判定 — ✅ 完了 (2026-08-01)
 `plans/docling-integration.md`（[PR #42](https://github.com/kinuta09-droid/AI_agent/pull/42) → master。以後は master 上のファイルを参照すればよい）。
