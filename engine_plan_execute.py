@@ -441,6 +441,25 @@ def _plan_waves(plan: list, tools_map: dict, parallel_safe=None,
     return waves
 
 
+_RECENCY_KEYWORDS = ("今日", "本日", "急に", "直近", "たった今", "さっき", "さきほど")
+
+
+def _has_recency_intent(text: str) -> bool:
+    """task文字列に直近性を示すキーワードが含まれるか判定する。
+
+    プロンプト指示 (Plannerへの「今日/急になら recency_days を付けて」という
+    お願い) は確率的で、同じ言い回しでも実行のたびに無視されることが実測で
+    繰り返し確認された (plans/recency-detection-reliability.md 背景参照)。
+    ここでの判定はLLMを経由しないコード側の決定的ガード。
+    """
+    return any(kw in text for kw in _RECENCY_KEYWORDS)
+
+
+def _current_year_month() -> str:
+    now = datetime.datetime.now()
+    return f"{now.year}年{now.month}月"
+
+
 def _run_step(item: dict, tools_map: dict, context: list,
               fallback_step: int = 1) -> dict:
     """1ステップを実行して step_result を返す。**例外を外へ出さない**。
@@ -480,6 +499,18 @@ def _run_step(item: dict, tools_map: dict, context: list,
                 )
                 success = False
             else:
+                # 「今日/急に」等の直近性キーワードをLLMの判断を待たずコード側で検知し、
+                # recency_days と年月クエリを強制付与する (プロンプト指示は削除せず併存させる:
+                # 既にLLMが正しく設定していた項目は上書きしない=競合しない)
+                if tool_name == "tool_web_search":
+                    if not args.get("recency_days") and _has_recency_intent(task):
+                        args["recency_days"] = 10
+                    if args.get("recency_days"):
+                        year_month = _current_year_month()
+                        query = args.get("query", "")
+                        if year_month not in query:
+                            args["query"] = f"{query} {year_month}".strip()
+
                 # tool_create_note の場合、content を専用プロンプトでリッチに再生成する
                 # JSON制約内では長文生成が困難なため、2段階方式で品質を担保する
                 if tool_name == "tool_create_note" and context:

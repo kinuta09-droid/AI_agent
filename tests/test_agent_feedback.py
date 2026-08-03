@@ -17,6 +17,9 @@ commands/bot_views.py の AgentFeedbackView/AgentFeedbackReasonModal) の回帰�
      send_feedback_prompt を呼んでいること。CLAUDE.md の既知パターン
      (「/agent だけ直して /chat agent を取り残した」) と同型の再発を防ぐため、
      動的テストでは片方の呼び出し側しか守れない箇所を ast で静的に横断する。
+  7. 🕐「最新情報で再検索」ボタン (recency_retry, plans/recency-detection-reliability.md)。
+     tool_web_search_grounded(self._goal) を呼び、👍/👎とは独立にこのボタンだけ
+     disabled になり (_finish() は呼ばない)、失敗時は ❌ アイコンになること。
 
 実行: py tests/test_agent_feedback.py
 """
@@ -321,6 +324,117 @@ def test_agent_feedback_reason_modal_warns_on_save_failure():
 
 
 # ---------------------------------------------------------
+# 6b. 🕐「最新情報で再検索」ボタン (recency_retry)
+# ---------------------------------------------------------
+
+def test_recency_retry_button_calls_grounded_search_and_disables_only_itself():
+    """クリック後、recency_retry ボタンだけ disabled になり 👍👎 は押せるままであること。
+
+    _finish() を呼ぶと 👍👎 も道連れで disabled になってしまう。「評価」とは別の
+    操作なので独立に無効化する設計 (plans/recency-detection-reliability.md)。
+    """
+    import commands.bot_views as bv
+
+    async def _check():
+        view = bv.AgentFeedbackView("今日のガソリン価格が急に下がった理由", "旧い回答でした")
+        interaction = _make_fake_interaction()
+
+        import tools.tool_web as tw
+        orig = tw.tool_web_search_grounded
+        calls = []
+
+        def fake_grounded(query):
+            calls.append(query)
+            return "本文...\n参照元: ..."
+
+        tw.tool_web_search_grounded = fake_grounded
+        try:
+            await view.recency_retry.callback(interaction)
+        finally:
+            tw.tool_web_search_grounded = orig
+
+        assert calls == ["今日のガソリン価格が急に下がった理由"], (
+            f"tool_web_search_grounded(self._goal) が期待通り呼ばれていません: {calls}"
+        )
+
+        good_btn = next(i for i in view.children if getattr(i, "label", "") == "👍 良い回答")
+        bad_btn = next(i for i in view.children if getattr(i, "label", "") == "👎 期待と違う")
+        retry_btn = next(i for i in view.children if i.label == "🕐 最新情報で再検索")
+        assert retry_btn.disabled is True, "クリック後もボタンが押せる状態です"
+        assert good_btn.disabled is False, "👍 が巻き添えで disabled になっています"
+        assert bad_btn.disabled is False, "👎 が巻き添えで disabled になっています"
+
+        interaction.response.edit_message.assert_awaited_once()
+        interaction.followup.send.assert_awaited_once()
+        (msg,), _ = interaction.followup.send.call_args
+        assert msg.startswith("🕐"), f"成功時のアイコンが🕐ではありません: {msg[:20]!r}"
+        assert "本文..." in msg
+
+    asyncio.run(_check())
+    print("✅ AgentFeedbackView.recency_retry calls tool_web_search_grounded(self._goal) "
+          "and disables only itself")
+
+
+def test_recency_retry_button_shows_failure_icon_on_error():
+    """tool_web_search_grounded が Error: ... を返したとき ❌ アイコンになること。
+
+    「例外が出なかった＝成功」と決めつけない、という既存パターンをこのボタンにも適用する。
+    """
+    import commands.bot_views as bv
+
+    async def _check():
+        view = bv.AgentFeedbackView("今日の急な出来事", "旧い回答")
+        interaction = _make_fake_interaction()
+
+        import tools.tool_web as tw
+        orig = tw.tool_web_search_grounded
+        tw.tool_web_search_grounded = lambda query: "Error: grounding call failed"
+        try:
+            await view.recency_retry.callback(interaction)
+        finally:
+            tw.tool_web_search_grounded = orig
+
+        interaction.followup.send.assert_awaited_once()
+        (msg,), _ = interaction.followup.send.call_args
+        assert msg.startswith("❌"), f"失敗時のアイコンが❌ではありません: {msg[:20]!r}"
+
+    asyncio.run(_check())
+    print("✅ AgentFeedbackView.recency_retry shows ❌ when tool_web_search_grounded fails")
+
+
+def test_recency_retry_button_truncates_long_result():
+    """Discordのメッセージ本文は2000字上限。切り詰めずに送ると followup.send が
+    HTTPException で無言に落ちる (/grill 指摘・2026-08-04)。長い結果 (本文+複数の
+    引用元URLを想定) でも例外にならず、本文が上限内に収まることを確認する。
+    """
+    import commands.bot_views as bv
+
+    async def _check():
+        view = bv.AgentFeedbackView("今日のニュースまとめ", "旧い回答")
+        interaction = _make_fake_interaction()
+
+        long_result = "本文段落。" * 500 + "\n参照元: " + " / ".join(
+            f"https://example.com/article-{i}" for i in range(5)
+        )
+        assert len(long_result) > 2000, "テスト前提: 元の結果が2000字を超えていること"
+
+        import tools.tool_web as tw
+        orig = tw.tool_web_search_grounded
+        tw.tool_web_search_grounded = lambda query: long_result
+        try:
+            await view.recency_retry.callback(interaction)
+        finally:
+            tw.tool_web_search_grounded = orig
+
+        interaction.followup.send.assert_awaited_once()
+        (msg,), _ = interaction.followup.send.call_args
+        assert len(msg) <= 2000, f"送信メッセージがDiscordの上限を超えています: {len(msg)}字"
+
+    asyncio.run(_check())
+    print("✅ AgentFeedbackView.recency_retry truncates long results to Discord's 2000-char limit")
+
+
+# ---------------------------------------------------------
 # 6. [静的検査] /agent と /chat agent の両方が send_feedback_prompt を呼ぶこと
 # ---------------------------------------------------------
 
@@ -402,6 +516,9 @@ if __name__ == "__main__":
     test_agent_feedback_reason_modal_on_submit_with_reason()
     test_agent_feedback_reason_modal_on_submit_empty_reason()
     test_agent_feedback_reason_modal_warns_on_save_failure()
+    test_recency_retry_button_calls_grounded_search_and_disables_only_itself()
+    test_recency_retry_button_shows_failure_icon_on_error()
+    test_recency_retry_button_truncates_long_result()
     test_both_agent_entry_points_call_send_feedback_prompt()
     test_send_feedback_prompt_skips_when_channel_is_none()
     print("\n🎉 ALL AGENT FEEDBACK REGRESSION TESTS PASSED")

@@ -297,6 +297,23 @@ class AgentFeedbackView(AllowedUserView):
             AgentFeedbackReasonModal(self._goal, self._result, self)
         )
 
+    @discord.ui.button(label="🕐 最新情報で再検索", style=discord.ButtonStyle.secondary)
+    async def recency_retry(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 👍/👎 の「評価」とは別の操作なので _finish() は呼ばず、このボタンだけ
+        # disabled にする (👍/👎 は独立に押せるまま残す)。
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+
+        from tools.tool_web import tool_web_search_grounded
+        result = await asyncio.to_thread(tool_web_search_grounded, self._goal)
+
+        icon = "❌" if is_failure_result(result) else "🕐"
+        # Discordのメッセージ本文は2000字上限。tool_web_search_grounded は
+        # Gemini生成の本文+引用元最大5件を返すため容易に超える (超えると
+        # followup.send が HTTPException で無言に落ちる)。bot_commands_agent.py:253
+        # の result[:1900] フォールバックと同じ切り詰め幅に揃える。
+        await interaction.followup.send(f"{icon} 最新情報で再検索した結果:\n\n{result[:1900]}")
+
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
