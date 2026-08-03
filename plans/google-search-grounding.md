@@ -27,14 +27,14 @@ Geminiが安定して強いのは、Google自身のSearch Grounding機能(Google
 
 | # | 内容 | 状態 | 実施日 | 備考 |
 |---|---|---|---|---|
-| 0 | 実機でAPIを1回叩き `response` の実構造を確認 | 未着手 | | **最優先・ここを飛ばして実装しない** |
-| 1 | `lib/cost_guard.py` に `GROUNDING_COUNTER` 追加 | 未着手 | | |
-| 2 | `tool_web_search_grounded` 実装 | 未着手 | | |
-| 3 | `lib/tool_registry.py` 登録 | 未着手 | | |
-| 4 | Planner (`engine_plan_execute.py`) の使い分けガイド追加 | 未着手 | | |
-| 5 | テスト (`tests/test_tool_web_grounded.py`) | 未着手 | | |
-| 6 | 実機比較検証 | 未着手 | | |
-| 7 | クローズ処理 (テスト→Guardian→PR→マージ) | 未着手 | | |
+| 0 | 実機でAPIを1回叩き `response` の実構造を確認 | 完了 | 2026-08-03 | 下記「実測結果」参照。`domain`は常にNone・`uri`はredirect URL |
+| 1 | `lib/cost_guard.py` に `GROUNDING_COUNTER` 追加 | 完了 | 2026-08-03 | SWEEP_COUNTER直後に追加 |
+| 2 | `tool_web_search_grounded` 実装 | 完了 | 2026-08-03 | `tools/tool_web.py`、`tool_web_search`直後 |
+| 3 | `lib/tool_registry.py` 登録 | 完了 | 2026-08-03 | description使い分け明記 + test_tool_registry.py の分類集合も更新 |
+| 4 | Planner (`engine_plan_execute.py`) の使い分けガイド追加 | 完了 | 2026-08-03 | 【ツール選択の指針】に追記(719行目付近ではなく219行目付近だった) |
+| 5 | テスト (`tests/test_tool_web_grounded.py`) | 完了 | 2026-08-03 | 16/16 PASS。`run_test_sweep.py` PARALLEL_TESTS登録済み |
+| 6 | 実機比較検証 | 完了 | 2026-08-03 | 下記「Step 6 実測結果」参照 |
+| 7 | クローズ処理 (テスト→Guardian→PR→マージ) | 進行中 | 2026-08-03 | /grillで3件指摘・修正済み(下記参照)。テスト84/84・Guardian緑。[PR #51](https://github.com/kinuta09-droid/AI_agent/pull/51) 作成済み・マージ待ち |
 
 状態は `未着手` / `進行中` / `完了` / `見送り(理由)` で更新する。
 
@@ -59,32 +59,25 @@ response = client.models.generate_content(
 
 `client` / `MODEL_NAME` はどちらも `lib/lib_shared.py` から既存importでそのまま使える。
 
-### 引用元の取り出し方 — ★次セッションの最初に実機で確定させること★
+### 引用元の取り出し方 — 実機確認済み (2026-08-03)
 
-`GroundingChunkWeb` 型 (`title` / `uri` / `domain` を持つ) の存在はcontext7の型定義で
-確認済みだが、`response` からそこへ至る実際の属性パス
-(`response.candidates[0].grounding_metadata.grounding_chunks[i].web` になる見込みだが
-ドキュメント断片からは全体像が確定できなかった)・`grounding_metadata` が
-`None` になるケースの扱いは**未検証**。
+Step 0 を実行し、以下が確定した:
 
-**Step 0 として、実装に入る前に必ず以下を実機で実行し、実際の構造を確認すること**:
-```python
-from lib.lib_shared import client, MODEL_NAME
-from google.genai import types
+- パスは想定通り `response.candidates[0].grounding_metadata.grounding_chunks[i].web`
+- `web.title` — ドメイン風の短い文字列 (実測例: `'oanda.jp'`, `'fnn.jp'`)。記事タイトルではない
+- `web.uri` — **元記事の直接URLではない**。`https://vertexaisearch.cloud.google.com/grounding-api-redirect/...` という
+  Google側のリダイレクトURL (人間がクリックすれば最終的に元記事へ遷移するが、文字列としては元URLではない点に注意。
+  ドメイン抽出やURL正規化の用途には使えない)
+- `web.domain` — **実測では常に `None`**。ドメイン表示には代わりに `title` を使う
+- `grounding_metadata` が丸ごと `None` になるケースは今回未発生 (質問が常にgrounding対象と判定された)。
+  API設計上は起こりうるため、実装では **`gm is None` / `gm.grounding_chunks` が空リストの場合のガードを両方入れる**
+  (未検証だが安全側に倒す)
+- 副産物: `grounding_metadata.web_search_queries` (実際に投げられた検索クエリ一覧) と
+  `grounding_metadata.search_entry_point.rendered_content` (HTML検索チップ、UI表示用) も同梱されているが、
+  今回のテキスト出力ツールでは使わない
 
-response = client.models.generate_content(
-    model=MODEL_NAME,
-    contents="今日のガソリン価格のニュースを教えて",
-    config=types.GenerateContentConfig(
-        tools=[types.Tool(google_search=types.GoogleSearch())]
-    ),
-)
-print(response.text)
-print(response.candidates[0].grounding_metadata)
-```
-ここで得た実際の属性パスを元に、URL一覧を安全に取り出すヘルパー
-(`grounding_metadata` が None / `grounding_chunks` が空リストの場合のガードを含む)
-を書く。**ここを推測のまま実装しない。**
+出力フォーマット (下記Steps参照) では `title` をラベルとして使い、`uri` はそのままリンクとして提示する
+(redirect URLだがクリックすれば実記事に到達するため実用上問題ない)。
 
 ### コスト管理
 
@@ -171,6 +164,42 @@ GROUNDING_COUNTER = DailyCounter(
    `tool_web_search` が引き続き選ばれることも確認 (新ツールに全部奪われないか)
 8. `py scripts/run_test_sweep.py` / `py verify_project.py` で最終確認
 9. コミット → ブランチ → PR → マージ ([close-out-procedure](../../.claude/CLAUDE.md) の通常フロー)
+
+## Step 6 実測結果 (2026-08-03)
+
+- `tool_web_search_grounded("今日急にガソリン価格が5円値下がりした理由")` を実行し、
+  補助金制度・スタンド独自セール・価格競争という一般論レベルの回答が返った
+  (Step 0 の「今日のガソリン価格のニュースを教えて」という質問では
+  「7/30〜8/5, 28円20銭」という具体的な一次情報が返っていたのと対照的)。
+  **Grounding版もクエリの言い回しに一定の感度がある**ことが分かった
+  (Tavilyほど不安定ではないが、「なぜ」を問う抽象的な質問より「ニュースを教えて」
+  のような直接的な質問の方が具体的な一次情報に辿り着きやすい傾向)。
+  参照元には `nenryo-teigakuhikisage.go.jp` / `hojyokin-portal.jp` 等、
+  補助金制度の一次情報に近いドメインが含まれており、Tavily版では拾えて
+  いなかった情報源にアクセスできている点は確認できた。
+  → 使い分けガイド (Step 4) に「クエリの工夫」までは書いていないため、
+  今後 Planner の生成クエリの質でGrounding版の効果が変わりうる点は継続観察課題として残す。
+- `GROUNDING_COUNTER` は実行前 0 → 実行後 1 で正しくインクリメントされた
+  (本番の `logs/grounding_daily_calls.json` に実際に記録される経路を確認済み)。
+- 一般的な質問 (`generate_plan("ReactのuseEffectの使い方を教えて")`) では
+  引き続き `tool_web_search` (Tavily) が選ばれ、`tool_web_search_grounded` に
+  奪われていないことを確認 (コスト面の回帰なし)。
+
+## /grill 指摘と修正 (2026-08-03)
+
+1. **[修正済み]** 引用元(grounding_metadata)の抽出処理が本文取得と同じtry/except内にあり、
+   抽出側だけの例外(SDKバージョン差異等)で既に取得済みの正常な本文まで
+   `Error searching web (grounded): ...` に握りつぶされる欠陥。本文取得と引用元抽出を
+   別のtry/exceptに分離し、抽出失敗時は本文のみ返すように修正 (`tools/tool_web.py`)。
+   回帰テスト `test_source_extraction_failure_does_not_discard_text` を追加
+2. **[修正済み]** Critic (`_evaluate_and_revise` 相当) の再計画プロンプトには
+   ツール名一覧のみ渡っており使い分け説明が無いため、「Criticが再検索を求めた場合の
+   代替としてtool_web_search_groundedを使う」という設計意図(本ドキュメント冒頭)が
+   実際には配線されていなかった。Critic側の評価基準にも
+   「直近の出来事でTavilyの結果が具体的でない場合はtool_web_search_groundedを
+   revised_planで提案する」を追記して実装と設計意図を一致させた (`engine_plan_execute.py`)
+3. **[見送り(テスト追加で対応済み)]** 上記1の欠陥に対応するテストが無かった指摘は、
+   1の修正と同時に `test_tool_web_grounded.py` へテストを追加して解消
 
 ## Verification
 - [ ] Step 0 の実機確認が完了し、推測箇所が残っていない

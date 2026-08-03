@@ -13,6 +13,7 @@ import re
 import requests
 from bs4 import BeautifulSoup
 from youtube_transcript_api import YouTubeTranscriptApi
+from google.genai import types
 import feedparser
 
 from lib.lib_shared import (
@@ -20,6 +21,7 @@ from lib.lib_shared import (
     WORK_DIR, VAULT_ROOT, NEWS_DIR_NAME, DAILY_NOTE_DIR_NAME,
     retry, EDITORIAL_STYLE_RULES,
 )
+from lib.cost_guard import GROUNDING_COUNTER
 
 # 下流の最終要約プロンプトは各ステップの observation 全体を1500字で切り詰める
 # (engine_plan_execute.py の _build_final_summary_prompt)。1件の記事が長文だと
@@ -76,6 +78,67 @@ def tool_web_search(query: str, recency_days: int = None) -> str:
         return "\n\n".join(blocks)
     except Exception as e:
         return f"Error searching web: {e}"
+
+
+# grounding_chunksは上限なく返り得るため、下流の最終要約プロンプトの1500字切り詰め
+# (tool_web_search の _RESULT_CONTENT_CHARS と同じ理由) で消えないよう件数を絞る
+_GROUNDING_MAX_SOURCES = 5
+
+
+@retry(max_retries=2)
+def tool_web_search_grounded(query: str) -> str:
+    """Google Search Grounding (Gemini本体組み込みのGoogle検索) を使ったWeb検索。
+
+    tool_web_search (Tavily) は無料枠が大きく既定の選択肢だが、Tavilyの検索
+    ランキングはクエリの言い回しの微妙な差で変動し、狙った一次情報を安定して
+    拾えないことがある (2026-08-03の障害調査で判明)。Geminiが自前で使う
+    Google検索インデックスの方が「今日/本日/急に」等、直近性が特に重要で
+    ずれると回答の意味が無くなる質問に強い。日次呼び出し数は GROUNDING_COUNTER
+    で別枠管理する (無料枠5,000プロンプト/月への安全弁)。
+    """
+    print(f"[Tool] 🔍 Grounded Web Search: {query}")
+    try:
+        GROUNDING_COUNTER.check_and_increment()
+
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=query,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())]
+            ),
+        )
+        text = (response.text or "").strip()
+        if not text:
+            return "Web検索結果なし。"
+    except Exception as e:
+        return f"Error searching web (grounded): {e}"
+
+    # 引用元の抽出は本文取得と別のtry/exceptにする。SDKのバージョン差異や
+    # 想定外のレスポンス形で失敗しても、既に取得できている本文まで
+    # 丸ごと"Error"扱いで捨てない (本文取得の成功と引用元抽出の成否は独立)。
+    try:
+        gm = response.candidates[0].grounding_metadata if response.candidates else None
+        chunks = getattr(gm, "grounding_chunks", None) if gm is not None else None
+        if not chunks:
+            return text
+
+        sources = []
+        for c in chunks[:_GROUNDING_MAX_SOURCES]:
+            web = getattr(c, "web", None)
+            if web is None:
+                continue
+            title = getattr(web, "title", None) or "(タイトル不明)"
+            uri = getattr(web, "uri", None)
+            if uri:
+                sources.append(f"- {title}: {uri}")
+
+        if not sources:
+            return text
+        return text + "\n\n[参照元 (Google検索)]\n" + "\n".join(sources)
+    except Exception as e:
+        print(f"[Tool] ⚠️ 引用元の抽出に失敗、本文のみ返す: {e}")
+        return text
+
 
 @retry(max_retries=2)
 def tool_get_youtube_transcript(url: str) -> str:

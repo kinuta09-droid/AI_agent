@@ -51,9 +51,11 @@ def test_prompt_ordering():
     config_tools, _ = get_tools_config()
     names = [t["name"] for t in config_tools]
     assert names[0] == "tool_web_search"
+    # Google Search Grounding版 (2026-08-03): 精度優先の代替として tool_web_search の直後に追加
+    assert names[1] == "tool_web_search_grounded"
     # Phase④: keyword/semantic 2エントリ → hybrid 1エントリに置換 (optionalなし=常に存在)
-    assert names[1] == "tool_vault_hybrid_search"
-    assert names[2] == "tool_create_note"
+    assert names[2] == "tool_vault_hybrid_search"
+    assert names[3] == "tool_create_note"
     print("✅ registry: prompt ordering preserved")
 
 
@@ -98,6 +100,8 @@ MUST_NOT_BE_PARALLEL_SAFE = {
     # docling の変換キャッシュ (logs/paper_cache) へ書き込む。tool_import_document
     # はさらに Vault にノートを書く。
     "tool_read_document", "tool_import_document",
+    # GROUNDING_COUNTER (grounding_daily_calls.json) への書き込みを伴う
+    "tool_web_search_grounded",
 }
 
 
