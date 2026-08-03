@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 Phase A2 (multi-query 書き換え / LLMリランク / 出典) のユニットテスト
-(keyword_fn / semantic_fn / llm_fn 注入 — ネットワーク・Vault実体なし)
+(keyword_fn / semantic_fn / activity_keyword_fn / llm_fn 注入 —
+ ネットワーク・Vault実体・行動ログの実インデックスなし。
+ 検索は必ず _hits3() 経由で呼ぶこと。理由はそのヘルパの docstring)
 
 このファイルが守るもの:
   A2 の3施策はどれも「失敗したら黙って元の挙動に戻る」設計なので、
@@ -47,6 +49,20 @@ def _cand(rel_path, rrf, heading=None):
             "rrf": rrf, "sources": ["semantic"], "query_ids": [1],
             "heading": heading, "chunk_id": f"{rel_path}#0",
             "snippet": f"body of {rel_path}", "rerank_pos": None}
+
+
+def _hits3(*args, **kw):
+    """_hybrid_hits の注入契約どおり keyword/semantic/activity の3本を必ず塞ぐ。
+
+    2本しか渡さないと隔離したつもりで実インデックス (logs/vault_index.db) が
+    混ざる — _hybrid_hits の docstring に明記された罠。行動ログは実行のたびに
+    行が増えるので、**同じコードが開発機では赤・新規チェックアウトでは緑**
+    という形で出る (2026-08-04 に実際に踏んだ)。
+    """
+    kw.setdefault("keyword_fn", lambda q: [])
+    kw.setdefault("semantic_fn", lambda q, k: [])
+    kw.setdefault("activity_keyword_fn", lambda q, k: [])
+    return _hybrid_hits(*args, **kw)
 
 
 class _Spy:
@@ -110,7 +126,7 @@ def test_variant_only_hit_enters_candidates():
         "元の質問": [],                       # 原クエリでは1件も当たらない
         "quant_core ATR": [_hit("30_Main/target.md", 0.9, heading="Phase3")],
     }
-    hits, notes, queries = _hybrid_hits(
+    hits, notes, queries = _hits3(
         "元の質問", top_k=5,
         keyword_fn=lambda q: [],
         semantic_fn=lambda q, k: per_query.get(q, []),
@@ -191,7 +207,7 @@ def test_flags_off_never_call_llm():
         for value in ("0", "false", "OFF", "no"):
             os.environ["VAULT_SEARCH_MULTIQUERY"] = value
             os.environ["VAULT_SEARCH_RERANK"] = value
-            hits, notes, queries = _hybrid_hits(
+            hits, notes, queries = _hits3(
                 "質問", top_k=3,
                 keyword_fn=lambda q: [_hit("a.md", 2)],
                 semantic_fn=lambda q, k: [],
@@ -216,7 +232,7 @@ def test_explicit_override_beats_env():
         # .env が ON でも override=False が勝つ
         os.environ["VAULT_SEARCH_MULTIQUERY"] = "1"
         os.environ["VAULT_SEARCH_RERANK"] = "1"
-        hits, notes, queries = _hybrid_hits(
+        hits, notes, queries = _hits3(
             "質問", top_k=3, keyword_fn=lambda q: [_hit("a.md", 2)],
             semantic_fn=lambda q, k: [], llm_fn=must_not_be_called,
             multiquery=False, rerank=False)
@@ -226,7 +242,7 @@ def test_explicit_override_beats_env():
         os.environ["VAULT_SEARCH_MULTIQUERY"] = "0"
         os.environ["VAULT_SEARCH_RERANK"] = "0"
         spy = _Spy('["言い換え"]')
-        hits, notes, queries = _hybrid_hits(
+        hits, notes, queries = _hits3(
             "質問", top_k=3, keyword_fn=lambda q: [_hit("a.md", 2)],
             semantic_fn=lambda q, k: [], llm_fn=spy,
             multiquery=True, rerank=True)
@@ -329,7 +345,7 @@ def test_defaults_match_the_measurement():
         os.environ.pop("VAULT_SEARCH_RERANK", None)
 
         spy = _Spy("[1]")
-        hits, notes, queries = _hybrid_hits(
+        hits, notes, queries = _hits3(
             "質問", top_k=3,
             keyword_fn=lambda q: [_hit("a.md", 2)],
             semantic_fn=lambda q, k: [], llm_fn=spy)
@@ -342,7 +358,7 @@ def test_defaults_match_the_measurement():
         # .env で明示すれば既定を覆せる (機能を殺していない)
         os.environ["VAULT_SEARCH_MULTIQUERY"] = "1"
         spy2 = _Spy('["言い換え"]')
-        _, _, queries2 = _hybrid_hits(
+        _, _, queries2 = _hits3(
             "質問", top_k=3, keyword_fn=lambda q: [_hit("a.md", 2)],
             semantic_fn=lambda q, k: [], llm_fn=spy2)
         assert queries2 == ["質問", "言い換え"], queries2

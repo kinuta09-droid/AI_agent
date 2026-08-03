@@ -49,6 +49,20 @@ def _restore_env(saved):
             os.environ[key] = value
 
 
+def _hits3(*args, **kw):
+    """_hybrid_hits の注入契約どおり keyword/semantic/activity の3本を必ず塞ぐ。
+
+    2本しか渡さないと隔離したつもりで実インデックス (logs/vault_index.db) が
+    混ざる — _hybrid_hits の docstring に明記された罠。行動ログは実行のたびに
+    行が増えるので、**同じコードが開発機では赤・新規チェックアウトでは緑**
+    という形で出る (2026-08-04 に実際に踏んだ)。
+    """
+    kw.setdefault("keyword_fn", lambda q: [])
+    kw.setdefault("semantic_fn", lambda q, k: [])
+    kw.setdefault("activity_keyword_fn", lambda q, k: [])
+    return _hybrid_hits(*args, **kw)
+
+
 def _cand(rel_path, rrf):
     return {"rel_path": rel_path, "filename": os.path.basename(rel_path),
             "rrf": rrf, "sources": ["semantic"], "query_ids": [1],
@@ -259,7 +273,7 @@ def test_search_survives_dead_ollama():
         os.environ["VAULT_SEARCH_RERANK"] = "1"
         spy = _PostSpy(raises=requests.exceptions.ConnectionError("refused"))
         with _patched_post(spy):
-            hits, notes, queries = _hybrid_hits(
+            hits, notes, queries = _hits3(
                 "質問", top_k=3,
                 keyword_fn=lambda q: [
                     {"rel_path": "a.md", "filename": "a.md", "score": 3, "snippet": "s"},
