@@ -372,6 +372,9 @@ def main(argv=None):
         paths = sorted(glob.glob(os.path.join(args.tests_dir, "test_*.py")))
         if args.filter:
             paths = [p for p in paths if args.filter in os.path.basename(p)]
+            if not paths:
+                print(f"❌ {args.tests_dir} に '{args.filter}' を含む test_*.py が1本も無い")
+                return 1
         parallel, serial, unclassified = classify(paths, args.serial or [], args.lane_default)
         print(f"並列 {len(parallel)} 本 / 直列 {len(serial)} 本 / 未宣言 {len(unclassified)} 本")
         for path in serial:

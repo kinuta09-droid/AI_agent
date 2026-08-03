@@ -17,6 +17,9 @@
       失敗が FAIL として名指しされ、全体が exit 1 になることを確認する。
       あわせて **直列レーンが並列レーンと時間的に重なっていない**ことを
       実測の区間で確認する (重なったら隔離は名前だけの飾りになる)。
+    - `--filter` がファイル名の部分文字列一致で対象を絞り込み、一致が
+      無いときは (`--list` 経由でも) 無言で全件/0件扱いに倒さず exit 1
+      で明示的に知らせるか (2026-08-03)。
 
 実行: py tests/test_sweep_runner.py
 """
@@ -231,6 +234,10 @@ def test_filter_selects_a_subset_by_substring():
         code2, out2, _ = _run_runner(
             tmp, log, "--jobs", "4", "--lane-default", "parallel", "--filter", "no_such_genre")
         check("一致が無いときは exit 1 で明示的に知らせる", code2 == 1, f"exit={code2}\n{out2}")
+
+        code3, out3, _ = _run_runner(tmp, log, "--list", "--filter", "no_such_genre")
+        check("--list 経由でも一致無しは exit 1 になる (0/0/0 の無言成功に倒さない)",
+              code3 == 1, f"exit={code3}\n{out3}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
