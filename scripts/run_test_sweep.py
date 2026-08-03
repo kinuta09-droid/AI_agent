@@ -162,6 +162,7 @@ PARALLEL_TESTS = frozenset({
     "test_vault_index_mtime.py",
     "test_vault_links.py",
     "test_vault_semantic_smoke.py",
+    "test_vault_watcher.py",
     "test_verifier.py",
     "test_watchdog.py",
     "test_yt.py",

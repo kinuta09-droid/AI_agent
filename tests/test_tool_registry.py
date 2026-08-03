@@ -88,6 +88,7 @@ MUST_NOT_BE_PARALLEL_SAFE = {
     "tool_get_calendar",     # token.json 更新 + OAuth の run_local_server
     "tool_curate_topics", "tool_xtrend", "tool_xtrend_prompt",
     "tool_future_search", "tool_browser_use", "tool_generate_briefing",
+    "tool_check_vault_insights",  # Discord通知+seen-cacheファイル書き込みの副作用があるため
     "tool_add_event", "tool_create_task",
     # Paper Radar は Gemini を呼ばない読み取り中心のツールだが、Obsidian の
     # レポートと logs/paper_radar_latest.json を書く。Digest はその JSON を

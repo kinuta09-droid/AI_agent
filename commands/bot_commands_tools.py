@@ -13,6 +13,7 @@ from tools.tool_web import tool_fetch_daily_news
 from tools.tool_crypto import tool_analyze_crypto, tool_scan_crypto_market
 from tools.tool_briefing_manager import tool_generate_briefing
 from tools.tool_gmail_manager import get_gmail_summary as tool_gmail_check
+from tools.tool_vault_watcher import check_vault_insights
 
 from lib.bot_errors import log_command_error
 
@@ -83,6 +84,24 @@ async def cmd_briefing(interaction: discord.Interaction):
     if features:
         names = [f.get("feature_name", "?") for f in features]
         await interaction.channel.send("🔍 深掘りリサーチ:", view=BriefingDeepDiveView(names))
+
+
+async def cmd_vault_watch(interaction: discord.Interaction):
+    """Vault Insight Watcher を手動実行（開発中の動作確認用）"""
+    await interaction.response.defer()
+    try:
+        result = await asyncio.to_thread(check_vault_insights)
+    except Exception as e:
+        result = log_command_error("/vault_watch", e)
+
+    if _log_to_daily_note:
+        await asyncio.to_thread(_log_to_daily_note, "command", "/vault_watch", result)
+
+    if _send_with_fallback:
+        await _send_with_fallback(interaction, result, title="Vault Insight Watcher", emoji="🔎")
+    else:
+        await interaction.followup.send(result[:2000])
+
 
 async def cmd_memory(interaction: discord.Interaction):
     """長期記憶 (User_Memory.md) の現在の内容を表示する (閲覧のみ)。"""
