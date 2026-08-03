@@ -30,7 +30,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from lib.lib_shared import VAULT_ROOT, EXCLUDE_DIRS
-from lib.lib_obsidian_utils import format_source_ref
+from lib.lib_obsidian_utils import format_source_ref, split_heading_anchor
 from lib.concurrency import ollama_slot
 
 # ---------------------------------------------------------
@@ -105,6 +105,13 @@ _INDEX_EXCLUDE_DIRS = set(EXCLUDE_DIRS) | {"Templates"}
 CHUNK_MAX_CHARS = 1200
 CHUNK_OVERLAP = 150
 CHUNK_MIN_CHARS = 20
+
+# GraphRAG 段階1 (links): 入次数がこれを超えるノートはハブ (MOC/デイリーノート等)
+# とみなし、_link_hits の結果から足切りする (D5)。どの質問にも出る = 情報量ゼロ。
+# env 上書き可 (VAULT_SEARCH_LINK_HUB_DEGREE) — 実データで妥当値を確認してから
+# 調整できるようにしてある (呼び出し時ではなくモジュール読み込み時に固定でよい:
+# .env 差し替え後の再起動だけで効けば十分、検索ホットパスの毎回 getenv は避ける)。
+LINK_HUB_DEGREE = int(os.getenv("VAULT_SEARCH_LINK_HUB_DEGREE", "20"))
 
 
 # ---------------------------------------------------------
@@ -360,6 +367,13 @@ def _connect(db_path: str) -> sqlite3.Connection:
             key   TEXT PRIMARY KEY,
             value TEXT
         );
+        CREATE TABLE IF NOT EXISTS links (
+            src_path TEXT NOT NULL,
+            dst_name TEXT NOT NULL,
+            dst_path TEXT,
+            PRIMARY KEY (src_path, dst_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_links_dst ON links(dst_path);
     """)
     _migrate(conn)
     return conn
@@ -426,6 +440,114 @@ def _walk_vault_md(vault_root: str):
 
 
 # ---------------------------------------------------------
+# GraphRAG 段階1: リンク抽出・解決 (D1〜D6)
+# ---------------------------------------------------------
+
+# コードフェンス内の [[...]] はリンクとして扱わない (このリポのノートはコード片が
+# 多く、コード中の [[ ]] はリンク構文ではない)。バックリファレンス \1 で開始と
+# 同じマーカー (``` / ~~~) の閉じを要求する。
+_CODE_FENCE_RE = re.compile(r"(```|~~~)[^\n]*\n.*?\1", re.DOTALL)
+# !? は埋め込み ( ![[...]] ) も拾う。中身の判定 (拡張子) は _extract_links 側で行う。
+_WIKILINK_RE = re.compile(r"!?\[\[([^\[\]\n]+?)\]\]")
+
+
+def _extract_links(text: str) -> list:
+    """本文から [[wikilink]] の宛先名一覧を抽出する (純関数・重複排除・出現順)。
+
+    - フェンスドコードブロックは先に除去する
+    - エイリアス (`|`) の左側だけを見る。見出し/ブロック参照 (`#`/`#^`) は
+      lib.lib_obsidian_utils.split_heading_anchor で切り落とす
+      (「出す側」と「解決する側」の規則を二重管理しない)
+    - .md 以外の拡張子を持つもの (`![[図.png]]` 等) は捨てる
+      (dangling 率が汚れ、「未作成ノートへのリンク」の意味が読めなくなるため)
+    - 拡張子なし/.md は正規化 (.md を落とし \\ を / に) して返す
+    """
+    body = _CODE_FENCE_RE.sub("", text or "")
+    names = []
+    seen = set()
+    for m in _WIKILINK_RE.finditer(body):
+        raw = m.group(1).split("|", 1)[0].strip()
+        name, _heading = split_heading_anchor(raw)
+        if not name:
+            continue
+        name = name.replace("\\", "/")
+        base, ext = os.path.splitext(name)
+        if ext and ext.lower() != ".md":
+            continue
+        name = base if ext else name
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
+
+
+def _replace_links(conn: sqlite3.Connection, src_path: str, names: list) -> None:
+    """src_path のリンク行を names で置き換える (dst_path は未解決のまま NULL)。"""
+    conn.execute("DELETE FROM links WHERE src_path=?", (src_path,))
+    for name in names:
+        conn.execute(
+            "INSERT INTO links(src_path, dst_name, dst_path) VALUES(?, ?, NULL) "
+            "ON CONFLICT(src_path, dst_name) DO NOTHING",
+            (src_path, name),
+        )
+
+
+def _backfill_links(conn: sqlite3.Connection, vault_root: str) -> None:
+    """D6: 既存DBに links が無い/古いときの一括再構築。
+
+    通常の増分判定 (mtime一致でskip) を迂回して**全 .md** からリンクだけ
+    抽出する。埋め込み・chunks には一切触れないので、この関数だけを
+    走らせても再埋め込みは発生しない。
+    """
+    for abs_path, rel_path in _walk_vault_md(vault_root):
+        try:
+            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except OSError:
+            continue
+        _replace_links(conn, rel_path, _extract_links(content))
+
+
+def _resolve_link_targets(conn: sqlite3.Connection) -> tuple:
+    """links.dst_path を files (source='vault') から解決する。
+
+    2段マップ (拡張子なし rel_path 完全一致 → basename 一致) で引く。
+    basename が複数ファイルに一致する (曖昧) ときは **rel_path 昇順で
+    決定的に1つ選ぶ** (毎回同じ答えになることを優先する)。
+
+    Returns: (dangling_count, ambiguous_count)
+    """
+    file_rows = conn.execute(
+        "SELECT filepath FROM files WHERE source=?", (SOURCE_VAULT,)).fetchall()
+    by_relpath = {}
+    by_basename = {}
+    for (filepath,) in file_rows:
+        stem, _ext = os.path.splitext(filepath)
+        by_relpath[stem] = filepath
+        by_basename.setdefault(os.path.basename(stem), []).append(filepath)
+
+    dangling = 0
+    ambiguous = 0
+    rows = conn.execute("SELECT src_path, dst_name FROM links").fetchall()
+    for src_path, dst_name in rows:
+        target = by_relpath.get(dst_name)
+        if target is None:
+            candidates = by_basename.get(os.path.basename(dst_name))
+            if candidates:
+                if len(candidates) > 1:
+                    ambiguous += 1
+                target = sorted(candidates)[0]
+        if target is None:
+            dangling += 1
+        conn.execute(
+            "UPDATE links SET dst_path=? WHERE src_path=? AND dst_name=?",
+            (target, src_path, dst_name),
+        )
+    conn.commit()
+    return dangling, ambiguous
+
+
+# ---------------------------------------------------------
 # Incremental indexer (nightly batch)
 # ---------------------------------------------------------
 
@@ -440,14 +562,24 @@ def update_vault_index(embed_fn=_call_ollama_embed, db_path: str = DB_PATH,
     """
     vault_root = vault_root or VAULT_ROOT
 
-    # Ollama 疎通確認: ダメなら Vault 走査すらせず即座に返す
-    probe = embed_fn(["ping"])
-    if isinstance(probe, str):
-        return probe
-    dim = len(probe[0])
-
     conn = _connect(db_path)
     try:
+        # D6: 既存DBのリンクバックフィル。埋め込みには一切触れない。
+        # probe (Ollama 疎通確認) より前に置く: リンク抽出に埋め込みは不要なので、
+        # ここを probe の後ろに置くと Ollama が落ちている間グラフが古いまま
+        # 黙って腐る (D1)。mtime 差分の増分判定 (下) は未変更ファイルを
+        # 読み飛ばすため、初回この一括再構築をしないと links は永久に埋まらない。
+        if _get_meta(conn, "links_version") != "1":
+            _backfill_links(conn, vault_root)
+            _set_meta(conn, "links_version", "1")
+            conn.commit()
+
+        # Ollama 疎通確認: ダメなら Vault 走査すらせず即座に返す
+        probe = embed_fn(["ping"])
+        if isinstance(probe, str):
+            return probe
+        dim = len(probe[0])
+
         # モデル/次元が変わっていたらフルリインデックス
         stored_model = _get_meta(conn, "embedding_model")
         stored_dim = _get_meta(conn, "embedding_dim")
@@ -486,6 +618,9 @@ def update_vault_index(embed_fn=_call_ollama_embed, db_path: str = DB_PATH,
             try:
                 with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
                     content = f.read()
+                # リンクはファイルを読んだついでに更新する。埋め込み成否とは
+                # 独立 (下で embed_error になっても this file の links は最新のまま)。
+                _replace_links(conn, rel_path, _extract_links(content))
                 chunks = _chunk_markdown(content)
 
                 # チャンクテキストは分割方式上、見出し行 (## ...) を先頭に含む
@@ -539,15 +674,103 @@ def update_vault_index(embed_fn=_call_ollama_embed, db_path: str = DB_PATH,
                          (rel_path, SOURCE_VAULT))
             conn.execute("DELETE FROM files WHERE filepath=? AND source=?",
                          (rel_path, SOURCE_VAULT))
+            conn.execute("DELETE FROM links WHERE src_path=?", (rel_path,))
             removed += 1
         conn.commit()
 
+        # 新規ファイルが「以前は未解決だったリンク」の宛先になりうるので、
+        # 増分・削除・バックフィルすべてが終わった後に毎回まとめて解決する。
+        dangling, ambiguous = _resolve_link_targets(conn)
+
         total = conn.execute("SELECT COUNT(*) FROM chunks WHERE source=?",
                              (SOURCE_VAULT,)).fetchone()[0]
+        link_total = conn.execute("SELECT COUNT(*) FROM links").fetchone()[0]
         return (f"Vault index: {updated} files updated, {removed} removed, "
-                f"{failed} failed, {total} chunks total.")
+                f"{failed} failed, {total} chunks total. "
+                f"links: {link_total} (dangling {dangling}, ambiguous {ambiguous})")
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------
+# GraphRAG 段階1: 1ホップ展開 (検索側から呼ばれる)
+# ---------------------------------------------------------
+
+def _link_hits(seed_paths: list, limit: int, db_path: str = DB_PATH) -> list:
+    """seed_paths (RRF上位の rel_path) から1ホップで辿れる近傍を返す。
+
+    順方向 (seed -> dst) と逆方向 (src -> seed, backlink) の両方を見る。
+    除外: seed 自身 / 未解決 (dst_path IS NULL) / 入次数 > LINK_HUB_DEGREE /
+    chunks に本文が無いファイル。
+
+    並び: 共起数 (何個の seed から辿れたか) desc → 入次数 asc → rel_path asc
+    (決定的な順序 — _semantic_hits の stable argsort と同じ理由)。
+
+    Returns:
+        [{"rel_path", "filename", "score", "snippet", "heading", "chunk_id",
+          "source"}, ...] — _semantic_hits と同じ形 (tool_vault_hybrid が
+        rank_lists にそのまま混ぜられるようにするため)。
+    """
+    seeds = [s for s in (seed_paths or []) if s]
+    if not seeds:
+        return []
+    limit = max(0, int(limit or 0))
+    if limit == 0:
+        return []
+
+    conn = _connect(db_path)
+    try:
+        seed_set = set(seeds)
+        placeholders = ",".join("?" * len(seed_set))
+
+        indeg = dict(conn.execute(
+            "SELECT dst_path, COUNT(*) FROM links "
+            "WHERE dst_path IS NOT NULL GROUP BY dst_path").fetchall())
+
+        cooccur = {}  # neighbor rel_path -> {seed rel_path, ...} (辿れた seed の集合)
+        for src_path, dst_path in conn.execute(
+                f"SELECT src_path, dst_path FROM links "
+                f"WHERE src_path IN ({placeholders}) AND dst_path IS NOT NULL",
+                tuple(seed_set)).fetchall():
+            if dst_path in seed_set:
+                continue
+            cooccur.setdefault(dst_path, set()).add(src_path)
+        for src_path, dst_path in conn.execute(
+                f"SELECT src_path, dst_path FROM links WHERE dst_path IN ({placeholders})",
+                tuple(seed_set)).fetchall():
+            if src_path in seed_set:
+                continue
+            cooccur.setdefault(src_path, set()).add(dst_path)
+
+        neighbors = []
+        for rel_path, via in cooccur.items():
+            if indeg.get(rel_path, 0) > LINK_HUB_DEGREE:
+                continue
+            row = conn.execute(
+                "SELECT heading, text, chunk_index, source FROM chunks "
+                "WHERE filepath=? AND chunk_index=0", (rel_path,)).fetchone()
+            if row is None:
+                continue  # 本文が取れないファイルはリランカに読ませられない
+            heading, text, chunk_index, source = row
+            neighbors.append({
+                "rel_path": rel_path,
+                "filename": os.path.basename(rel_path),
+                "score": float(len(via)),
+                "snippet": text,
+                "heading": heading,
+                "chunk_id": f"{rel_path}#{chunk_index}",
+                "source": source or SOURCE_VAULT,
+                "_cooccur": len(via),
+                "_indeg": indeg.get(rel_path, 0),
+            })
+    finally:
+        conn.close()
+
+    neighbors.sort(key=lambda h: (-h["_cooccur"], h["_indeg"], h["rel_path"]))
+    for h in neighbors:
+        del h["_cooccur"]
+        del h["_indeg"]
+    return neighbors[:limit]
 
 
 # ---------------------------------------------------------

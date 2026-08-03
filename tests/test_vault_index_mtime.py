@@ -66,11 +66,15 @@ def main():
     os.makedirs(vault)
 
     try:
-        # --- Ollama不通: DBすら作られず即座にエラー文字列 ---
+        # --- Ollama不通: 即座にエラー文字列。ただし GraphRAG 段階1 で links の
+        # バックフィルが probe より前に走るようになったため (D1: リンク抽出は
+        # 埋め込み不要で、Ollama 停止中もグラフだけは追いつかせる)、
+        # DB ファイル自体は作られる (空vaultなのでchunks/filesは0のまま)。
         result = update_vault_index(embed_fn=FailingEmbedder(), db_path=db, vault_root=vault)
         assert result.startswith("[ERROR]"), result
-        assert not os.path.exists(db), "DB must not be created when probe fails"
-        print("✅ probe failure -> immediate [ERROR], no DB")
+        assert os.path.exists(db), "DB should exist (links backfill runs before probe)"
+        assert _chunk_count(db) == 0, "no chunks should be created when probe fails"
+        print("✅ probe failure -> immediate [ERROR], DB created (links backfill only)")
 
         # --- 初回フルインデックス ---
         _write(vault, "note_a.md", "## トピックA\nAIエージェントについてのメモです。設計と実装の考察。")
