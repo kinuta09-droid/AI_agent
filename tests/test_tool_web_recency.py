@@ -71,7 +71,10 @@ class _FakeTavily:
     def search(self, **kw):
         self.calls.append(kw)
         if self.responses:
-            return self.responses.pop(0)
+            item = self.responses.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
         return {"results": []}
 
 
@@ -167,6 +170,30 @@ def test_recency_dedup_by_url():
           out.count("https://both.example") == 1, out)
 
 
+# ---------------------------------------------------------
+# 4. news検索の失敗が一般検索の成功結果を道連れにしない (/grill 指摘・2026-08-03)
+# ---------------------------------------------------------
+
+def test_recency_news_failure_keeps_general_results():
+    """news検索は「あれば良い追加情報」。ここで例外にすると、一般検索が
+    成功していても関数全体が "Error searching web:" を返してしまい、
+    recency_days を付けた質問だけ失敗率が上がる回帰になる。
+    """
+    print("\n[4] news検索が例外を投げても一般検索の結果は失われない")
+    _reset()
+    tw.tavily_client.responses = [
+        {"results": [{"title": "General", "url": "https://gen-only.example", "content": "g"}]},
+        RuntimeError("Tavily news endpoint timeout"),
+    ]
+    out = tw.tool_web_search("直近の出来事", recency_days=7)
+
+    check("Tavily呼び出しは2回試みられる", len(tw.tavily_client.calls) == 2,
+          str(tw.tavily_client.calls))
+    check("news検索の例外で関数全体がErrorにならない",
+          not out.startswith("Error searching web:"), out)
+    check("一般検索の結果は保持される", "https://gen-only.example" in out, out)
+
+
 if __name__ == "__main__":
     print("=" * 55)
     print(" tool_web_search recency_days マージ検索 回帰テスト")
@@ -175,6 +202,7 @@ if __name__ == "__main__":
     test_no_recency_single_general_call()
     test_recency_days_adds_news_call()
     test_recency_dedup_by_url()
+    test_recency_news_failure_keeps_general_results()
 
     print("\n" + "=" * 55)
     print(f"PASS: {len(_PASS)} / FAIL: {len(_FAIL)}")

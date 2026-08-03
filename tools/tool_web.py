@@ -37,15 +37,21 @@ def tool_web_search(query: str, recency_days: int = None) -> str:
         results = response.get("results", [])
 
         if recency_days:
-            news_response = tavily_client.search(
-                query=query, search_depth="advanced", max_results=3,
-                topic="news", days=recency_days,
-            )
-            seen_urls = {r["url"] for r in results}
-            for r in news_response.get("results", []):
-                if r["url"] not in seen_urls:
-                    results.append(r)
-                    seen_urls.add(r["url"])
+            # news検索は「あれば良い追加情報」。ここで例外にすると一般検索の
+            # 成功結果まで丸ごと失敗扱いになる (recency_days を付けた質問だけ
+            # 失敗率が上がる回帰になるため、個別に握って一般検索側は必ず返す)
+            try:
+                news_response = tavily_client.search(
+                    query=query, search_depth="advanced", max_results=3,
+                    topic="news", days=recency_days,
+                )
+                seen_urls = {r["url"] for r in results}
+                for r in news_response.get("results", []):
+                    if r["url"] not in seen_urls:
+                        results.append(r)
+                        seen_urls.add(r["url"])
+            except Exception as e:
+                print(f"[Tool] ⚠️ news検索に失敗、一般検索の結果のみ返す: {e}")
 
         if not results: return "Web検索結果なし。"
         return "\n\n".join([f"- {r['title']}\n  URL: {r['url']}\n  {r['content']}" for r in results])
