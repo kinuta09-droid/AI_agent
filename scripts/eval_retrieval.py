@@ -137,7 +137,8 @@ def warmup(backend: str, model: str) -> None:
 
 
 def run(questions: list, multiquery: bool, rerank: bool, only: str = "",
-        rerank_backend: str = None, loop: bool = None) -> list:
+        rerank_backend: str = None, loop: bool = None,
+        link_expand: bool = None) -> list:
     results = []
     for q in questions:
         if only and q["id"] not in {s.strip() for s in only.split(",")}:
@@ -145,7 +146,7 @@ def run(questions: list, multiquery: bool, rerank: bool, only: str = "",
         started = time.time()
         hits, notes, queries = _hybrid_hits(
             q["query"], top_k=RETRIEVE_K, multiquery=multiquery, rerank=rerank,
-            rerank_backend=rerank_backend, loop=loop)
+            rerank_backend=rerank_backend, loop=loop, link_expand=link_expand)
         elapsed = time.time() - started
 
         got = [h["rel_path"] for h in hits]
@@ -192,7 +193,7 @@ def is_clean_arm(config: dict, results: list) -> bool:
     「表示と実態の食い違い」そのものになるので、計測の汚染をフラグで持ち回る。
     """
     requested = (config.get("multiquery") or config.get("rerank")
-                 or config.get("loop"))
+                 or config.get("loop") or config.get("link_expand"))
     if not requested:
         return True  # OFF アームはフォールバックしようがない
     return not any(r["notes"] for r in results)
@@ -229,7 +230,7 @@ def compare(before: dict, after: dict) -> str:
 
     def _describe(cfg, payload):
         parts = [f"multiquery={cfg.get('multiquery')}", f"rerank={cfg.get('rerank')}",
-                 f"loop={cfg.get('loop')}"]
+                 f"loop={cfg.get('loop')}", f"link_expand={cfg.get('link_expand')}"]
         if cfg.get("rerank"):
             parts.append(f"backend={cfg.get('rerank_backend') or '?'}")
             if cfg.get("rerank_model"):
@@ -292,6 +293,8 @@ def main() -> int:
                         help="LLMリランクの有無 (.env より優先)")
     parser.add_argument("--loop", default="on", choices=["on", "off"],
                         help="Retriever ループ (薄い結果を自力で引き直す) の有無")
+    parser.add_argument("--link-expand", default="off", choices=["on", "off"],
+                        help="[[wikilink]] 1ホップ展開の有無 (既定 off = 本番既定と同じ)")
     parser.add_argument("--rerank-backend", default="", choices=["", "gemini", "ollama"],
                         help="リランクを回す場所 (未指定は .env / コード既定)")
     parser.add_argument("--rerank-model", default="",
@@ -309,6 +312,7 @@ def main() -> int:
     from tools import tool_vault_hybrid as hybrid
 
     multiquery, rerank = _flag(args.multiquery), _flag(args.rerank)
+    link_expand = _flag(args.link_expand)
     # ループは LLM を使う機能なのでリランクOFFでは動かない (_retrieve_loop 参照)。
     # --rerank off --loop on を黙って「loop=on」と記録すると、効いていない施策を
     # ONとして比較表に残すことになる。実際に効く条件まで解決してから記録する。
@@ -337,7 +341,8 @@ def main() -> int:
     print("=" * 62)
     print(f" 検索評価: multiquery={'ON' if multiquery else 'OFF'} / "
           f"rerank={'ON' if rerank else 'OFF'} / "
-          f"loop={'ON' if loop else 'OFF'} / {len(questions)}問")
+          f"loop={'ON' if loop else 'OFF'} / "
+          f"link_expand={'ON' if link_expand else 'OFF'} / {len(questions)}問")
     if _flag(args.loop) and not rerank:
         print(" ⚠️ --loop on を指定しましたが、リランクOFFではループは動きません (loop=OFF として記録)")
     if rerank:
@@ -361,10 +366,12 @@ def main() -> int:
 
     started = time.time()
     results = run(questions, multiquery, rerank, only=args.only,
-                  rerank_backend=backend if rerank else None, loop=loop)
+                  rerank_backend=backend if rerank else None, loop=loop,
+                  link_expand=link_expand)
     metrics = score(results)
 
     config = {"multiquery": multiquery, "rerank": rerank, "loop": loop,
+              "link_expand": link_expand,
               "rerank_backend": backend if rerank else None,
               "rerank_model": model or None,
               "rerank_candidates": n_cand, "rerank_snippet_chars": n_chars,
