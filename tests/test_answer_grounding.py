@@ -262,6 +262,29 @@ def test_summary_prompt_preserves_citations():
           "[[crypto-tool-upgrade-plan.md#Phase3]]" in prompt)
 
 
+def test_summary_prompt_has_temporal_consistency_rule():
+    """[8] 時期整合性チェックの指示がある (2026-08-03)
+
+    「今日ガソリン価格が急に下がった理由」に対し、検索結果にあった
+    数ヶ月前の別制度の話を時期を無視して直接の理由として断定した誤答の
+    再発防止。事実の有無 (Verifier) だけでなく、その事実の時期が質問の
+    時間軸と合っているかを要約プロンプト自身にも確認させる。
+    """
+    print("\n[8] 時期整合性チェックの指示 (2026-08-03)")
+    results = [{
+        "step": 1, "task": "ガソリン価格が今日下がった理由を調べる",
+        "tool": "tool_web_search", "success": True,
+        "observation": "2026年1月にガソリンの暫定税率が廃止された。",
+    }]
+    prompt = _build_final_summary_prompt("今日ガソリン価格が急に安くなった理由は？", results)
+
+    check("時期整合性の節がある", "【時期整合性の確認】" in prompt)
+    check("事実の時期を明示させる指示がある", "いつ発表・適用されたものか" in prompt)
+    check("時期の食い違いを断定させない指示がある",
+          "断定してはならない" in prompt)
+    check("留保を付けさせる指示がある", "確認できない" in prompt)
+
+
 def test_planner_prompt_mentions_append_guideline():
     print("\n[5] Planner の【ツール選択の指針】に追記の行がある")
     path = os.path.join(_PROJECT_ROOT, "engine_plan_execute.py")
@@ -277,6 +300,25 @@ def test_planner_prompt_mentions_append_guideline():
           "予定/タスクの同期専用" in src)
 
 
+def test_resolve_tool_args_prompt_mentions_recency_days():
+    """[9] _resolve_tool_args のプロンプトに recency_days ガイドがある (2026-08-03)
+
+    ガソリン価格の誤答の直接原因は、tool_web_search が鮮度フィルタなしで
+    Tavily を呼んでいたこと。「今日」「急に」等の直近性を要求する質問で
+    Planner が recency_days を指定するよう促す文言が消えていないことを固定する。
+    """
+    print("\n[9] _resolve_tool_args プロンプトの recency_days ガイド (2026-08-03)")
+    path = os.path.join(_PROJECT_ROOT, "engine_plan_execute.py")
+    with open(path, encoding='utf-8') as f:
+        src = f.read()
+
+    check("recency_days のガイドがある", "recency_days" in src)
+    check("直近性を示す語(今日/急に等)に言及している",
+          "「今日」「本日」「急に」" in src)
+    check("不要な質問には付けない旨の歯止めがある",
+          "指定不要です" in src)
+
+
 if __name__ == "__main__":
     print("=" * 55)
     print(" 自機能グラウンディング / 追記ツール弁別 回帰テスト")
@@ -289,7 +331,9 @@ if __name__ == "__main__":
     test_note_tool_descriptions_are_distinguishable()
     test_t12_assertion_still_rejects_the_original_bug()
     test_summary_prompt_preserves_citations()
+    test_summary_prompt_has_temporal_consistency_rule()
     test_planner_prompt_mentions_append_guideline()
+    test_resolve_tool_args_prompt_mentions_recency_days()
 
     print("\n" + "=" * 55)
     print(f"PASS: {len(_PASS)} / FAIL: {len(_FAIL)}")
