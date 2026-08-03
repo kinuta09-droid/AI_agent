@@ -32,9 +32,9 @@ Geminiが安定して強いのは、Google自身のSearch Grounding機能(Google
 | 2 | `tool_web_search_grounded` 実装 | 完了 | 2026-08-03 | `tools/tool_web.py`、`tool_web_search`直後 |
 | 3 | `lib/tool_registry.py` 登録 | 完了 | 2026-08-03 | description使い分け明記 + test_tool_registry.py の分類集合も更新 |
 | 4 | Planner (`engine_plan_execute.py`) の使い分けガイド追加 | 完了 | 2026-08-03 | 【ツール選択の指針】に追記(719行目付近ではなく219行目付近だった) |
-| 5 | テスト (`tests/test_tool_web_grounded.py`) | 完了 | 2026-08-03 | 16/16 PASS。`run_test_sweep.py` PARALLEL_TESTS登録済み |
+| 5 | テスト (`tests/test_tool_web_grounded.py`) | 完了 | 2026-08-03 | 18/18 PASS。`run_test_sweep.py` PARALLEL_TESTS登録済み |
 | 6 | 実機比較検証 | 完了 | 2026-08-03 | 下記「Step 6 実測結果」参照 |
-| 7 | クローズ処理 (テスト→Guardian→PR→マージ) | 進行中 | 2026-08-03 | /grillで3件指摘・修正済み(下記参照)。テスト84/84・Guardian緑。[PR #51](https://github.com/kinuta09-droid/AI_agent/pull/51) 作成済み・マージ待ち |
+| 7 | クローズ処理 (テスト→Guardian→PR→マージ) | 完了 | 2026-08-03 | /grillで3件指摘・修正済み(下記参照)。テスト84/84・Guardian緑。[PR #51](https://github.com/kinuta09-droid/AI_agent/pull/51) → master `49ffd39` マージ済み |
 
 状態は `未着手` / `進行中` / `完了` / `見送り(理由)` で更新する。
 
