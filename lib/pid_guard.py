@@ -160,6 +160,22 @@ def is_process_alive(pid):
     照会権限が無いだけのケース (ERROR_ACCESS_DENIED) を「死亡」と誤判定すると
     重複起動を許してしまうため、判定に迷ったら「生存」側に倒す。
     死亡プロセスの照会は ERROR_INVALID_PARAMETER(87) になる。
+
+    なぜ OpenProcess の成否だけで判定しないのか:
+    Windows のプロセスオブジェクトは、プロセス自体が終了 (ExitProcess) しても
+    最後のハンドルが閉じられるまでカーネル内に残り、その間は他プロセスからの
+    OpenProcess も成功し続ける (ゾンビハンドル)。実際に本番で
+    subprocess.Popen の親 (main.py の Monitor) がハンドルを握ったまま解放
+    しておらず、とうに終了した子 PID に対して OpenProcess が成功し続け、
+    pid_guard.acquire() が「他インスタンス生存中」と誤判定し続けて scheduler
+    が永久に起動できないクラッシュループになった (2026-08-03)。
+    ハンドルを取得できた場合は WaitForSingleObject(handle, 0) でプロセス
+    オブジェクトのシグナル状態を確認する (0ms タイムアウト = ノンブロッキング)。
+    GetExitCodeProcess の STILL_ACTIVE(259) 判定を使わないのは、対象プロセスの
+    実際の終了コードが 259 だった場合に「実行中」と区別できない Windows API
+    既知の曖昧さがあるため。WaitForSingleObject はプロセス終了時にシグナル
+    化される OS のプリミティブそのものを見るのでこの曖昧さがなく、CPython の
+    subprocess.Popen._internal_poll も内部でこの API を使っている。
     """
     if pid is None or pid <= 0:
         return False
@@ -169,12 +185,18 @@ def is_process_alive(pid):
     import ctypes
     ERROR_ACCESS_DENIED = 5
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000  # QUERY_INFORMATION より要求権限が緩い
+    SYNCHRONIZE = 0x00100000  # WaitForSingleObject に必須 (QUERY だけでは ACCESS_DENIED)
+    WAIT_OBJECT_0 = 0x0
 
     kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    handle = kernel32.OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, int(pid))
     if handle:
-        kernel32.CloseHandle(handle)
-        return True
+        try:
+            # timeout=0 (ms): 待たずに即座にシグナル状態を問い合わせる
+            return kernel32.WaitForSingleObject(handle, 0) != WAIT_OBJECT_0
+        finally:
+            kernel32.CloseHandle(handle)
     return ctypes.get_last_error() == ERROR_ACCESS_DENIED
 
 

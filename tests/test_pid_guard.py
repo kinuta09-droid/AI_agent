@@ -13,6 +13,7 @@ lib/pid_guard.py のユニットテスト (重複起動ガードのアトミッ�
 import os
 import sys
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -228,6 +229,41 @@ def test_corrupt_boot_id_falls_back_to_liveness():
                        boot=_BOOT_NOW) is False, \
             "ブート ID 破損を理由に生存所有者のロックを奪ってはならない"
     print("✅ pid_guard: ブート ID 破損時は PID の生死判定にフォールバック")
+
+
+# ---------------------------------------------------------
+# is_process_alive 本体 (ゾンビハンドル回帰テスト)
+#
+# 2026-08-03: main.py の Monitor が subprocess.Popen で起動した scheduler が
+# 終了しても、親 (main.py) が Popen オブジェクト (=ハンドル) を保持し続ける
+# 限り OpenProcess は成功し続けた。旧実装はハンドル取得の成否だけで生死を
+# 判定していたため「生存」と誤判定し、acquire() が永久に False を返して
+# scheduler が起動できないクラッシュループになった。
+# ---------------------------------------------------------
+
+def test_is_process_alive_true_for_running_process():
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+    try:
+        assert pid_guard.is_process_alive(proc.pid) is True
+    finally:
+        proc.terminate()
+        proc.wait()
+    print("✅ pid_guard: 実行中プロセスは生存と判定")
+
+
+def test_is_process_alive_detects_zombie_handle():
+    """終了済みだが自プロセスがハンドルを保持したままの PID を正しく死亡と判定する。
+
+    proc.wait() で確実に終了させた後も、proc (Popen オブジェクト) への参照は
+    まだ生きているため、そのプロセスへの OpenProcess はハンドル取得だけなら
+    成功し続ける (本番障害の再現条件)。GetExitCodeProcess で STILL_ACTIVE
+    以外を確認できて初めて「死亡」と判定できることを検証する。
+    """
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    assert pid_guard.is_process_alive(proc.pid) is False, \
+        "終了済みだが親がハンドルを保持中のプロセスを生存と誤判定してはならない"
+    print("✅ pid_guard: ゾンビハンドル (終了済み・親がハンドル保持中) を正しく死亡判定")
 
 
 # ---------------------------------------------------------
