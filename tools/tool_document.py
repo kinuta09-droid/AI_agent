@@ -29,7 +29,7 @@ import stat as stat_module
 from lib.docling_client import CaptureError, capture_document
 from lib.lib_shared import EDITORIAL_STYLE_RULES, MODEL_NAME_HEAVY, VAULT_ROOT, client, safe_json_loads
 from tools.tool_obsidian import _sanitize_vault_rel_path
-from tools.tool_paper_digest import slugify
+from tools.tool_paper_digest import build_note_article, build_sns_post, slugify
 
 # Discordの既定添付上限に合わせる。ローカルパス直接指定でも同じ上限を適用する
 # (エージェント自身が誤って巨大ファイルを指定してCPUを占有する事故も防ぐ)。
@@ -233,13 +233,60 @@ def render_document_note(digest: dict, path_or_url: str, capture: dict) -> str:
     return "\n".join(lines)
 
 
-def tool_import_document(path_or_url: str, folder: str = "30_Main") -> str:
+def _draft_subject_meta(title: str, path_or_url: str) -> dict:
+    """tool_paper_digest の draft 系関数へ渡す「paper 形の」アダプタ辞書を作る。
+
+    tool_paper_digest.build_sns_post / build_note_article はプロンプトの語彙
+    (subject_label/source_label) や digest スキーマの差 (fallback_fields) を
+    この辞書経由の任意キーで受け取れるよう汎用化済み (paper 側の呼び出しは
+    これらのキーを持たないので挙動は不変)。
+
+    abs_url は _render_source_link と同じ判定 (http/https のみ) を使う。
+    Discord添付は一時ファイルパスなので恒久的な公開URLを持たず空文字になるが、
+    ReAct経由で URL を直接指定した場合は本編ノートの [元ファイル] リンクと
+    同じ URL を下書きの末尾にも載せる (ここを一律空にすると、既に取得できている
+    有効な公開リンクを下書きだけが握りつぶすことになる)。
+    """
+    abs_url = path_or_url if re.match(r"^https?://", path_or_url or "", re.IGNORECASE) else ""
+    return {
+        "title": title,
+        "abs_url": abs_url,
+        "subject_label": "文書",
+        "source_label": "元資料",
+        "fallback_fields": [("種別", "doc_type"), ("要約", "summary")],
+    }
+
+
+def render_document_draft(title: str, sns_post: str, article_title: str, article_body: str) -> str:
+    """SNS投稿+note/X Articles記事の下書きノート本文を組み立てる純関数。
+
+    tool_paper_digest.run_paper_digest の draft_lines 組み立てと同型
+    (二重実装を避けるため、生成そのものは build_sns_post/build_note_article を
+    そのまま再利用し、ここは保存用Markdownへの整形だけを担う)。
+    """
+    lines = [f"# ✍️ 投稿下書き — {title}", ""]
+    if sns_post:
+        lines += [f"## X (Twitter) 投稿 ({len(sns_post)}字)", "", sns_post, ""]
+    if article_body:
+        lines += ["## note.com 記事下書き", "",
+                  f"**タイトル案:** {article_title}", "", article_body, "",
+                  "## X Articles 下書き (note.com と同内容、X内で読める長文記事)", "",
+                  f"**タイトル案:** {article_title}", "", article_body]
+    return "\n".join(lines)
+
+
+def tool_import_document(path_or_url: str, folder: str = "30_Main", mode: str = "none") -> str:
     """PDF/Office文書 (URLまたはローカルパス) をdoclingで変換しGeminiで要約して
 
     Obsidianにノート保存する (元ファイルへの参照付き)。戻り値契約は既存どおり
     "Error: ..." (lib.bot_errors.is_failure_result() が拾う)。
+
+    mode: "none" (既定、要約ノートのみ) / "sns" (Xティザー投稿下書きも生成) /
+    "note" (note.com/X Articles記事下書きも生成) / "both"。
+    tool_paper_digest.run_paper_digest と同じ mode 語彙・下書き生成ロジック
+    (build_sns_post/build_note_article) を再利用する。
     """
-    print(f"[Tool] 📥 Importing Document: {path_or_url} -> {folder}")
+    print(f"[Tool] 📥 Importing Document: {path_or_url} -> {folder} (mode={mode})")
     cap_err = check_document_caps(path_or_url)
     if cap_err:
         return cap_err
@@ -282,9 +329,51 @@ def tool_import_document(path_or_url: str, folder: str = "30_Main") -> str:
     except Exception as e:
         return f"Error: ノートの保存に失敗しました ({e})"
 
-    return (
+    sns_post = ""
+    article_title, article_body = "", ""
+    if mode in ("sns", "note", "both"):
+        adapter = _draft_subject_meta(title, path_or_url)
+        if mode in ("sns", "both"):
+            try:
+                sns_post = build_sns_post(digest, adapter)
+            except Exception as e:
+                return f"Error: X投稿の生成に失敗しました ({e})"
+        if mode in ("note", "both"):
+            try:
+                article = build_note_article(digest, adapter, capture)
+            except Exception as e:
+                return f"Error: note記事の生成に失敗しました ({e})"
+            article_title = article.get("title") or title
+            article_body = article.get("body", "")
+
+    draft_filename = ""
+    if sns_post or article_body:
+        draft_body = render_document_draft(title, sns_post, article_title, article_body)
+        # 本編ファイル名 (衝突回避のタイムスタンプ接尾辞込み) から派生させ、
+        # 下書き専用の重複チェックを別途書かずに済ませる
+        draft_filename = filename[:-3] + "_draft.md" if filename.endswith(".md") else filename + "_draft.md"
+        try:
+            with open(os.path.join(save_dir, draft_filename), "w", encoding="utf-8") as f:
+                f.write(draft_body)
+        except Exception as e:
+            return f"Error: 下書きの保存に失敗しました ({e})"
+
+    base = (
         f"Document Import: 「{title}」\n"
         f"取得経路: {capture.get('backend')} ({capture.get('chars', 0)}文字)\n"
-        f"要約: {digest.get('one_liner', '')}\n"
-        f"保存先: [[{filename}]] ({save_dir_rel}/{filename})"
+        f"要約: {digest.get('one_liner', '')}"
     )
+    tail = f"保存先: [[{filename}]] ({save_dir_rel}/{filename})"
+    if draft_filename:
+        tail += f", [[{draft_filename}]]"
+    if not sns_post and not article_body:
+        # mode="none" (既定) は従来どおり単一の \n 区切り文字列を返す (完全後方互換)
+        return f"{base}\n{tail}"
+
+    parts = [base]
+    if sns_post:
+        parts.append(f"【Xティザー投稿下書き】({len(sns_post)}字)\n{sns_post}")
+    if article_body:
+        parts.append(f"【note/X Articles 記事下書き】タイトル案: {article_title} / {len(article_body)}字を生成しました")
+    parts.append(tail)
+    return "\n\n".join(parts)

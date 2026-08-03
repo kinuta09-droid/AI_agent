@@ -332,6 +332,149 @@ def test_import_document_capture_error_is_a_failure_string():
 
 
 # ---------------------------------------------------------
+# [7] render_document_draft (純関数) / mode="sns"|"note"|"both"|"none"
+# ---------------------------------------------------------
+
+def test_render_document_draft_variants():
+    """sns本文のみ・記事のみ・両方・両方空、の4パターンで見出しの有無が変わること。"""
+    only_sns = doc.render_document_draft("タイトルA", "SNS本文", "", "")
+    assert "## X (Twitter) 投稿" in only_sns, only_sns
+    assert "SNS本文" in only_sns, only_sns
+    assert "note.com 記事下書き" not in only_sns, only_sns
+
+    only_article = doc.render_document_draft("タイトルB", "", "記事タイトル", "記事本文")
+    assert "## X (Twitter) 投稿" not in only_article, only_article
+    assert "## note.com 記事下書き" in only_article, only_article
+    assert "## X Articles 下書き" in only_article, only_article
+    assert only_article.count("記事本文") == 2, only_article  # note.com + X Articles の両方に同一本文
+    assert "記事タイトル" in only_article, only_article
+
+    both = doc.render_document_draft("タイトルC", "SNS本文C", "記事タイトルC", "記事本文C")
+    assert "## X (Twitter) 投稿" in both, both
+    assert "## note.com 記事下書き" in both, both
+    assert "## X Articles 下書き" in both, both
+
+    empty = doc.render_document_draft("タイトルD", "", "", "")
+    assert "## X (Twitter) 投稿" not in empty, empty
+    assert "## note.com 記事下書き" not in empty, empty
+    assert empty.startswith("# ✍️ 投稿下書き — タイトルD"), empty
+    print("✅ [7] render_document_draft: sns本文のみ/記事のみ/両方/両方空の4パターン")
+
+
+def test_draft_subject_meta_uses_url_as_abs_url_only_for_http_sources():
+    """path_or_url が http(s) の場合だけ abs_url へ伝播すること (回帰テスト)。
+
+    以前は abs_url を一律 "" にしていたため、ReAct 経由で URL を直接指定した
+    ケース (本編ノートには _render_source_link が [元ファイル](URL) を載せる)
+    でも下書きの末尾リンクだけが握りつぶされていた。
+    """
+    assert doc._draft_subject_meta("T", "https://example.com/a.pdf")["abs_url"] == "https://example.com/a.pdf"
+    assert doc._draft_subject_meta("T", "HTTPS://example.com/a.pdf")["abs_url"] == "HTTPS://example.com/a.pdf"
+    assert doc._draft_subject_meta("T", "C:\\tmp\\arms_doc_xyz\\a.pdf")["abs_url"] == ""
+    assert doc._draft_subject_meta("T", "")["abs_url"] == ""
+    print("✅ [7] _draft_subject_meta: http(s)ソースのみ abs_url へ伝播する")
+
+
+def test_import_document_mode_sns_generates_draft_with_stubbed_build_sns_post():
+    """mode='sns' で doc.build_sns_post をスタブし、下書きファイルが本編と別に
+    保存されること。Gemini は一切呼ばない。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        orig = _patch_import_document(tmp)
+        orig_build_sns = doc.build_sns_post
+        doc.build_sns_post = lambda dd, adapter: "スタブSNS投稿"
+        try:
+            result = doc.tool_import_document("dummy.pdf", folder="30_Main", mode="sns")
+        finally:
+            doc.build_sns_post = orig_build_sns
+            _restore_import_document(orig)
+        assert not is_failure_result(result), result
+        assert result.count("[[") == 2, f"本編+下書きの2件分のwikilinkが無い: {result!r}"
+
+        saved_dir = os.path.join(tmp, "30_Main")
+        files = sorted(os.listdir(saved_dir))
+        assert len(files) == 2, files
+        draft_files = [f for f in files if f.endswith("_draft.md")]
+        main_files = [f for f in files if not f.endswith("_draft.md")]
+        assert len(draft_files) == 1, files
+        assert len(main_files) == 1, files
+
+        with open(os.path.join(saved_dir, draft_files[0]), encoding="utf-8") as f:
+            draft_content = f.read()
+        assert "スタブSNS投稿" in draft_content, draft_content
+
+        with open(os.path.join(saved_dir, main_files[0]), encoding="utf-8") as f:
+            main_content = f.read()
+        assert _FAKE_DIGEST["one_liner"] in main_content, main_content
+    print("✅ [7] tool_import_document mode=sns: 下書きファイルを本編と別に保存する")
+
+
+def test_import_document_mode_note_generates_draft_with_stubbed_build_note_article():
+    """mode='note' で doc.build_note_article をスタブし、下書きに記事タイトル/本文が
+    反映されること。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        orig = _patch_import_document(tmp)
+        orig_build_note = doc.build_note_article
+        doc.build_note_article = lambda dd, adapter, capture: {
+            "title": "記事タイトル", "body": "記事本文",
+        }
+        try:
+            result = doc.tool_import_document("dummy.pdf", folder="30_Main", mode="note")
+        finally:
+            doc.build_note_article = orig_build_note
+            _restore_import_document(orig)
+        assert not is_failure_result(result), result
+
+        saved_dir = os.path.join(tmp, "30_Main")
+        draft_files = [f for f in os.listdir(saved_dir) if f.endswith("_draft.md")]
+        assert len(draft_files) == 1, os.listdir(saved_dir)
+        with open(os.path.join(saved_dir, draft_files[0]), encoding="utf-8") as f:
+            draft_content = f.read()
+        assert "記事タイトル" in draft_content, draft_content
+        assert "記事本文" in draft_content, draft_content
+    print("✅ [7] tool_import_document mode=note: 下書きに記事タイトル/本文が反映される")
+
+
+def test_import_document_mode_none_writes_no_draft_file():
+    """mode='none' (既定) では下書きファイルを一切生成しないこと。
+
+    既存テストは "[[" in result しか見ておらず、下書きファイルの有無という
+    観点が抜けていたための明示的な回帰テスト。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        orig = _patch_import_document(tmp)
+        try:
+            result = doc.tool_import_document("dummy.pdf", folder="30_Main", mode="none")
+        finally:
+            _restore_import_document(orig)
+        assert not is_failure_result(result), result
+        saved_dir = os.path.join(tmp, "30_Main")
+        files = os.listdir(saved_dir)
+        assert not any(f.endswith("_draft.md") for f in files), \
+            f"mode=none なのに下書きファイルが生成されている: {files}"
+        assert len(files) == 1, files
+    print("✅ [7] tool_import_document mode=none (既定): 下書きファイルは一切生成しない")
+
+
+def test_import_document_mode_sns_build_sns_post_failure_is_error_string():
+    """build_sns_post が例外を投げたら握りつぶさず Error: 文字列を返すこと。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        orig = _patch_import_document(tmp)
+        orig_build_sns = doc.build_sns_post
+
+        def _boom(dd, adapter):
+            raise RuntimeError("gemini down")
+
+        doc.build_sns_post = _boom
+        try:
+            result = doc.tool_import_document("dummy.pdf", folder="30_Main", mode="sns")
+        finally:
+            doc.build_sns_post = orig_build_sns
+            _restore_import_document(orig)
+        assert is_failure_result(result), result
+    print("✅ [7] tool_import_document mode=sns: build_sns_post 例外は Error: で返す (握りつぶさない)")
+
+
+# ---------------------------------------------------------
 # [6] registry
 # ---------------------------------------------------------
 

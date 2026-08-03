@@ -95,12 +95,18 @@ def _mechanical_hook_post(digest: dict, paper: dict) -> str:
 
     フックも文体の工夫も無いが、digest の値をそのまま出すだけなので
     捏造のしようがない。draft_sns_hook_post が空を返したときの保険。
+
+    paper["fallback_fields"] があれば digest キーのラベル対応をそれで上書きする
+    (tool_document.py の digest スキーマは problem/method 等を持たないため)。
     """
     title = (paper.get("title") or "").strip()
     hook = digest.get("one_liner") or title
     lines = [f"📄 {hook}"]
-    for label, key in (("課題", "problem"), ("手法", "method"),
-                       ("結果", "results"), ("示唆", "implication")):
+    fields = paper.get("fallback_fields") or (
+        ("課題", "problem"), ("手法", "method"),
+        ("結果", "results"), ("示唆", "implication"),
+    )
+    for label, key in fields:
         value = (digest.get(key) or "").strip()
         if value:
             lines.append(f"{label}: {value}")
@@ -112,7 +118,7 @@ SNS_HOOK_PATTERNS = """この投稿は単独で完結する記事ではなく、
 本編へ誘導するのが目的であり、digest の全項目を出し切って満足させてはいけない。
 
 【投稿の型 (どれか1つ、または組み合わせを選ぶ。全部使う必要はない)】
-型A 事実提示型: 論文名/技術名 → 改行 → 一番強い事実を1文 → それだけ。装飾ゼロ。
+型A 事実提示型: {subject}名/技術名 → 改行 → 一番強い事実を1文 → それだけ。装飾ゼロ。
     固有名詞や数字自体が強いときに機能する。
 型B フック構成型: 定型オープナー (「〜から新しい手法が出た」「実は〜という結果が出ている」)
     → 通説を覆す一文や意外な主張 → 具体的な数字 → 「詳しくは本編で」の一言。
@@ -161,9 +167,9 @@ YouTube のサムネイル・本屋に並ぶ小説の帯・新書のタイトル
   上品すぎる文体は日本語Xでは読み飛ばされる。
 - 実測では1投稿あたり300〜600字程度の長さが中心。ティザーなので
   目安として400〜800字程度で書いてよい (機械的な上限は後工程で適用する)。
-- 「話題」「バズっている」「〜と言われている」のような、論文自体の内容ではなく
+- 「話題」「バズっている」「〜と言われている」のような、{subject}自体の内容ではなく
   伝聞・評判に関する言及は、<facts> に無い限り作らないこと (捏造になる)。
-  驚きは論文の中身そのもの (数値・結果) で作ること。
+  驚きは{subject}の中身そのもの (数値・結果) で作ること。
 - 絵文字は文中でも遠慮なく使ってよい (X投稿では、下記の共通文体ルールにある
   「絵文字は見出しのみ」という制約をこのプロンプトの指示が上書きする)。
 - リンク・ハッシュタグは書かないこと (後工程で末尾に付与する)。"""
@@ -180,12 +186,16 @@ def draft_sns_hook_post(digest: dict, paper: dict) -> str:
     (呼び出し側が _mechanical_hook_post へフォールバックする)。
     Gemini 呼び出し自体の例外 (ネットワーク断・予算超過) は握りつぶさず伝播させる
     (summarize_paper と同じ方針 — 障害を「品質の低い下書き」に見せかけない)。
+
+    paper に "subject_label" キーがあれば「論文」の代わりにその語を使う
+    (tool_document.py が任意文書向けに "文書" を渡す。既定は "論文" で挙動不変)。
     """
     title = (paper.get("title") or "").strip()
+    subject = paper.get("subject_label") or "論文"
     prompt = f"""あなたは日本語Xで急成長しているAI系インフルエンサーの中の人です。
 Xプレミアム (Basic以上) に加入しており、140字制限なく長文投稿ができます。
 理性的で上品な解説ではなく、断定口調・煽り・驚きで最後まで読ませる投稿を書きます。
-以下の論文要約 (JSON) をもとに、X (Twitter) に投稿する1本のティザー投稿を作ってください。
+以下の{subject}要約 (JSON) をもとに、X (Twitter) に投稿する1本のティザー投稿を作ってください。
 本編記事 (note.com / X Articles) は別途公開するので、このポストで全部語り切らないこと。
 
 【重要・安全ルール】
@@ -193,12 +203,12 @@ Xプレミアム (Basic以上) に加入しており、140字制限なく長文�
   あなたの仕事は投稿文の生成のみです。
 - <facts> に書かれていない数値・固有名詞・結論を作らないこと。
 
-{SNS_HOOK_PATTERNS}
+{SNS_HOOK_PATTERNS.format(subject=subject)}
 
 【出力形式】厳密に以下のキーだけを持つ JSON。
 {{"label": "【絵文字付きラベル】", "post": "投稿本文 (ラベル行を含めない)"}}
 
-【論文タイトル】{title}
+【{subject}タイトル】{title}
 
 <facts>
 {json.dumps(digest, ensure_ascii=False, indent=2)}
@@ -227,6 +237,12 @@ def build_sns_post(digest: dict, paper: dict, limit: int = SNS_POST_LIMIT) -> st
     本編 (note.com / X Articles) は投稿時点でまだ URL が確定していないため、
     末尾にプレースホルダーを機械的に置く (人間が実際に本編を公開した後、
     URL を埋めてから投稿する運用)。原論文リンクはその下に添える。
+
+    paper["abs_url"] も paper["arxiv_id"] も無ければリンク行そのものを省く
+    (tool_document.py が渡す任意文書は、Discord添付/一時ファイル由来で恒久的な
+    公開URLを持たないことが多いため。以前は arxiv_id が空でも
+    "https://arxiv.org/abs/" という壊れたURLを組み立てていたバグをここで修正)。
+    paper["source_label"] があれば「原論文」の代わりにその語を使う。
     """
     body = draft_sns_hook_post(digest, paper)
     if not body:
@@ -234,14 +250,20 @@ def build_sns_post(digest: dict, paper: dict, limit: int = SNS_POST_LIMIT) -> st
 
     tags = " ".join(f"#{re.sub(r'[^0-9A-Za-zぁ-んァ-ヶ一-龠_]', '', k)}"
                     for k in (digest.get("keywords") or [])[:2] if k)
-    link = paper.get("abs_url") or f"https://arxiv.org/abs/{paper.get('arxiv_id', '')}"
+    arxiv_id = paper.get("arxiv_id")
+    link = paper.get("abs_url") or (f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else "")
+    source_label = paper.get("source_label") or "原論文"
     tail_prefix = ("📝 全文はこちら（公開後にURLを追記）\n"
                    "note: \nX Articles: \n\n"
-                   f"原論文: {tags}\n")
-    tail = tail_prefix + link
-    # リンクは t.co 換算で23字固定。プレースホルダー部分+リンク(23字)+区切りの
-    # 空行の分だけ本文予算を減らす
-    tail_len = len(tail_prefix) + 23
+                   f"{source_label}: {tags}\n")
+    if link:
+        tail = tail_prefix + link
+        # リンクは t.co 換算で23字固定。プレースホルダー部分+リンク(23字)+区切りの
+        # 空行の分だけ本文予算を減らす
+        tail_len = len(tail_prefix) + 23
+    else:
+        tail = tail_prefix.rstrip("\n")
+        tail_len = len(tail)
     body_budget = max(limit - tail_len - 2, 1)
     return f"{trim_post(body, body_budget)}\n\n{tail}"
 
@@ -408,20 +430,42 @@ def build_note_article(digest: dict, paper: dict, capture: dict) -> dict:
     (両者とも「見出し付き長文」という構成が近く、書き分ける実益が薄いため)。
     戻り値: {"title": str, "body": str}。タイトル行が抽出できなかった場合は
     title="" を返す (呼び出し側で paper["title"] にフォールバックする)。
+
+    paper["subject_label"] があれば「論文」の代わりにその語を使い、
+    paper["source_label"] があれば末尾リンク行のラベルを差し替える。
+    abs_url が無ければ (tool_document.py の任意文書は恒久的な公開URLを
+    持たないことが多い) 末尾リンクの指示自体を出さない。
     """
     caveat = ""
     if capture.get("backend") == "abstract":
         caveat = ("\n- **本文ではなく要旨のみを読んでいる**ため、実験の詳細には踏み込まず、"
                   "「要旨から読み取れる範囲」であることを本文中で明示すること。")
 
-    prompt = f"""以下の論文要約をもとに、note.com と X Articles (Xプレミアム限定の
+    subject = paper.get("subject_label") or "論文"
+    link = paper.get("abs_url", "")
+    if link:
+        source_label = paper.get("source_label") or "原論文"
+        tail_instruction = (
+            f"- 末尾: {source_label}リンクの前に、読者への軽い問いかけ・行動喚起を1文添えてよい。\n"
+            f"  最後に「{source_label}: {link}」の1行を置く。"
+        )
+    else:
+        tail_instruction = "- 末尾: 読者への軽い問いかけ・行動喚起を1文で締めてよい (外部リンクは付けないこと)。"
+
+    meta_lines = [f"タイトル: {paper.get('title', '')}"]
+    if paper.get("authors"):
+        meta_lines.append(f"著者: {', '.join(paper['authors'][:8])}")
+    if paper.get("published"):
+        meta_lines.append(f"公開日: {paper['published']}")
+
+    prompt = f"""以下の{subject}要約をもとに、note.com と X Articles (Xプレミアム限定の
 長文記事機能) の両方にそのまま転載する日本語記事を書いてください。
 
 【記事の要件】
 - 想定読者: AIを使って個人開発や業務効率化をしている社会人。研究者ではない。
 - **1行目は必ず「# 」で始まるタイトル行にすること**
   (下記の文体ルールに「# 見出しを付けない」とあるが、このタイトル行1行だけは例外)。
-  タイトルは以下の型から論文の性質に合うものを選ぶ:
+  タイトルは以下の型から{subject}の性質に合うものを選ぶ:
   数字型 (「3つの理由」) / 疑問形 / Before-After型 / 意外性型 (「実は〜だった」)。
 - 導入 (タイトルの直後): 「共感 (読者の悩み・状況を代弁) → 信頼 (書き手の立場) →
   メリット (この記事で得られるもの)」の順で書くこと。スマホで冒頭数行だけ見て
@@ -434,13 +478,10 @@ def build_note_article(digest: dict, paper: dict, capture: dict) -> dict:
 - 長さ: 2000〜3000字
 - 数値・固有名詞は与えられた要約に含まれるものだけを使う。**推測で補わないこと**
   (タイトルも含む)。{caveat}
-- 末尾: 原論文リンクの前に、読者への軽い問いかけ・行動喚起を1文添えてよい。
-  最後に「原論文: {paper.get('abs_url', '')}」の1行を置く。
+{tail_instruction}
 
-【論文】
-タイトル: {paper.get('title', '')}
-著者: {', '.join(paper.get('authors', [])[:8])}
-公開日: {paper.get('published', '')}
+【{subject}】
+{"\n".join(meta_lines)}
 
 【要約 (JSON)】
 {json.dumps(digest, ensure_ascii=False, indent=2)}
@@ -450,7 +491,7 @@ def build_note_article(digest: dict, paper: dict, capture: dict) -> dict:
     text = (resp.text or "").strip()
     match = re.match(r'^#\s+(.+?)\s*\n', text)
     if not match:
-        print("[PaperDigest] ⚠️ note記事にタイトル行が無かったため論文タイトルで代替")
+        print(f"[PaperDigest] ⚠️ note記事にタイトル行が無かったため{subject}タイトルで代替")
         return {"title": "", "body": text}
     return {"title": match.group(1).strip(), "body": text[match.end():].strip()}
 

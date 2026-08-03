@@ -1050,14 +1050,21 @@ async def cmd_paper_digest(interaction: discord.Interaction, index: int = 1,
     await bot_commands_tools.cmd_paper_digest(interaction, index, arxiv_id, mode)
 
 
-@tree.command(name="doc", description="PDF/Office文書を添付してdoclingで変換→Gemini要約→Vault保存")
+@tree.command(name="doc", description="PDF/Office文書を添付してdoclingで変換→Gemini要約→Vault保存 (SNS/note下書きも生成可)")
 @app_commands.describe(
     attachment="変換したい文書 (PDF/DOCX/PPTX)",
     folder="保存先フォルダ (Vault相対パス, デフォルト: 30_Main)",
+    mode="出力: sns / note / both / none",
 )
+@app_commands.choices(mode=[
+    app_commands.Choice(name="Xティザー投稿下書き", value="sns"),
+    app_commands.Choice(name="note記事下書き", value="note"),
+    app_commands.Choice(name="両方", value="both"),
+    app_commands.Choice(name="要約のみ (下書き無し)", value="none"),
+])
 async def cmd_doc(interaction: discord.Interaction, attachment: discord.Attachment,
-                  folder: str = "30_Main"):
-    await bot_commands_tools.cmd_doc(interaction, attachment, folder)
+                  folder: str = "30_Main", mode: str = "none"):
+    await bot_commands_tools.cmd_doc(interaction, attachment, folder, mode)
 
 
 @tree.command(name="browse", description="URLを開いてAIで情報抽出（JS動的ページ・SPAに対応）")

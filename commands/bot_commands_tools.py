@@ -370,8 +370,8 @@ def _import_document():
 
 
 async def cmd_doc(interaction: discord.Interaction, attachment: discord.Attachment,
-                  folder: str = "30_Main"):
-    """添付PDF/Office文書をdoclingで変換→Gemini要約→Vault保存する"""
+                  folder: str = "30_Main", mode: str = "none"):
+    """添付PDF/Office文書をdoclingで変換→Gemini要約→Vault保存する (mode指定でSNS/note下書きも生成)"""
     # docling は数十秒〜数分かかりうる。3秒で切れる interaction token より
     # 先に defer() を返す (skill discord-bot-patterns)。
     await interaction.response.defer()
@@ -392,7 +392,7 @@ async def cmd_doc(interaction: discord.Interaction, attachment: discord.Attachme
     temp_path = os.path.join(tmp_dir, safe_name)
     try:
         await attachment.save(temp_path)
-        result = await asyncio.to_thread(tool_import_document, temp_path, folder)
+        result = await asyncio.to_thread(tool_import_document, temp_path, folder, mode)
     except Exception as e:
         result = log_command_error("/doc", e, "❌ Document Import Error")
     finally:

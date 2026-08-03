@@ -110,11 +110,11 @@ def _tool_read_document_wrapper(path_or_url: str, ocr: bool = False) -> str:
         return f"[read_document error] {e}"
 
 
-def _tool_import_document_wrapper(path_or_url: str, folder: str = "30_Main") -> str:
+def _tool_import_document_wrapper(path_or_url: str, folder: str = "30_Main", mode: str = "none") -> str:
     """任意のPDF/Office文書を変換→Gemini要約→Vaultにノート保存する(元ファイルへの参照付き)。"""
     try:
         from tools.tool_document import tool_import_document
-        return tool_import_document(path_or_url, folder=folder)
+        return tool_import_document(path_or_url, folder=folder, mode=mode)
     except Exception as e:
         return f"[import_document error] {e}"
 
@@ -212,8 +212,9 @@ TOOL_ENTRIES = [
     {"name": "tool_read_document", "usage": "tool_read_document(path_or_url, ocr=False)",
      "description": "PDF/Office文書 (URLまたはローカルパス) をdoclingでMarkdown化して返す。ノートには保存しない読み取り専用（本文を読んで判断したいときに使う）",
      "func": _tool_read_document_wrapper},
-    {"name": "tool_import_document", "usage": "tool_import_document(path_or_url, folder='30_Main')",
-     "description": "PDF/Office文書 (URLまたはローカルパス) をdoclingで変換しGeminiで要約してObsidianにノート保存する（元ファイルへの参照付き）",
+    {"name": "tool_import_document", "usage": "tool_import_document(path_or_url, folder='30_Main', mode='none')",
+     "description": "PDF/Office文書 (URLまたはローカルパス) をdoclingで変換しGeminiで要約してObsidianにノート保存する（元ファイルへの参照付き）。"
+                     "mode指定でX投稿/note記事の下書きも生成 (mode: sns/note/both/none)",
      "func": _tool_import_document_wrapper},
     # Calendar/Task (optional — 認証情報や依存パッケージ欠落時はスキップ)
     # tool_get_calendar に parallel_safe を付けない理由 (取得系なのに例外扱い):

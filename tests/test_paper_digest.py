@@ -188,6 +188,58 @@ def test_draft_sns_hook_post_falls_back_to_default_label_when_missing():
     print("✅ [2d] draft_sns_hook_post: labelが無ければ既定ラベルへフォールバックする")
 
 
+def test_build_sns_post_omits_broken_link_when_no_url_or_arxiv_id():
+    """abs_url も arxiv_id も無い paper では、壊れた 'https://arxiv.org/abs/' を
+    組み立てないこと (回帰テスト)。
+
+    以前は `paper.get("abs_url") or f"https://arxiv.org/abs/{paper.get('arxiv_id','')}"`
+    と書いており、両方とも無い paper (tool_document.py が渡す任意文書など、
+    恒久的な公開URLを持たないケース) では末尾のリンクが壊れたURLになっていた。
+    修正後はリンク行自体を省く。draft_sns_hook_post はスタブし Gemini を呼ばせない。
+    """
+    import tools.tool_paper_digest as digest
+    d = {"one_liner": "要旨"}
+    paper = {"title": "T"}  # abs_url も arxiv_id も無い
+
+    original = digest.draft_sns_hook_post
+    digest.draft_sns_hook_post = lambda dd, pp: "スタブ投稿本文"
+    try:
+        post = digest.build_sns_post(d, paper, limit=500)
+    finally:
+        digest.draft_sns_hook_post = original
+
+    assert "https://arxiv.org/abs/" not in post, f"壊れたURLが残っている: {post!r}"
+    assert "arxiv.org" not in post, f"リンクが無いはずなのに arxiv.org が含まれる: {post!r}"
+    print("✅ [2e] build_sns_post: abs_url/arxiv_id が無ければ壊れたリンクを組み立てない")
+
+
+def test_build_sns_post_prompt_uses_custom_subject_label():
+    """paper['subject_label'] を渡すと draft_sns_hook_post のプロンプト文中の
+    「論文」が差し替わること (tool_document.py が "文書" を渡すケースの回帰)。
+    """
+    import lib.lib_shared as lib_shared
+    import tools.tool_paper_digest as digest
+    d = {"one_liner": "要旨"}
+    paper = {"title": "T", "subject_label": "文書"}
+
+    captured = {}
+
+    def _fake_generate(model, contents):
+        captured["contents"] = contents
+        return _FakeResp('{"post": "本文"}')
+
+    original_fn = lib_shared.client.models.generate_content
+    try:
+        lib_shared.client.models.generate_content = _fake_generate
+        digest.draft_sns_hook_post(d, paper)
+    finally:
+        lib_shared.client.models.generate_content = original_fn
+
+    assert "文書要約" in captured["contents"], captured["contents"][:500]
+    assert "論文要約" not in captured["contents"], "既定の「論文」語彙が残っている"
+    print("✅ [2f] draft_sns_hook_post: subject_label がプロンプトへ反映される")
+
+
 # ---------------------------------------------------------
 # [3] build_note_article (タイトル抽出)
 # ---------------------------------------------------------
