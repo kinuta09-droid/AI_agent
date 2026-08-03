@@ -61,16 +61,17 @@ class _Scripted:
         return self.responses.pop(0)
 
 
-def _hits3(**kw):
+def _hits3(*args, **kw):
     """_hybrid_hits の注入契約どおり keyword/semantic/activity の3本を必ず塞ぐ。
 
     2本しか渡さないと隔離したつもりで実インデックス (logs/vault_index.db) が
     混ざる — _hybrid_hits の docstring に明記された罠。
     """
+    kw.setdefault("keyword_fn", lambda q: [])
     kw.setdefault("semantic_fn", lambda q, k: [])
     kw.setdefault("activity_keyword_fn", lambda q, k: [])
     kw.setdefault("multiquery", False)
-    return _hybrid_hits(**kw)
+    return _hybrid_hits(*args, **kw)
 
 
 # ---------------------------------------------------------
