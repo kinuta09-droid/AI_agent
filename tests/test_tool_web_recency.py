@@ -194,6 +194,52 @@ def test_recency_news_failure_keeps_general_results():
     check("一般検索の結果は保持される", "https://gen-only.example" in out, out)
 
 
+# ---------------------------------------------------------
+# 5. news結果を先頭に置く (下流の1500字切り詰めで消えないように)
+# ---------------------------------------------------------
+
+def test_recency_news_results_come_first():
+    """news検索の結果を一般検索の後ろに単純追記すると、一般検索が長文の場合
+    下流 (_build_final_summary_prompt) の1500字切り詰めの外側に落ちて
+    要約LLMに一度も見せられなくなる (2026-08-03、ガソリン補助金の記事が
+    6474文字目から始まっていた実例で発覚)。news結果を先頭に出すことで、
+    どんなに一般検索が長文でも直近ニュースが切り詰めの内側に残るようにする。
+    """
+    print("\n[5] news検索の結果を一般検索より前に出す")
+    _reset()
+    tw.tavily_client.responses = [
+        {"results": [{"title": "General", "url": "https://gen.example", "content": "g"}]},
+        {"results": [{"title": "News", "url": "https://news.example", "content": "n"}]},
+    ]
+    out = tw.tool_web_search("直近の出来事", recency_days=7)
+
+    check("news結果が一般結果より前に出てくる",
+          out.index("https://news.example") < out.index("https://gen.example"), out)
+
+
+# ---------------------------------------------------------
+# 6. 個別結果のcontentを一定文字数で切り詰める
+# ---------------------------------------------------------
+
+def test_result_content_is_capped_per_result():
+    """1件の記事が数千字あると、それだけで下流の1500字切り詰め予算を
+    独占し、他の結果 (特に直近ニュース) が一度もLLMに見せられなくなる。
+    結果ごとにcontentを切り詰めることで、1件が予算を食い尽くすのを防ぐ。
+    """
+    print("\n[6] 結果ごとのcontentが上限文字数で切り詰められる")
+    _reset()
+    long_content = "あ" * 3000
+    tw.tavily_client.responses = [
+        {"results": [{"title": "Long", "url": "https://long.example", "content": long_content}]},
+    ]
+    out = tw.tool_web_search("テストクエリ")
+
+    check("元の長文がそのまま出力に残っていない",
+          long_content not in out, f"len(out)={len(out)}")
+    check("切り詰め後のcontentは上限文字数程度に収まっている",
+          len(out) < 1000, f"len(out)={len(out)}")
+
+
 if __name__ == "__main__":
     print("=" * 55)
     print(" tool_web_search recency_days マージ検索 回帰テスト")
@@ -203,6 +249,8 @@ if __name__ == "__main__":
     test_recency_days_adds_news_call()
     test_recency_dedup_by_url()
     test_recency_news_failure_keeps_general_results()
+    test_recency_news_results_come_first()
+    test_result_content_is_capped_per_result()
 
     print("\n" + "=" * 55)
     print(f"PASS: {len(_PASS)} / FAIL: {len(_FAIL)}")
