@@ -111,7 +111,12 @@ CHUNK_MIN_CHARS = 20
 # env 上書き可 (VAULT_SEARCH_LINK_HUB_DEGREE) — 実データで妥当値を確認してから
 # 調整できるようにしてある (呼び出し時ではなくモジュール読み込み時に固定でよい:
 # .env 差し替え後の再起動だけで効けば十分、検索ホットパスの毎回 getenv は避ける)。
-LINK_HUB_DEGREE = int(os.getenv("VAULT_SEARCH_LINK_HUB_DEGREE", "20"))
+# 非数値の書き間違いで tool_vault_index の import ごと落とさないよう、
+# tool_vault_hybrid._env_int と同じ「パース失敗は既定に戻す」ガードを踏襲する。
+try:
+    LINK_HUB_DEGREE = int(os.getenv("VAULT_SEARCH_LINK_HUB_DEGREE", "20"))
+except (TypeError, ValueError):
+    LINK_HUB_DEGREE = 20
 
 
 # ---------------------------------------------------------
