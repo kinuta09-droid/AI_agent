@@ -319,6 +319,28 @@ def test_resolve_tool_args_prompt_mentions_recency_days():
           "指定不要です" in src)
 
 
+def test_resolve_tool_args_prompt_mentions_query_year_month():
+    """[10] recency_days を付ける際に query にも年月を含めるガイドがある (2026-08-03)
+
+    実機フィードバックで再現: 同じ「ガソリン今日急に値下がり」系の質問でも、
+    Plannerが生成したクエリに月が入っているかどうかでTavilyの検索順位が
+    変わり、月ありでは正解記事(7月30日の補助金単価改定)が先頭付近に来た
+    のに対し、月なしでは無関係な記事(5月時点の値上がり記事)が上位に来た。
+    recency_days だけでなく検索語自体にも今日の年月を入れるよう促す文言が
+    消えていないことを固定する。
+    """
+    print("\n[10] recency_days時にqueryへ年月を含めるガイド (2026-08-03)")
+    path = os.path.join(_PROJECT_ROOT, "engine_plan_execute.py")
+    with open(path, encoding='utf-8') as f:
+        src = f.read()
+
+    check("today_ym 変数が定義されている", "today_ym" in src)
+    check("query にも年月を含めるよう指示している",
+          "query にも" in src and "を含めてください" in src)
+    check("記事タイトルに更新月が入る根拠を説明している", "更新月" in src)
+    check("実測での順位変化に言及している", "検索順位で優先されやすく" in src)
+
+
 if __name__ == "__main__":
     print("=" * 55)
     print(" 自機能グラウンディング / 追記ツール弁別 回帰テスト")
@@ -334,6 +356,7 @@ if __name__ == "__main__":
     test_summary_prompt_has_temporal_consistency_rule()
     test_planner_prompt_mentions_append_guideline()
     test_resolve_tool_args_prompt_mentions_recency_days()
+    test_resolve_tool_args_prompt_mentions_query_year_month()
 
     print("\n" + "=" * 55)
     print(f"PASS: {len(_PASS)} / FAIL: {len(_FAIL)}")

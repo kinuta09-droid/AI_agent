@@ -699,7 +699,9 @@ def _resolve_tool_args(tool_name: str, args_hint: str, task: str,
             for c in context[-3:]
         )
 
-    today_str = datetime.datetime.now().strftime("%Y年%m月%d日")
+    _now = datetime.datetime.now()
+    today_str = _now.strftime("%Y年%m月%d日")
+    today_ym = f"{_now.year}年{_now.month}月"
 
     prompt = f"""以下のツール呼び出しに必要な引数をJSON辞書で出力してください。
 
@@ -722,6 +724,12 @@ def _resolve_tool_args(tool_name: str, args_hint: str, task: str,
     直近の出来事の理由・変化を尋ねている場合は 7〜14 を指定してください。
     一般的な知識・技術解説・過去の経緯を尋ねる質問では指定不要です
     （不要な質問にまで付けると直近ニュースに偏り、逆に精度が落ちます）
+  - recency_days を付ける場合、query にも {today_ym} を含めてください
+    （例: "ガソリン 値下がり 理由 {today_ym}"）。直近のニュース記事は
+    タイトルに更新月がそのまま入っていることが多く（例:「【2026年7月31日
+    更新】」）、クエリに月まで入れるとTavilyの検索順位で優先されやすく
+    なります（実測: 月まで含めた場合は該当記事が検索結果の先頭付近、
+    年だけ・月なしの場合は無関係な記事が上位に来た）
 - tool_create_note の場合:
   - filename: レポートのタイトル（日本語OK）
   - content: 以下の品質基準を満たす充実したレポート本文を生成すること
