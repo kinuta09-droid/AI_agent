@@ -971,6 +971,11 @@ async def cmd_briefing(interaction: discord.Interaction):
     await bot_commands_tools.cmd_briefing(interaction)
 
 
+@tree.command(name="vault_watch", description="Vault Insight Watcherを手動実行（変更ノートの関連チェック）")
+async def cmd_vault_watch(interaction: discord.Interaction):
+    await bot_commands_tools.cmd_vault_watch(interaction)
+
+
 @tree.command(name="memory", description="長期記憶の現在の内容を表示（会話から毎晩自動抽出）")
 async def cmd_memory(interaction: discord.Interaction):
     await bot_commands_tools.cmd_memory(interaction)

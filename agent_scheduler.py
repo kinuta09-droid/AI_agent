@@ -94,6 +94,14 @@ except ImportError as _e:
     def distill_daily_memory():
         return f"User Memory: tool_user_memory not available ({_user_memory_err})"
 
+# Vault Insight Watcher (optional — import失敗でスケジューラ全体を壊さない)
+try:
+    from tools.tool_vault_watcher import check_vault_insights
+except ImportError as _e:
+    _vault_watcher_err = str(_e)
+    def check_vault_insights(*args, **kwargs):
+        return f"Vault Insight Watcher: tool_vault_watcher not available ({_vault_watcher_err})"
+
 # ボタンの custom_id は bot プロセス側の永続 View (commands/bot_views.py) と
 # 一致させる必要があるため定数を直接 import する (discord.Client は起動しない)
 from commands.bot_views import DIVE_CUSTOM_IDS, SCHEDULER_LOG_CUSTOM_ID
@@ -444,6 +452,16 @@ SCHEDULE = [
         "time": "03:15",
         "name": "Vault Semantic Index",
         "func": update_vault_index,
+    },
+    # Vault Insight Watcher: 03:15 Vault Semantic Index の直後に置く。検索が使う
+    # 意味インデックスがその夜の変更を含んで更新済みであることを保証するため。
+    # silent=True: notable な所見があるときだけ自前で Discord 通知するため
+    # (「今日は何もありません」の定型通知はスパムになる — 沈黙バイアス)。
+    {
+        "time": "03:20",
+        "name": "Vault Insight Watcher",
+        "func": check_vault_insights,
+        "silent": True,
     },
     # Activity Index (エージェントの行動ログを同じインデックスへ。Phase B)
     #
