@@ -167,14 +167,31 @@ RETRIEVER_MIN_PICKED = 2
 # ある: フィルタの実体が _link_hits 側で完結しているので、ここに複製すると
 # 「出す側と受け取る側の食い違い」を増やすだけになる。
 #
-# 既定 OFF: MULTIQUERY_DEFAULT と同じ作法 (D4)。「良くなったはず」を根拠に
-# 既定を変えない。scripts/eval_retrieval.py --link-expand on で実測してから決める。
+# 既定 OFF: MULTIQUERY_DEFAULT と同じ作法 (D4)。
+#
+# **実測 (scripts/eval_retrieval.py・17問・実Vault・multiquery=off/rerank=ollama) で
+# 既定OFFのまま確定させた** — 2026-08-03:
+#
+#   arm                        | Hit@5  | MRR@10 | 平均秒
+#   ----------------------------|--------|--------|-------
+#   展開OFF (ベースライン)      | 0.8235 | 0.7255 | 13.39
+#   展開ON (offset=5)           | 0.7647 | 0.6078 | 14.61  ← 5問悪化・0問改善
+#   展開ON (offset=20)          | 0.8235 | 0.6147 | 12.90  ← Hit@5は戻るがMRRは崩れたまま
+#
+# offset を 5→20 に上げると Hit@5 (top5に入るか) は劣化しなくなったが、
+# MRR@10 (何位に来るか) は -0.11 のまま高止まりした。つまり原因は
+# 「RRF融合でのスコア加点が強すぎる」ことではなく、**リンク近傍が候補プール
+# (RERANK_CANDIDATES=20件) に混ざること自体がLLMリランカの判断を乱す**こと
+# だと分かる。offset はプールへの入りやすさしか変えないため、これ以上
+# 上げても「実質的に無効化するだけ」で意味のある改善にはならない。
+# 合格条件 (Hit@5非劣化・MRR@10低下0.02以内) を両条件とも満たせなかったため、
+# D4 の判断基準どおり既定は OFF のまま確定する。
 LINK_EXPAND_DEFAULT = False
 LINK_SEED_HITS = 3       # 展開の起点にする RRF 上位件数
 LINK_EXPAND_BUDGET = 5   # 1回の展開で足す近傍の最大件数
-# 「近傍の RRF 寄与を1ランク分弱める」つまみ。5 なら最良の近傍が
-# 1/(60+1+5) = キーワード6位相当。**この値だけは実測の裏付けが無い**ことを
-# 明記する。VAULT_SEARCH_LINK_RANK_OFFSET で A/B できる (_env_int 経由)。
+# 「近傍の RRF 寄与を1ランク分弱める」つまみ。上の実測どおり万能薬ではないが、
+# ONにして使う場合の緩和策として残す。VAULT_SEARCH_LINK_RANK_OFFSET で
+# 上書きできる (_env_int 経由)。既定は実測で使った5のまま。
 LINK_RANK_OFFSET = 5
 
 
