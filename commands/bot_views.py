@@ -216,3 +216,92 @@ class TaskFailureView(AllowedUserView):
         await interaction.response.send_message(
             "📋 scheduler.log の末尾 (最大8KB):", file=file_obj, ephemeral=True
         )
+
+
+# ---------------------------------------------------------
+# /agent, /chat agent への回答フィードバック (👍/👎)
+# ---------------------------------------------------------
+
+_FEEDBACK_VIEW_TIMEOUT = 3600  # 1時間 (OpenInObsidianView と同じ有限期限パターン)
+
+
+class AgentFeedbackReasonModal(discord.ui.Modal, title="改善点を教えてください"):
+    """👎 選択時に表示する、低評価の理由を任意入力するモーダル。"""
+
+    reason = discord.ui.TextInput(
+        label="どこが期待と違いましたか？ (任意)",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=500,
+    )
+
+    def __init__(self, goal: str, result: str, parent_view: "AgentFeedbackView"):
+        super().__init__()
+        self._goal = goal
+        self._result = result
+        self._parent_view = parent_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from lib.agent_feedback import save_feedback
+        ok = await asyncio.to_thread(
+            save_feedback, "bad", self._goal, self._result, reason=self.reason.value,
+            user_id=interaction.user.id, channel_id=interaction.channel_id,
+        )
+        msg = ("📝 フィードバックを記録しました。ありがとうございます。" if ok
+               else "⚠️ 記録に失敗しました。時間をおいて再度お試しください。")
+        await self._parent_view._finish(interaction, msg)
+
+
+class AgentFeedbackView(AllowedUserView):
+    """/agent, /chat agent の回答に付ける 👍/👎 フィードバックボタン。
+
+    一度評価したらそのメッセージのボタンは disabled にする (二重計上防止)。
+    Bot 再起動をまたぐ永続化はしない — 質問・回答をインスタンス状態としてクロージャに
+    持つため、OpenInObsidianView と同じ理由で永続化できず、有限 timeout にする。
+    """
+
+    def __init__(self, goal: str, result: str):
+        super().__init__(timeout=_FEEDBACK_VIEW_TIMEOUT)
+        self._goal = goal
+        self._result = result
+        self.message: discord.Message | None = None
+
+    async def _finish(self, interaction: discord.Interaction, ephemeral_msg: str):
+        for item in self.children:
+            item.disabled = True
+        self.stop()
+        try:
+            await interaction.response.send_message(ephemeral_msg, ephemeral=True)
+        except discord.HTTPException as e:
+            print(f"[AgentFeedback] Warning: failed to send ack: {e}")
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException as e:
+                print(f"[AgentFeedback] Warning: failed to disable buttons: {e}")
+
+    @discord.ui.button(label="👍 良い回答", style=discord.ButtonStyle.success)
+    async def good(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from lib.agent_feedback import save_feedback
+        ok = await asyncio.to_thread(
+            save_feedback, "good", self._goal, self._result,
+            user_id=interaction.user.id, channel_id=interaction.channel_id,
+        )
+        msg = ("👍 ありがとうございます。記録しました。" if ok
+               else "⚠️ 記録に失敗しました。時間をおいて再度お試しください。")
+        await self._finish(interaction, msg)
+
+    @discord.ui.button(label="👎 期待と違う", style=discord.ButtonStyle.danger)
+    async def bad(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(
+            AgentFeedbackReasonModal(self._goal, self._result, self)
+        )
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
