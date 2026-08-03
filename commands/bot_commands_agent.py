@@ -178,6 +178,24 @@ def _update_session(channel_id, goal: str, result: str) -> None:
         "ts": time.time(),
     }
 
+async def send_feedback_prompt(channel, goal: str, result: str):
+    """/agent と /chat agent 共通: 結果メッセージの後にフィードバック依頼(👍/👎)を送る。
+
+    入口ごとに書くと片方だけ実装されて取り残される (CLAUDE.md 既知パターン) ため、
+    /agent (このモジュール) と /chat agent (bot_discord.py) の両方からここを呼ぶ。
+    """
+    if channel is None:
+        print("[AgentFeedback] Warning: channel is None, skip feedback prompt")
+        return
+    from commands import bot_views
+    view = bot_views.AgentFeedbackView(goal, result)
+    try:
+        msg = await channel.send("この回答はどうでしたか？", view=view)
+        view.message = msg
+    except discord.HTTPException as e:
+        print(f"[AgentFeedback] Warning: failed to send feedback prompt: {e}")
+
+
 async def cmd_agent(interaction: discord.Interaction, goal: str):
     """AIエージェントに自律的なタスクを依頼"""
     is_deferred = False
@@ -233,6 +251,8 @@ async def cmd_agent(interaction: discord.Interaction, goal: str):
         await _send_with_fallback(interaction, f"{header}\n\n{result}", title="Agent Execution", emoji="🤖")
     else:
         await interaction.followup.send(f"{header}\n\n{result[:1900]}")
+
+    await send_feedback_prompt(interaction.channel, goal, result)
 
 async def cmd_agent_stats(interaction: discord.Interaction):
     """AIエージェントの実行統計と学習状況を表示"""

@@ -92,6 +92,7 @@ SERIAL_TESTS = {
 # 他のテストと衝突しない。
 PARALLEL_TESTS = frozenset({
     "test_activity_corpus.py",
+    "test_agent_feedback.py",
     "test_answer_grounding.py",
     "test_audio_automation.py",
     "test_backtest_engine.py",

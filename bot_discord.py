@@ -578,6 +578,8 @@ async def _dispatch_agent(interaction: discord.Interaction, goal: str):
         except Exception as e:
             print(f"[Discord] Failed to send fallback: {e}")
 
+    await bot_commands_agent.send_feedback_prompt(interaction.channel, goal, result)
+
 
 # ---------------------------------------------------------
 # Obsidian Helper Views
