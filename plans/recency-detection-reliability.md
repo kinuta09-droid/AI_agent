@@ -30,7 +30,7 @@ Google Search Grounding版ツール追加 PR #51)が、直した機能自体は�
 | 4 | ボタンの回帰テスト (`tests/test_agent_feedback.py`) | 完了 | 2026-08-04 | `recency_retry` の2件追加 (単独disabled化+失敗アイコン)、全13件PASS |
 | 5 | テスト全体+Guardian確認 | 完了 | 2026-08-04 | `test_recency_guard.py`をPARALLEL_TESTSに登録。スイープ85ファイル全PASS(126.3s)、`verify_project.py`緑 |
 | 6 | 実機比較検証 | 完了 | 2026-08-04 | 実機で確認: `tool_web_search`にrecency_days+年月付与が機能(ノート作成まで完走)、🕐ボタンも実クリックで無事故動作(`tool_web_search_grounded`直接呼び出し・エラーログなし)。ただし`_has_recency_intent`の強制付与分岐そのものは今回の実行では未発火(条件不成立)——その分岐は単体テスト17件で決定的に検証済み |
-| 7 | クローズ処理 (テスト→Guardian→PR→マージ) | 進行中 | 2026-08-04 | |
+| 7 | クローズ処理 (テスト→Guardian→PR→マージ) | 完了 | 2026-08-04 | PR #53 → master `7115d95`。CI緑・ローカルブランチ削除済み |
 
 状態は `未着手` / `進行中` / `完了` / `見送り(理由)` で更新する。
 
