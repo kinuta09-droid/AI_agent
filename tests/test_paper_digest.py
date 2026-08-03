@@ -104,11 +104,19 @@ def test_build_sns_post_respects_limit_and_ends_with_link():
     assert body_part.endswith("…"), f"上限超過時は省略記号で終わるはず: {body_part[-10:]!r}"
     assert paper["abs_url"] in post, f"原論文リンクが無い: {post!r}"
     assert "#LLM" in post and "#強化学習" in post, post
-    print("✅ [2a] build_sns_post: 本文が機械的に上限内へ切られ、末尾にリンクがある")
+    assert "📝 全文はこちら" in post, f"本編誘導プレースホルダーが無い: {post!r}"
+    assert "note: " in post and "X Articles: " in post, post
+    print("✅ [2a] build_sns_post: 本文が機械的に上限内へ切られ、末尾に本編誘導+リンクがある")
 
 
 def test_build_sns_post_falls_back_to_mechanical_when_llm_returns_nothing():
-    """draft_sns_hook_post が形式不正で "" を返したとき、機械組み立てへ落ちること。"""
+    """draft_sns_hook_post が形式不正で "" を返したとき、機械組み立てへ落ちること。
+
+    tail (本編誘導プレースホルダー+タグ+リンク) の実文字数は build_sns_post の
+    予算計算式に依存するため、それをマジックナンバーとしてここへ複製しない。
+    代わりに「機械組み立ての本文がそのまま (未トリムで) 先頭に出ること」と
+    「本編誘導プレースホルダーが末尾に付くこと」を検証する。
+    """
     import tools.tool_paper_digest as digest
     d = {"one_liner": "要旨", "problem": "課題A"}
     paper = _paper("2607.00043", title="T")
@@ -121,7 +129,10 @@ def test_build_sns_post_falls_back_to_mechanical_when_llm_returns_nothing():
     finally:
         digest.draft_sns_hook_post = original
 
-    assert post.startswith(digest.trim_post(expected_body, 1500 - 26)), post
+    assert post.startswith(expected_body), (
+        f"機械組み立ての本文がそのまま使われていない: {post!r}")
+    assert "📝 全文はこちら" in post, f"本編誘導プレースホルダーが無い: {post!r}"
+    assert "note: " in post and "X Articles: " in post, post
     print("✅ [2b] build_sns_post: LLMが空を返したら機械組み立てにフォールバック")
 
 
@@ -149,6 +160,32 @@ def test_build_sns_post_propagates_llm_exceptions():
     finally:
         digest.draft_sns_hook_post = original
     print("✅ [2c] build_sns_post: LLM呼び出し失敗は例外のまま伝播する")
+
+
+def test_draft_sns_hook_post_falls_back_to_default_label_when_missing():
+    """LLM が label キーを省略/空文字列で返しても、既定ラベルへ機械的に落ちること。
+
+    プロンプト指示 (「ラベルは省略せず必ず考えること」) だけでは実測上
+    複数回に1回ラベルが省略される事象を確認したため、JSON出力を label/post に
+    分離し機械側で結合する設計にした。この保証が壊れると、視覚的な目立たせ役
+    (【衝撃】等) が再び消える。
+    """
+    import lib.lib_shared as lib_shared
+    import tools.tool_paper_digest as digest
+    d = {"one_liner": "要旨"}
+    paper = _paper("2607.00045", title="T")
+
+    original_fn = lib_shared.client.models.generate_content
+    try:
+        lib_shared.client.models.generate_content = (
+            lambda model, contents: _FakeResp('{"post": "本文のみ、labelキーなし"}'))
+        result = digest.draft_sns_hook_post(d, paper)
+    finally:
+        lib_shared.client.models.generate_content = original_fn
+
+    assert result.startswith("【"), f"既定ラベルへフォールバックしていない: {result!r}"
+    assert "本文のみ、labelキーなし" in result, result
+    print("✅ [2d] draft_sns_hook_post: labelが無ければ既定ラベルへフォールバックする")
 
 
 # ---------------------------------------------------------
@@ -323,6 +360,50 @@ def test_run_paper_digest_returns_error_when_sns_post_fails():
             (digest._resolve_paper, digest.capture_paper, digest.summarize_paper,
              digest.build_sns_post, digest.PAPERS_DIR, radar.SEEN_PATH, radar.LOGS_DIR) = originals
     print("✅ [5b] run_paper_digest: X投稿生成失敗は Error: で返す")
+
+
+def test_run_paper_digest_both_mode_includes_note_and_x_articles_sections():
+    """mode='both' で note.com と X Articles の両セクションが draft に出ること。
+
+    build_note_article は1回しか呼ばず、同一の記事を両プラットフォームへ
+    転載する設計 (note.com/X Articles は構成が近く書き分ける実益が薄いため)。
+    その前提が draft_lines 組み立てで壊れていないかを確認する。
+    """
+    import tools.tool_paper_digest as digest
+
+    paper = _paper("2607.00082", title="Stub Paper 3")
+    stub_digest = {"one_liner": "要約", "keywords": ["k1"]}
+    stub_capture = {"text": "本文", "backend": "docling", "chars": 4,
+                    "truncated": False, "source": "", "warnings": []}
+    stub_article = {"title": "スタブ記事タイトル", "body": "スタブ記事本文です。"}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        originals = (digest._resolve_paper, digest.capture_paper, digest.summarize_paper,
+                     digest.build_sns_post, digest.build_note_article,
+                     digest.PAPERS_DIR, radar.SEEN_PATH, radar.LOGS_DIR)
+        digest._resolve_paper = lambda **kwargs: paper
+        digest.capture_paper = lambda p, use_docling=True: stub_capture
+        digest.summarize_paper = lambda p, body: stub_digest
+        digest.build_sns_post = lambda d, p: f"stub teaser\n{paper['abs_url']}"
+        digest.build_note_article = lambda d, p, c: stub_article
+        digest.PAPERS_DIR = os.path.join(tmp, "Papers")
+        radar.SEEN_PATH = os.path.join(tmp, "seen.json")
+        radar.LOGS_DIR = tmp
+        try:
+            msg = digest.run_paper_digest(mode="both", save=True)
+            assert not is_failure_result(msg), msg
+            draft_name = next(f for f in os.listdir(digest.PAPERS_DIR) if f.endswith("_draft.md"))
+            with open(os.path.join(digest.PAPERS_DIR, draft_name), encoding="utf-8") as f:
+                draft_text = f.read()
+            assert draft_text.count("スタブ記事本文です。") == 2, (
+                f"note.com と X Articles の両方に同一本文が出るはず:\n{draft_text}")
+            assert "## note.com 記事下書き" in draft_text, draft_text
+            assert "## X Articles 下書き" in draft_text, draft_text
+        finally:
+            (digest._resolve_paper, digest.capture_paper, digest.summarize_paper,
+             digest.build_sns_post, digest.build_note_article,
+             digest.PAPERS_DIR, radar.SEEN_PATH, radar.LOGS_DIR) = originals
+    print("✅ [5c] run_paper_digest: mode=both で note/X Articles 両セクションが出る")
 
 
 def test_registry_entries_registered():
