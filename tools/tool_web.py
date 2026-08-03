@@ -21,6 +21,14 @@ from lib.lib_shared import (
     retry, EDITORIAL_STYLE_RULES,
 )
 
+# 下流の最終要約プロンプトは各ステップの observation 全体を1500字で切り詰める
+# (engine_plan_execute.py の _build_final_summary_prompt)。1件の記事が長文だと
+# 後続の結果がその外側に落ち、要約LLMに一度も見せられないまま消える
+# (2026-08-03: recency_days で正しい記事を取得できていたのに、その記事が
+# 6474文字目から始まっていたため最終回答に一切反映されなかった実例で発覚)。
+_RESULT_CONTENT_CHARS = 500
+
+
 @retry(max_retries=3)
 def tool_web_search(query: str, recency_days: int = None) -> str:
     """Web検索を行い結果を返す。
@@ -29,13 +37,19 @@ def tool_web_search(query: str, recency_days: int = None) -> str:
     結果をURLで重複除去してマージする。news検索に**置き換える**と、答えが
     検索窓より前の出来事だった場合に正しい情報ごと落ちてしまうため、
     一般検索は必ず残す (取りこぼしをゼロにしたまま鮮度の高い情報を混ぜる)。
+
+    news検索の結果を**先頭に**置き、各結果の content も
+    _RESULT_CONTENT_CHARS で個別に切り詰める。どちらも上の下流切り詰め問題
+    への対策で、一般検索の長文記事が予算を独占して直近ニュースを
+    押し出さないようにする。
     """
     print(f"[Tool] 🌐 Searching Web: {query}" + (f" (recency_days={recency_days})" if recency_days else ""))
     try:
         max_results = 3 if recency_days else 5
         response = tavily_client.search(query=query, search_depth="advanced", max_results=max_results)
-        results = response.get("results", [])
+        general_results = response.get("results", [])
 
+        results = general_results
         if recency_days:
             # news検索は「あれば良い追加情報」。ここで例外にすると一般検索の
             # 成功結果まで丸ごと失敗扱いになる (recency_days を付けた質問だけ
@@ -45,16 +59,21 @@ def tool_web_search(query: str, recency_days: int = None) -> str:
                     query=query, search_depth="advanced", max_results=3,
                     topic="news", days=recency_days,
                 )
-                seen_urls = {r["url"] for r in results}
-                for r in news_response.get("results", []):
-                    if r["url"] not in seen_urls:
-                        results.append(r)
-                        seen_urls.add(r["url"])
+                news_results = news_response.get("results", [])
+                seen_urls = {r["url"] for r in news_results}
+                results = news_results + [r for r in general_results if r["url"] not in seen_urls]
             except Exception as e:
                 print(f"[Tool] ⚠️ news検索に失敗、一般検索の結果のみ返す: {e}")
 
         if not results: return "Web検索結果なし。"
-        return "\n\n".join([f"- {r['title']}\n  URL: {r['url']}\n  {r['content']}" for r in results])
+
+        blocks = []
+        for r in results:
+            content = r["content"]
+            if len(content) > _RESULT_CONTENT_CHARS:
+                content = content[:_RESULT_CONTENT_CHARS] + "…"
+            blocks.append(f"- {r['title']}\n  URL: {r['url']}\n  {content}")
+        return "\n\n".join(blocks)
     except Exception as e:
         return f"Error searching web: {e}"
 
