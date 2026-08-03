@@ -80,11 +80,12 @@ def test_every_test_file_is_classified():
 # ---------------------------------------------------------------------------
 _PROBE = """# -*- coding: utf-8 -*-
 import json, os, sys, time
-_log = os.environ["SWEEP_PROBE_LOG"]
+_dir = os.environ["SWEEP_PROBE_LOG"]
 _start = time.time()
 time.sleep({sleep})
-with open(_log, "a", encoding="utf-8") as f:
-    f.write(json.dumps({{"name": {name!r}, "start": _start, "end": time.time()}}) + "\\n")
+_rec = os.path.join(_dir, {name!r} + ".interval.json")
+with open(_rec, "w", encoding="utf-8") as f:
+    json.dump({{"name": {name!r}, "start": _start, "end": time.time()}}, f)
 print({name!r} + " done")
 sys.exit({code})
 """
@@ -98,6 +99,14 @@ def _make_probes(tmp, specs):
 
 
 def _run_runner(tmp, log, *args, timeout=300):
+    # log はプローブごとの区間記録を書き込むディレクトリ。1プローブ=1ファイルにして
+    # 複数プロセスが同じファイルへ同時追記する競合を構造的に無くす — Windows の CRT は
+    # O_APPEND を「毎回 EOF へ seek してから write」でエミュレートしており POSIX と違って
+    # プロセス間で原子的ではないため、複数プローブがほぼ同時に終わる並列レーンでは
+    # 後勝ちで1行がそっくり消えることがある (2026-08-03: CI で 6本中5本しか記録されず
+    # flaky FAIL、ローカルでは常に緑という形で顕在化)。親プロセス側で先に作っておけば
+    # 子プロセス側での mkdir 競合も無い。
+    os.makedirs(log, exist_ok=True)
     env = {**os.environ, "SWEEP_PROBE_LOG": log, "PYTHONIOENCODING": "utf-8"}
     started = time.monotonic()
     proc = subprocess.run(
@@ -110,14 +119,13 @@ def _run_runner(tmp, log, *args, timeout=300):
 
 def _intervals(log):
     out = {}
-    if not os.path.exists(log):
+    if not os.path.isdir(log):
         return out
-    with open(log, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rec = json.loads(line)
-                out[rec["name"]] = (rec["start"], rec["end"])
+    for fn in os.listdir(log):
+        if fn.endswith(".interval.json"):
+            with open(os.path.join(log, fn), encoding="utf-8") as f:
+                rec = json.load(f)
+            out[rec["name"]] = (rec["start"], rec["end"])
     return out
 
 
@@ -131,7 +139,7 @@ def test_failure_reaches_the_exit_code_and_lanes_do_not_overlap():
     """
     print("\n[2] 失敗が終了コードに届くか / レーンが重なっていないか")
     tmp = tempfile.mkdtemp(prefix="sweep_probe_")
-    log = os.path.join(tmp, "intervals.jsonl")
+    log = os.path.join(tmp, "intervals")
     try:
         _make_probes(tmp, [
             ("test_probe_p1.py", 2.0, 0),
@@ -187,12 +195,42 @@ def test_all_green_exits_zero():
     """逆方向。「常に赤いだけ」を防ぐ。"""
     print("\n[3] 全部緑なら exit 0")
     tmp = tempfile.mkdtemp(prefix="sweep_probe_")
-    log = os.path.join(tmp, "intervals.jsonl")
+    log = os.path.join(tmp, "intervals")
     try:
         _make_probes(tmp, [("test_probe_ok1.py", 0.1, 0), ("test_probe_ok2.py", 0.1, 0)])
         code, out, _ = _run_runner(tmp, log, "--jobs", "2", "--lane-default", "parallel")
         check("exit 0 になる", code == 0, f"exit={code}\n{out[-800:]}")
         check("PASS 2 / FAIL 0 と報告する", "PASS: 2  FAIL: 0" in out, out[-500:])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_filter_selects_a_subset_by_substring():
+    """`--filter` がファイル名の部分文字列一致で対象を絞り込むか。
+
+    ジャンルごとの分類リストを別途持たず、既存のファイル名だけで絞れるようにした
+    (2026-08-03)。「一致するものが無い」も無言で全件実行に倒さず、明示的に
+    exit 1 で知らせることを合わせて確認する。
+    """
+    print("\n[5] --filter が部分文字列でファイルを絞り込むか")
+    tmp = tempfile.mkdtemp(prefix="sweep_probe_")
+    log = os.path.join(tmp, "intervals")
+    try:
+        _make_probes(tmp, [
+            ("test_probe_vault_a.py", 0.1, 0),
+            ("test_probe_vault_b.py", 0.1, 0),
+            ("test_probe_crypto_a.py", 0.1, 0),
+        ])
+        code, out, _ = _run_runner(
+            tmp, log, "--jobs", "4", "--lane-default", "parallel", "--filter", "vault")
+        check("絞り込んだ2本だけが対象になる", "対象 2 本" in out, out[:300])
+        check("絞り込み対象外は走らない",
+              "test_probe_crypto_a.py" not in out, out[:500])
+        check("exit 0 になる", code == 0, f"exit={code}\n{out[-500:]}")
+
+        code2, out2, _ = _run_runner(
+            tmp, log, "--jobs", "4", "--lane-default", "parallel", "--filter", "no_such_genre")
+        check("一致が無いときは exit 1 で明示的に知らせる", code2 == 1, f"exit={code2}\n{out2}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -205,7 +243,7 @@ def test_hung_test_is_failed_not_ignored():
     """
     print("\n[4] 時間内に終わらなかった1本を FAIL にするか")
     tmp = tempfile.mkdtemp(prefix="sweep_probe_")
-    log = os.path.join(tmp, "intervals.jsonl")
+    log = os.path.join(tmp, "intervals")
     try:
         _make_probes(tmp, [("test_probe_hang.py", 30, 0), ("test_probe_fast.py", 0.1, 0)])
         code, out, wall = _run_runner(
@@ -225,6 +263,7 @@ if __name__ == "__main__":
     test_every_test_file_is_classified()
     test_failure_reaches_the_exit_code_and_lanes_do_not_overlap()
     test_all_green_exits_zero()
+    test_filter_selects_a_subset_by_substring()
     test_hung_test_is_failed_not_ignored()
 
     print("\n" + "=" * 55)

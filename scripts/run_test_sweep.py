@@ -306,10 +306,13 @@ def _print_result(r):
         print(r.output.rstrip())
 
 
-def sweep(tests_dir, jobs, timeout, extra_serial=(), lane_default="serial"):
+def sweep(tests_dir, jobs, timeout, extra_serial=(), lane_default="serial", name_filter=None):
     paths = sorted(glob.glob(os.path.join(tests_dir, "test_*.py")))
+    if name_filter:
+        paths = [p for p in paths if name_filter in os.path.basename(p)]
     if not paths:
-        print(f"❌ {tests_dir} に test_*.py が1本も無い")
+        reason = f"'{name_filter}' を含む test_*.py" if name_filter else "test_*.py"
+        print(f"❌ {tests_dir} に {reason} が1本も無い")
         return 1
 
     parallel, serial, unclassified = classify(paths, extra_serial, lane_default)
@@ -359,11 +362,16 @@ def main(argv=None):
                         help="このファイル名を直列レーンへ強制する (繰り返し可)")
     parser.add_argument("--lane-default", choices=("serial", "parallel"), default="serial",
                         help="どちらのリストにも無い名前の扱い (既定 serial)")
+    parser.add_argument("--filter", default=None, metavar="SUBSTR",
+                        help="ファイル名にこの部分文字列を含むものだけ実行する"
+                             " (例: --filter vault で test_vault_*.py だけ)")
     parser.add_argument("--list", action="store_true", help="分類を表示して終了する")
     args = parser.parse_args(argv)
 
     if args.list:
         paths = sorted(glob.glob(os.path.join(args.tests_dir, "test_*.py")))
+        if args.filter:
+            paths = [p for p in paths if args.filter in os.path.basename(p)]
         parallel, serial, unclassified = classify(paths, args.serial or [], args.lane_default)
         print(f"並列 {len(parallel)} 本 / 直列 {len(serial)} 本 / 未宣言 {len(unclassified)} 本")
         for path in serial:
@@ -374,7 +382,7 @@ def main(argv=None):
         return 0
 
     return sweep(args.tests_dir, args.jobs, args.timeout, args.serial or [],
-                 args.lane_default)
+                 args.lane_default, args.filter)
 
 
 if __name__ == "__main__":
