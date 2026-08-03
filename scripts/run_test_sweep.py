@@ -157,6 +157,7 @@ PARALLEL_TESTS = frozenset({
     "test_template_integration.py",
     "test_tool_args_guard.py",
     "test_tool_registry.py",
+    "test_tool_web_recency.py",
     "test_user_memory.py",
     "test_vault_chunking.py",
     "test_vault_cosine_search.py",

@@ -139,7 +139,7 @@ def _tool_curate_wrapper() -> str:
 # ---------------------------------------------------------
 
 TOOL_ENTRIES = [
-    {"name": "tool_web_search", "usage": "tool_web_search(query)", "description": "Web検索 (Tavily)",
+    {"name": "tool_web_search", "usage": "tool_web_search(query, recency_days=None)", "description": "Web検索 (Tavily)",
      "module": "tools.tool_web", "parallel_safe": True},
     # SQLite は _connect() が呼び出し毎に開いて finally で閉じる (WAL・読み取りのみ)。
     # Ollama を最大3回叩くが、そちらは lib.concurrency.ollama_slot が直列化する。

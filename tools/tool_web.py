@@ -22,12 +22,31 @@ from lib.lib_shared import (
 )
 
 @retry(max_retries=3)
-def tool_web_search(query: str) -> str:
-    """Web検索を行い結果を返す"""
-    print(f"[Tool] 🌐 Searching Web: {query}")
+def tool_web_search(query: str, recency_days: int = None) -> str:
+    """Web検索を行い結果を返す。
+
+    recency_days 指定時は一般検索に加えて topic="news" の直近検索も実行し、
+    結果をURLで重複除去してマージする。news検索に**置き換える**と、答えが
+    検索窓より前の出来事だった場合に正しい情報ごと落ちてしまうため、
+    一般検索は必ず残す (取りこぼしをゼロにしたまま鮮度の高い情報を混ぜる)。
+    """
+    print(f"[Tool] 🌐 Searching Web: {query}" + (f" (recency_days={recency_days})" if recency_days else ""))
     try:
-        response = tavily_client.search(query=query, search_depth="advanced", max_results=5)
+        max_results = 3 if recency_days else 5
+        response = tavily_client.search(query=query, search_depth="advanced", max_results=max_results)
         results = response.get("results", [])
+
+        if recency_days:
+            news_response = tavily_client.search(
+                query=query, search_depth="advanced", max_results=3,
+                topic="news", days=recency_days,
+            )
+            seen_urls = {r["url"] for r in results}
+            for r in news_response.get("results", []):
+                if r["url"] not in seen_urls:
+                    results.append(r)
+                    seen_urls.add(r["url"])
+
         if not results: return "Web検索結果なし。"
         return "\n\n".join([f"- {r['title']}\n  URL: {r['url']}\n  {r['content']}" for r in results])
     except Exception as e:
