@@ -22,7 +22,6 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-import lib.docling_client as docling_client
 import tools.tool_paper_radar as radar
 from lib.bot_errors import is_failure_result
 
@@ -159,90 +158,9 @@ def test_render_radar_markdown_shows_score_breakdown():
     print("✅ [4] render_radar_markdown: スコア内訳が読める")
 
 
-# ---------------------------------------------------------
-# [5][6] SNS 下書き (純関数)
-# ---------------------------------------------------------
-
-def test_trim_post_enforces_limit():
-    import tools.tool_paper_digest as digest
-    assert digest.trim_post("あ" * 200, 140) == "あ" * 139 + "…"
-    assert digest.trim_post("短い", 140) == "短い"
-    assert digest.trim_post("", 140) == ""
-    print("✅ [5] trim_post: 文字数を機械で担保する")
-
-
-def test_build_sns_thread_respects_limit_and_ends_with_link():
-    """LLM の「140字以内で」を信用せず、最終的に機械で切ってあること。
-
-    投稿が上限を超えると X 側で弾かれる = 下書きとして使えない。
-    """
-    import tools.tool_paper_digest as digest
-    d = {
-        "one_liner": "あ" * 300,
-        "problem": "い" * 300,
-        "method": "う" * 300,
-        "results": "え" * 300,
-        "implication": "お" * 300,
-        "keywords": ["LLM", "エージェント", "捨てられるべき3つ目"],
-    }
-    paper = _paper("2607.00040", title="T")
-    thread = digest.build_sns_thread(d, paper, limit=140, max_posts=5)
-
-    assert len(thread) <= 5, f"投稿数が上限を超えている: {len(thread)}"
-    for i, post in enumerate(thread[:-1], 1):
-        assert len(post) <= 140, f"{i}投稿目が {len(post)} 字 (上限140): {post!r}"
-    last = thread[-1]
-    assert paper["abs_url"] in last, f"最後の投稿に原論文リンクが無い: {last!r}"
-    body_len = len(last.split("\n")[0])
-    assert body_len <= 140 - 23, f"URL(23字換算)を足すと超過する: 本文{body_len}字"
-    print("✅ [6] build_sns_thread: 全投稿が上限内 / 末尾にリンク")
-
-
-# ---------------------------------------------------------
-# [7][8] キャプチャの劣化を「黙って」やらない
-# ---------------------------------------------------------
-
-def test_capture_paper_falls_back_to_abstract_with_explicit_backend():
-    """本文が取れなかったとき backend='abstract' と警告を必ず立てること。
-
-    ここで黙って要旨を返すと、以降の要約・記事・SNS 投稿が「全文を読んだ体」で
-    出る (読者にも自分にも嘘をつく)。CLAUDE.md 所見2「無言の死」の同型。
-    """
-    import tools.tool_paper_digest as digest
-
-    def _boom(*args, **kwargs):
-        raise docling_client.CaptureError("stub: all backends failed")
-
-    original = digest.capture_document
-    digest.capture_document = _boom
-    try:
-        result = digest.capture_paper(_paper("2607.00050", abstract="要旨テキスト"))
-    finally:
-        digest.capture_document = original
-
-    assert result["backend"] == "abstract", result
-    assert result["text"] == "要旨テキスト", result
-    assert result["warnings"], "フォールバックしたのに警告が空"
-    print("✅ [7] capture_paper: 要旨フォールバックを backend で明示する")
-
-
-def test_digest_markdown_marks_abstract_only_capture():
-    """要旨のみで書いた要約ノートには、その旨が本文に出ること。"""
-    import tools.tool_paper_digest as digest
-    d = {"one_liner": "要約", "problem": "課題", "method": "手法", "novelty": "新規性",
-         "results": "結果", "limitations": "限界", "implication": "示唆", "keywords": ["k"]}
-    capture = {"backend": "abstract", "chars": 100, "warnings": ["本文取得に失敗"]}
-    md = digest.render_digest_markdown(d, _paper("2607.00051"), capture)
-    assert "要旨のみ" in md, f"要旨のみである注記が無い:\n{md}"
-    assert "本文取得に失敗" in md, f"取得時の注記が落ちている:\n{md}"
-
-    full = digest.render_digest_markdown(
-        d, _paper("2607.00051"), {"backend": "docling", "chars": 40000, "warnings": []})
-    assert "docling で全文PDFを構造化" in full, full
-    assert "要旨のみ" not in full, "全文で読んだのに要旨扱いの注記が出ている"
-    print("✅ [8] render_digest_markdown: 取得経路が本文に必ず出る")
-
-
+# [5][6][7][8] SNS下書き・キャプチャ劣化フォールバックのテストは
+# tests/test_paper_digest.py へ移設した (Xスレッド生成がLLM呼び出しを
+# 伴うようになったため、Paper Digest 固有のスタブ作法とまとめて管理する)。
 # [9] docling 不在時のフォールバック順序 / 切り詰め申告は lib/docling_client.py
 # 内部の挙動なので tests/test_docling_client.py へ移設した (Phase 1)。
 
@@ -315,47 +233,9 @@ def test_registry_wrapper_failure_prefix_is_detected():
     print("✅ [12] 失敗接頭辞が bot_errors の判定に載っている")
 
 
-def test_digest_marks_seen_only_when_saved():
-    """--no-save の試し打ちで既出フラグを立てないこと。
-
-    立ててしまうと「1文字も保存していない論文」がレーダーから永久に消える。
-    Vault にも本番 logs にも触らないよう、保存先と seen パスを一時パスへ逃がす。
-    """
-    import tools.tool_paper_digest as digest
-
-    paper = _paper("2607.00080", title="Stub Paper")
-    stub_digest = {"one_liner": "要約", "problem": "課題", "method": "手法",
-                   "novelty": "新規性", "results": "結果", "limitations": "限界",
-                   "implication": "示唆", "keywords": ["k1"]}
-    stub_capture = {"text": "本文", "backend": "docling", "chars": 4,
-                    "truncated": False, "source": "", "warnings": []}
-
-    with tempfile.TemporaryDirectory() as tmp:
-        originals = (digest._resolve_paper, digest.capture_paper, digest.summarize_paper,
-                     digest.PAPERS_DIR, radar.SEEN_PATH, radar.LOGS_DIR)
-        digest._resolve_paper = lambda **kwargs: paper
-        digest.capture_paper = lambda p, use_docling=True: stub_capture
-        digest.summarize_paper = lambda p, body: stub_digest
-        digest.PAPERS_DIR = os.path.join(tmp, "Papers")
-        radar.SEEN_PATH = os.path.join(tmp, "seen.json")
-        radar.LOGS_DIR = tmp
-        try:
-            msg = digest.run_paper_digest(mode="sns", save=False)
-            assert not is_failure_result(msg), msg
-            assert radar.load_seen_ids() == [], "save=False で既出にしてはいけない"
-            assert not os.path.exists(digest.PAPERS_DIR), "save=False でファイルを書いている"
-
-            msg = digest.run_paper_digest(mode="sns", save=True)
-            assert not is_failure_result(msg), msg
-            assert radar.load_seen_ids() == ["2607.00080"], radar.load_seen_ids()
-            written = sorted(os.listdir(digest.PAPERS_DIR))
-            assert len(written) == 2, f"要約ノートと下書きの2本が出るはず: {written}"
-            assert any(f.endswith("_draft.md") for f in written), written
-        finally:
-            (digest._resolve_paper, digest.capture_paper, digest.summarize_paper,
-             digest.PAPERS_DIR, radar.SEEN_PATH, radar.LOGS_DIR) = originals
-    print("✅ [13] run_paper_digest: 保存したときだけ既出にする")
-
+# [13] run_paper_digest の既出フラグ・LLMスタブまわりのテストは
+# tests/test_paper_digest.py へ移設した (build_sns_post のスタブ化が
+# 必須になったため、Paper Digest 固有のテストとまとめて管理する)。
 
 def test_registry_entries_registered():
     from lib.tool_registry import TOOL_ENTRIES

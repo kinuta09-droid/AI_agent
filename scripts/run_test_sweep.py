@@ -135,6 +135,7 @@ PARALLEL_TESTS = frozenset({
     "test_moc_auto_link.py",
     "test_multiquery_rerank.py",
     "test_news_risk.py",
+    "test_paper_digest.py",
     "test_paper_radar.py",
     "test_paper_radar_live.py",
     "test_parallel_execute.py",
