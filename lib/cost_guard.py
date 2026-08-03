@@ -196,5 +196,16 @@ SWEEP_COUNTER = DailyCounter(
 )
 
 
+# --- Google Search Grounding 呼び出し回数カウンタ ---------------------------
+# tool_web_search_grounded (Gemini 3ファミリー共有の無料枠5,000プロンプト/月に
+# 対する安全弁)。既定30/日は実際の利用見込み(1日数回)より大きく余裕を持たせてある。
+GROUNDING_COUNTER_PATH = os.path.join(LOGS_DIR, "grounding_daily_calls.json")
+GROUNDING_COUNTER = DailyCounter(
+    path=GROUNDING_COUNTER_PATH,
+    limit=get_limit("DAILY_GROUNDING_CALL_LIMIT", 30),
+    name="Google Search Grounding",
+)
+
+
 def check_and_increment(n: int = 1) -> int:
     return GEMINI_COUNTER.check_and_increment(n)

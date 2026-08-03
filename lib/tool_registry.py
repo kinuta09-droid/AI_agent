@@ -139,8 +139,13 @@ def _tool_curate_wrapper() -> str:
 # ---------------------------------------------------------
 
 TOOL_ENTRIES = [
-    {"name": "tool_web_search", "usage": "tool_web_search(query, recency_days=None)", "description": "Web検索 (Tavily)",
+    {"name": "tool_web_search", "usage": "tool_web_search(query, recency_days=None)", "description": "Web検索 (Tavily)。一般的な調べ物はこちらを使う（無料枠が大きい）",
      "module": "tools.tool_web", "parallel_safe": True},
+    {"name": "tool_web_search_grounded", "usage": "tool_web_search_grounded(query)",
+     "description": "Web検索 (Google Search Grounding、精度優先)。「今日/本日/急に」など直近の出来事で、"
+                     "tool_web_search (Tavily) では狙った一次情報を安定して拾えない/答えの精度が特に重要な質問にだけ使う。"
+                     "日次呼び出し数に別枠の上限があるため乱用しない",
+     "module": "tools.tool_web"},
     # SQLite は _connect() が呼び出し毎に開いて finally で閉じる (WAL・読み取りのみ)。
     # Ollama を最大3回叩くが、そちらは lib.concurrency.ollama_slot が直列化する。
     {"name": "tool_vault_hybrid_search", "usage": "tool_vault_hybrid_search(query, top_k=5)", "description": "Vault内検索 (キーワード+意味検索のハイブリッド)。過去のメモ・ノート・文脈を探す場合は常にこれを使う",

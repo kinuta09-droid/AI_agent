@@ -218,6 +218,11 @@ def generate_plan(user_query: str, session_context: str = "") -> dict:
 
 【ツール選択の指針】
 - **外部情報が必要な場合** (最新ニュース、一般知識、技術情報など): tool_web_search を使う
+- **「今日/本日/急に」等、直近の出来事の正確な理由・数値が特に重要な場合**:
+  まず tool_web_search (recency_days付き) を試す。それでも精度が不安な場合や、
+  Criticから再検索を求められた場合の代替として tool_web_search_grounded を使う
+  (Google自身の検索インデックスを使うため精度は高いが、日次呼び出し数に別枠の
+  上限があるため無闇に最初から選ばない)
 - **ユーザーの過去のメモや文脈が必要な場合**: tool_vault_hybrid_search を使う (キーワード+意味検索を自動統合)
 - **両方が必要な場合**: まず tool_web_search で外部情報を取得し、その後 tool_vault_hybrid_search で関連する過去ノートを探す
 - **URLが与えられた場合**: tool_fetch_url でページ内容を取得する
@@ -891,6 +896,9 @@ def critique_results(user_query: str, plan: list, results: list) -> dict:
    - 「調べて」「まとめて」系の要求 → observationに具体的な情報（手順、数字、固有名詞）が含まれているか？
    - 一般論や概要だけで具体性がない場合 → needs_revision（「具体的な手順/データを追加検索せよ」と指示）
    - 例: 「ストレッチの方法を調べて」→ 具体的なストレッチ名・やり方・回数がなければ不十分
+   - **tool_web_search (Tavily) で「今日/本日/急に」等の直近の出来事を調べたが
+     一次情報が具体的でない場合**: revised_planでの再検索には
+     tool_web_search_grounded (Google Search Grounding、精度優先) を提案する
 4. 不足があれば、追加で必要なステップを提案
 - **重要**: revised_planで提案するツールは上記の利用可能なツールのみ使用可能
 - **重要**: revised_planはユーザーの制約を違反してはいけない
