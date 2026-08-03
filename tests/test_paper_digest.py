@@ -213,6 +213,32 @@ def test_build_sns_post_omits_broken_link_when_no_url_or_arxiv_id():
     print("✅ [2e] build_sns_post: abs_url/arxiv_id が無ければ壊れたリンクを組み立てない")
 
 
+def test_build_sns_post_preserves_long_vowel_mark_in_hashtags():
+    """キーワードの長音記号「ー」がハッシュタグ生成で消えないこと (回帰テスト)。
+
+    以前はタグ生成の許可文字クラスがカタカナ範囲を `ァ-ヶ` (U+30A1-U+30F6) と
+    書いており、長音記号「ー」(U+30FC) がこの範囲の外にあるため無条件に削除
+    されていた。結果「パーソナライズ」が「パソナライズ」、「クリーンビューティー」が
+    「クリンビュティ」という誤字のハッシュタグとして生成されていた
+    (2026-08-04 に /doc 経由の実ノートで発覚)。draft_sns_hook_post はスタブし
+    Gemini を呼ばせない。
+    """
+    import tools.tool_paper_digest as digest
+    d = {"one_liner": "要旨", "keywords": ["パーソナライズ", "クリーンビューティー"]}
+    paper = _paper("2607.00042", title="T")
+
+    original = digest.draft_sns_hook_post
+    digest.draft_sns_hook_post = lambda dd, pp: "スタブ投稿本文"
+    try:
+        post = digest.build_sns_post(d, paper, limit=500)
+    finally:
+        digest.draft_sns_hook_post = original
+
+    assert "#パーソナライズ" in post, f"長音記号が欠落したハッシュタグになっている: {post!r}"
+    assert "#クリーンビューティー" in post, f"長音記号が欠落したハッシュタグになっている: {post!r}"
+    print("✅ [2f] build_sns_post: ハッシュタグ生成で長音記号「ー」を保持する")
+
+
 def test_build_sns_post_prompt_uses_custom_subject_label():
     """paper['subject_label'] を渡すと draft_sns_hook_post のプロンプト文中の
     「論文」が差し替わること (tool_document.py が "文書" を渡すケースの回帰)。

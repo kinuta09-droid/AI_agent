@@ -248,7 +248,7 @@ def build_sns_post(digest: dict, paper: dict, limit: int = SNS_POST_LIMIT) -> st
     if not body:
         body = _mechanical_hook_post(digest, paper)
 
-    tags = " ".join(f"#{re.sub(r'[^0-9A-Za-zぁ-んァ-ヶ一-龠_]', '', k)}"
+    tags = " ".join(f"#{re.sub(r'[^0-9A-Za-zぁ-んァ-ヶー一-龠_]', '', k)}"
                     for k in (digest.get("keywords") or [])[:2] if k)
     arxiv_id = paper.get("arxiv_id")
     link = paper.get("abs_url") or (f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else "")
