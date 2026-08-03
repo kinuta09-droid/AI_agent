@@ -155,6 +155,30 @@ RETRIEVER_MIN_PICKED = 2
 
 
 # ---------------------------------------------------------
+# GraphRAG 段階1: 1ホップリンク展開
+# ---------------------------------------------------------
+#
+# Vault の [[wikilink]] は既に人間が手で張った、意味の通ったエッジ。LLM で
+# エンティティを抽出する必要がない (インデックス構築の課金ゼロ)。RRF 上位候補の
+# 1ホップ近傍を第4のランクリストとして混ぜ、本文が一致しなくてもリンクで
+# 繋がっているノートを拾えるようにする (tools.tool_vault_index._link_hits)。
+#
+# ハブ足切りの閾値 (LINK_HUB_DEGREE) はここではなく tools.tool_vault_index に
+# ある: フィルタの実体が _link_hits 側で完結しているので、ここに複製すると
+# 「出す側と受け取る側の食い違い」を増やすだけになる。
+#
+# 既定 OFF: MULTIQUERY_DEFAULT と同じ作法 (D4)。「良くなったはず」を根拠に
+# 既定を変えない。scripts/eval_retrieval.py --link-expand on で実測してから決める。
+LINK_EXPAND_DEFAULT = False
+LINK_SEED_HITS = 3       # 展開の起点にする RRF 上位件数
+LINK_EXPAND_BUDGET = 5   # 1回の展開で足す近傍の最大件数
+# 「近傍の RRF 寄与を1ランク分弱める」つまみ。5 なら最良の近傍が
+# 1/(60+1+5) = キーワード6位相当。**この値だけは実測の裏付けが無い**ことを
+# 明記する。VAULT_SEARCH_LINK_RANK_OFFSET で A/B できる (_env_int 経由)。
+LINK_RANK_OFFSET = 5
+
+
+# ---------------------------------------------------------
 # 設定・LLM 呼び出し
 # ---------------------------------------------------------
 
@@ -607,6 +631,22 @@ def _resolve_semantic_fn(semantic_fn):
         return None, f"[ERROR] semantic search unavailable: {e}"
 
 
+def _resolve_link_fn(link_fn):
+    """リンク展開の呼び出し関数を1回だけ解決する (_resolve_semantic_fn と同じ形)。
+
+    遅延 import で numpy 欠落環境 (tool_vault_index はモジュールトップで numpy を
+    import する) を検索の道連れにしない。既定 OFF のときは呼び出し側 (_retrieve_once)
+    が enabled チェックを先にするので、そもそもここに来ない = 解決もしない (D4)。
+    """
+    if link_fn is not None:
+        return link_fn, ""
+    try:
+        from tools.tool_vault_index import _link_hits
+        return _link_hits, ""
+    except Exception as e:
+        return None, f"[ERROR] link expansion unavailable: {e}"
+
+
 def _resolve_activity_keyword_fn(activity_keyword_fn):
     """行動ログ側のキーワード検索を1回だけ解決する (semantic と同じ方式)。
 
@@ -690,8 +730,8 @@ def _rank_lists(queries: list, keyword_fn, semantic_fn, per_query_k: int,
     return rank_lists, semantic_error, activity_error
 
 
-def _fuse(rank_lists: list) -> list:
-    """RRF: score(d) = Σ 1/(k + rank)。ファイル(rel_path)単位に融合する。
+def _fuse(rank_lists: list, rank_offsets: dict = None) -> list:
+    """RRF: score(d) = Σ 1/(k + rank + offset)。ファイル(rel_path)単位に融合する。
 
     融合キーが rel_path なのは、キーワード側とセマンティック側が出会える唯一の
     キーだから (キーワード検索はチャンクを知らない)。出典の見出しは、そのファイルに
@@ -700,9 +740,16 @@ def _fuse(rank_lists: list) -> list:
     doc_source (vault / crypto / agent_exec …) はどの経路のヒットからでも
     拾う: Ollama が落ちて semantic が消えても、出典ラベルを
     [[wikilink]] にするかどうかの判断は正しく行われないといけない。
+
+    rank_offsets ({origin: 追加オフセット}, 既定 全経路0):
+      GraphRAG 段階1 (D3) — リンク展開で見つかった近傍は「本文で裏付けられて
+      いない」候補なので、RRF 寄与を意図的に1ランク分弱める。他の経路
+      (keyword/semantic/activity) は既定どおり offset=0 で挙動が変わらない。
     """
+    rank_offsets = rank_offsets or {}
     fused = {}
     for origin, qi, ranked in rank_lists:
+        offset = rank_offsets.get(origin, 0)
         for rank, h in enumerate(ranked, start=1):
             d = fused.setdefault(h["rel_path"], {
                 "rel_path": h["rel_path"], "filename": h["filename"],
@@ -710,7 +757,7 @@ def _fuse(rank_lists: list) -> list:
                 "heading": None, "chunk_id": None, "snippet": None,
                 "_kw_snippet": None, "rerank_pos": None, "source": None,
             })
-            d["rrf"] += 1.0 / (RRF_K + rank)
+            d["rrf"] += 1.0 / (RRF_K + rank + offset)
             d["sources"].add(origin)
             d["query_ids"].add(qi)
             if d["source"] is None and h.get("source"):
@@ -800,15 +847,40 @@ def _rewrite_query(query: str, missing: str, tried: list, llm_fn=None, backend=N
 
 
 def _retrieve_once(queries: list, keyword_fn, semantic_fn, activity_keyword_fn,
-                   per_query_k: int, qi_offset: int = 0):
-    """1周分の検索。ランクリスト収集 → RRF 融合まで (リランクは含まない)。
+                   per_query_k: int, qi_offset: int = 0,
+                   link_fn=None, link_expand=None):
+    """1周分の検索。ランクリスト収集 → RRF 融合 → (有効なら) 1ホップ展開して再融合。
 
-    Returns: (hits, semantic_error, activity_error)
+    Returns: (hits, semantic_error, activity_error, link_error)
+
+    展開は RRF 融合**の後**、リランクの**前**に置く (D3): 最も安く効果測定できる
+    位置。無関係な近傍はこの後のリランカが落とすので、ノイズ除去をリランカに
+    任せられる。再融合は `_fuse` を呼ぶだけの純関数で、rank_lists 自体は
+    使い回すので追加コストは近傍取得の1クエリ分のみ。
     """
     rank_lists, semantic_error, activity_error = _rank_lists(
         queries, keyword_fn, semantic_fn, per_query_k=per_query_k,
         activity_keyword_fn=activity_keyword_fn, qi_offset=qi_offset)
-    return _fuse(rank_lists), semantic_error, activity_error
+    fused = _fuse(rank_lists)
+
+    link_error = ""
+    if _enabled("VAULT_SEARCH_LINK_EXPAND", link_expand, default=LINK_EXPAND_DEFAULT):
+        resolved_link_fn, resolve_error = _resolve_link_fn(link_fn)
+        if resolved_link_fn is None:
+            link_error = resolve_error
+        else:
+            seeds = [h["rel_path"] for h in fused[:LINK_SEED_HITS]]
+            try:
+                neighbors = resolved_link_fn(seeds, LINK_EXPAND_BUDGET)
+            except Exception as e:
+                neighbors = []
+                link_error = f"[ERROR] link expansion failed: {e}"
+            if neighbors:
+                offset = _env_int("VAULT_SEARCH_LINK_RANK_OFFSET", LINK_RANK_OFFSET)
+                link_list = ("link", 1 + qi_offset, neighbors)
+                fused = _fuse(rank_lists + [link_list], rank_offsets={"link": offset})
+
+    return fused, semantic_error, activity_error, link_error
 
 
 def _looks_solid(rrf_ordered: list, reranked: list,
@@ -893,7 +965,7 @@ def _merge_new_hits(base: list, extra: list) -> list:
 def _retrieve_loop(query, reranked, verdict, queries, started,
                    keyword_fn, semantic_fn, activity_keyword_fn, llm_fn,
                    rerank, rerank_backend, per_query_k, n_cand, loop=None,
-                   rrf_order=None):
+                   rrf_order=None, link_fn=None, link_expand=None):
     """薄い検索結果を、クエリを変えて自力で引き直す。
 
     Returns:
@@ -955,9 +1027,10 @@ def _retrieve_loop(query, reranked, verdict, queries, started,
             break
 
         print(f"[Hybrid] 🔁 引き直し {iterations + 1}周目: {new_query}")
-        extra, _sem_err, _act_err = _retrieve_once(
+        extra, _sem_err, _act_err, _link_err = _retrieve_once(
             [new_query], keyword_fn, semantic_fn, activity_keyword_fn,
-            per_query_k=per_query_k, qi_offset=len(queries))
+            per_query_k=per_query_k, qi_offset=len(queries),
+            link_fn=link_fn, link_expand=link_expand)
         queries = queries + [new_query]
         iterations += 1
 
@@ -993,7 +1066,8 @@ def _retrieve_loop(query, reranked, verdict, queries, started,
 
 def _hybrid_hits(query: str, top_k: int = 5, keyword_fn=_keyword_hits,
                  semantic_fn=None, llm_fn=None, multiquery=None, rerank=None,
-                 rerank_backend=None, activity_keyword_fn=None, loop=None):
+                 rerank_backend=None, activity_keyword_fn=None, loop=None,
+                 link_expand=None, link_fn=None):
     """ハイブリッド検索の構造化結果を返す。
 
     Returns:
@@ -1027,9 +1101,9 @@ def _hybrid_hits(query: str, top_k: int = 5, keyword_fn=_keyword_hits,
     semantic_fn, resolve_error = _resolve_semantic_fn(semantic_fn)
     activity_keyword_fn, act_resolve_error = _resolve_activity_keyword_fn(
         activity_keyword_fn)
-    hits, semantic_error, act_runtime_error = _retrieve_once(
+    hits, semantic_error, act_runtime_error, link_error = _retrieve_once(
         queries, keyword_fn, semantic_fn, activity_keyword_fn,
-        per_query_k=top_k * 2)
+        per_query_k=top_k * 2, link_fn=link_fn, link_expand=link_expand)
     activity_error = act_resolve_error or act_runtime_error
 
     sem_error = resolve_error or semantic_error
@@ -1041,6 +1115,10 @@ def _hybrid_hits(query: str, top_k: int = 5, keyword_fn=_keyword_hits,
         # 落ちていると、行動ログは**どの経路からも出てこない**状態になる。
         notes.append(f"⚠️ 行動ログのキーワード検索は利用できません ({activity_error})")
         activity_keyword_fn = None
+    if link_error:
+        # 展開OFFなら link_error は常に "" (_retrieve_once が解決すらしない、D4)。
+        # ここに出るのは ON にしたのに解決/実行が失敗した事故のケースのみ。
+        notes.append(f"⚠️ リンク展開は利用できません ({link_error})")
 
     n_cand = _env_int("VAULT_SEARCH_RERANK_CANDIDATES", RERANK_CANDIDATES)
     candidates, tail = hits[:n_cand], hits[n_cand:]
@@ -1055,7 +1133,7 @@ def _hybrid_hits(query: str, top_k: int = 5, keyword_fn=_keyword_hits,
         activity_keyword_fn=activity_keyword_fn, llm_fn=llm_fn,
         rerank=rerank, rerank_backend=rerank_backend,
         per_query_k=top_k * 2, n_cand=n_cand, loop=loop,
-        rrf_order=candidates)
+        rrf_order=candidates, link_fn=link_fn, link_expand=link_expand)
     notes.extend(loop_notes)
 
     if not reranked:
@@ -1084,13 +1162,14 @@ def tool_vault_hybrid_search(query: str, top_k: int = 5,
                              semantic_fn=None, llm_fn=None,
                              multiquery=None, rerank=None,
                              rerank_backend=None,
-                             activity_keyword_fn=None) -> str:
+                             activity_keyword_fn=None,
+                             link_expand=None, link_fn=None) -> str:
     """Vault内をキーワード+意味検索のハイブリッド (RRF) で検索する。
 
     出力形式は tool_vault_search / tool_vault_semantic_search と揃える
     (`- File: [[name#heading]]\\n  Snippet:` — プランナー側の扱いを変えないため)。
     keyword_fn / semantic_fn / llm_fn はテスト注入用 (embed_fn 注入と同じパターン)。
-    multiquery / rerank は計測・デバッグ用の上書き (None なら .env)。
+    multiquery / rerank / link_expand は計測・デバッグ用の上書き (None なら .env)。
     レジストリの usage は `(query, top_k=5)` のままなので Planner には見えない。
     """
     if not query or not str(query).strip():
@@ -1104,7 +1183,8 @@ def tool_vault_hybrid_search(query: str, top_k: int = 5,
     hits, notes, queries = _hybrid_hits(
         query, top_k, keyword_fn=keyword_fn, semantic_fn=semantic_fn, llm_fn=llm_fn,
         multiquery=multiquery, rerank=rerank, rerank_backend=rerank_backend,
-        activity_keyword_fn=activity_keyword_fn)
+        activity_keyword_fn=activity_keyword_fn,
+        link_expand=link_expand, link_fn=link_fn)
 
     if len(queries) > 1:
         # 何で引いた結果なのかを常に残す。ヒットが的外れなときに
