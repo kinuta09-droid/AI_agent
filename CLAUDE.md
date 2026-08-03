@@ -143,6 +143,7 @@ subprocess.Popen(cmd, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
 - **50-line checkpoints**: For complex implementations, stop and wait for human review every ~50 lines. Do not generate large blocks of code in one shot.
 - **Commit after every working state**: As soon as a feature works (or a meaningful change is confirmed), commit immediately — before moving to the next task.
 - **Stop and reset when confused**: If debugging loops with no progress, stop editing code. Return to plain language, restate the goal from scratch, and re-enter Plan Mode.
+- **効果的な時間削減は根源的な財産**: 再テストや再検証のたびに払う固定費を削る変更 (絞り込み実行・並列化・キャッシュ等) は、それ単体では機能追加に見えなくても後回しにしない。積み重なる時間コストの削減は一度払えば以後ずっと効く資産であり、「今回だけ我慢すれば済む手間」として軽視しない (2026-08-03: `scripts/run_test_sweep.py --filter` 追加の判断根拠)。ただし他の原則 (過剰な抽象化の禁止・1機能1セッション) を上書きしない — 削減効果が明確でない先回りの汎用化までは正当化しない。
 
 ## Plan Mode Protocol
 - Complex tasks (3+ files, new features, architectural changes): always start in Plan Mode
