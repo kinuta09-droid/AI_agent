@@ -36,7 +36,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from lib.agent_feedback import save_feedback, AGENT_FEEDBACK_LOG_PATH
+from lib.agent_feedback import save_feedback, summarize_feedback, AGENT_FEEDBACK_LOG_PATH
 
 
 def _make_fake_interaction(user_id: int = 111, channel_id: int = 222):
@@ -104,6 +104,56 @@ def test_save_feedback_bad_rating_includes_reason():
     assert entry["event"] == "bad"
     assert entry["meta"]["reason"] == "期待と違いました"
     print("✅ save_feedback() bad rating carries the reason text through meta")
+
+
+# ---------------------------------------------------------
+# 1b. summarize_feedback() の集計
+# ---------------------------------------------------------
+
+def test_summarize_feedback_empty_log():
+    tmp_dir = tempfile.mkdtemp()
+    log_path = os.path.join(tmp_dir, "agent_feedback.jsonl")
+    text = summarize_feedback(log_path=log_path)
+    assert "エントリがありません" in text
+    print("✅ summarize_feedback() handles an empty log without raising")
+
+
+def test_summarize_feedback_counts_ratio_reasons_and_users():
+    tmp_dir = tempfile.mkdtemp()
+    log_path = os.path.join(tmp_dir, "agent_feedback.jsonl")
+
+    save_feedback("good", "ゴール1", "結果1", user_id=1, log_path=log_path)
+    save_feedback("good", "ゴール2", "結果2", user_id=1, log_path=log_path)
+    save_feedback("bad", "ゴール3", "結果3", reason="情報が古い", user_id=2, log_path=log_path)
+    save_feedback("bad", "ゴール4", "結果4", reason="情報が古い", user_id=2, log_path=log_path)
+    save_feedback("bad", "ゴール5", "結果5", reason="", user_id=3, log_path=log_path)
+
+    text = summarize_feedback(days=30, log_path=log_path)
+    assert "good: 2 (40%)" in text, text
+    assert "bad: 3 (60%)" in text, text
+    assert "(2) 情報が古い" in text, text
+    assert "(1) (理由未記入)" in text, text
+    assert "- 1: 2" in text, text
+    assert "- 2: 2" in text, text
+    assert "- 3: 1" in text, text
+    print("✅ summarize_feedback() reports good/bad ratio, bad-reason frequency, and per-user counts")
+
+
+def test_summarize_feedback_prod_log_untouched():
+    before_exists = os.path.exists(AGENT_FEEDBACK_LOG_PATH)
+    before_size = os.path.getsize(AGENT_FEEDBACK_LOG_PATH) if before_exists else None
+
+    tmp_dir = tempfile.mkdtemp()
+    log_path = os.path.join(tmp_dir, "agent_feedback.jsonl")
+    save_feedback("good", "g", "r", log_path=log_path)
+    summarize_feedback(log_path=log_path)
+
+    after_exists = os.path.exists(AGENT_FEEDBACK_LOG_PATH)
+    if before_exists:
+        assert os.path.getsize(AGENT_FEEDBACK_LOG_PATH) == before_size
+    else:
+        assert not after_exists
+    print("✅ summarize_feedback() never touches the production log")
 
 
 # ---------------------------------------------------------
@@ -509,6 +559,9 @@ def test_send_feedback_prompt_skips_when_channel_is_none():
 if __name__ == "__main__":
     test_save_feedback_writes_expected_jsonl_entry()
     test_save_feedback_bad_rating_includes_reason()
+    test_summarize_feedback_empty_log()
+    test_summarize_feedback_counts_ratio_reasons_and_users()
+    test_summarize_feedback_prod_log_untouched()
     test_agent_feedback_view_has_finite_timeout()
     test_agent_feedback_good_button_saves_and_disables()
     test_agent_feedback_good_button_warns_on_save_failure()
