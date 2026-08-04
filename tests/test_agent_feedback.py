@@ -139,6 +139,20 @@ def test_summarize_feedback_counts_ratio_reasons_and_users():
     print("✅ summarize_feedback() reports good/bad ratio, bad-reason frequency, and per-user counts")
 
 
+def test_summarize_feedback_whitespace_only_reason_counts_as_unfilled():
+    """空白のみのreasonは「(理由未記入)」に丸め、空白だけの別バケツを作らないこと (/grill 指摘)。"""
+    tmp_dir = tempfile.mkdtemp()
+    log_path = os.path.join(tmp_dir, "agent_feedback.jsonl")
+
+    save_feedback("bad", "ゴール1", "結果1", reason="   ", user_id=1, log_path=log_path)
+    save_feedback("bad", "ゴール2", "結果2", reason="", user_id=2, log_path=log_path)
+
+    text = summarize_feedback(log_path=log_path)
+    assert "(2) (理由未記入)" in text, text
+    assert '"   "' not in text
+    print("✅ summarize_feedback() folds whitespace-only reasons into (理由未記入)")
+
+
 def test_summarize_feedback_prod_log_untouched():
     before_exists = os.path.exists(AGENT_FEEDBACK_LOG_PATH)
     before_size = os.path.getsize(AGENT_FEEDBACK_LOG_PATH) if before_exists else None
@@ -561,6 +575,7 @@ if __name__ == "__main__":
     test_save_feedback_bad_rating_includes_reason()
     test_summarize_feedback_empty_log()
     test_summarize_feedback_counts_ratio_reasons_and_users()
+    test_summarize_feedback_whitespace_only_reason_counts_as_unfilled()
     test_summarize_feedback_prod_log_untouched()
     test_agent_feedback_view_has_finite_timeout()
     test_agent_feedback_good_button_saves_and_disables()

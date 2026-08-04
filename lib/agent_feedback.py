@@ -54,7 +54,7 @@ def summarize_feedback(days: int = 30, log_path: str = AGENT_FEEDBACK_LOG_PATH) 
     for e in events:
         meta = e.get("meta") or {}
         if e.get("event") == "bad":
-            reason = meta.get("reason") or "(理由未記入)"
+            reason = (meta.get("reason") or "").strip() or "(理由未記入)"
             reason_freq[reason] = reason_freq.get(reason, 0) + 1
         uid = meta.get("user_id")
         key = str(uid) if uid is not None else "(不明)"
