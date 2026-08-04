@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 # Windows console encoding fix
 sys.stdout.reconfigure(encoding='utf-8')
 
-from lib.paths import ENV_PATH
+from lib.paths import ENV_PATH, PROJECT_ROOT
 
 load_dotenv(ENV_PATH)
 
@@ -63,7 +63,6 @@ def _get_function(func_path: str):
 # scripts/arms_ctl.py も同じ表を参照する。写すとパスがずれた瞬間に
 # 「殺すべき PID を見失う」ため)。service_control は標準ライブラリのみに依存する
 # ので、スーパーバイザに discord 等の重量級依存は持ち込まれない。
-_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # kill → ランチャー親 exit → poll() 検知 のタイムラグ中に再killを連打しないための猶予
 _KILL_COOLDOWN = 60
@@ -104,7 +103,7 @@ def run_and_monitor():
         # ため既定ではブロックバッファリングされ、print() が 8KB 貯まるまで
         # ファイルに現れない。起動失敗の調査で真っ先に読むログから
         # 「[Discord] ⚠️ Another bot instance...」等が消えてしまうので明示的に外す。
-        return subprocess.Popen([python_exe, "-u", os.path.join(_ROOT, script)])
+        return subprocess.Popen([python_exe, "-u", os.path.join(PROJECT_ROOT, script)])
 
     processes = {
         name: {

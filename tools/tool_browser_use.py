@@ -138,70 +138,12 @@ class BrowserSession:
         _validate_url_scheme(url)
         self._page.goto(url, wait_until=wait_until)
 
-    # --- interaction ---
-
-    def click(self, selector: str) -> None:
-        """CSS セレクタの要素をクリックする。"""
-        self._page.click(selector)
-
-    def fill_text(self, selector: str, text: str) -> None:
-        """テキスト入力フィールドに値をセットする。"""
-        self._page.fill(selector, text)
-
-    def press_key(self, selector: str, key: str) -> None:
-        """キーストロークを送信する（例: 'Enter'）。"""
-        self._page.press(selector, key)
-
-    def wait_for_selector(self, selector: str, state: str = "visible") -> None:
-        """セレクタが指定状態になるまで待機する。"""
-        self._page.wait_for_selector(selector, state=state)
-
     # --- extraction ---
-
-    def get_page_content(self) -> str:
-        """現在ページの HTML 全体を返す。"""
-        return self._page.content()
-
-    def get_text(self, selector: str) -> str:
-        """セレクタに一致する要素のテキストを返す。"""
-        el = self._page.query_selector(selector)
-        return el.inner_text() if el else ""
-
-    def get_all_text(self, selector: str) -> list[str]:
-        """セレクタに一致する全要素のテキストをリストで返す。"""
-        elements = self._page.query_selector_all(selector)
-        return [el.inner_text() for el in elements]
 
     def get_inner_text(self) -> str:
         """ページ全体のプレーンテキスト（body.innerText）を返す。広告除去済み。"""
         return self._page.evaluate("() => document.body.innerText")
 
-    def get_attribute(self, selector: str, attr: str) -> str:
-        """セレクタ要素の属性値を返す。"""
-        return self._page.get_attribute(selector, attr) or ""
-
-    def current_url(self) -> str:
-        """現在の URL を返す。"""
-        return self._page.url
-
-    # --- screenshot ---
-
-    def screenshot(self, filename: str | None = None) -> str:
-        """スクリーンショットを撮影して保存パスを返す。
-
-        Args:
-            filename: 保存ファイル名（省略時は自動生成）
-
-        Returns:
-            保存されたファイルの絶対パス
-        """
-        os.makedirs(SCREENSHOT_DIR, exist_ok=True)
-        if not filename:
-            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"screenshot_{ts}.png"
-        path = os.path.join(SCREENSHOT_DIR, filename)
-        self._page.screenshot(path=path, full_page=True)
-        return path
 
 
 # ---------------------------------------------------------
@@ -249,55 +191,6 @@ def browse_and_extract(url: str, task: str, headless: bool = True) -> str:
 簡潔に日本語で回答してください。"""
 
     print(f"[Browser] Extracting with Gemini...")
-    resp = client.models.generate_content(
-        model=MODEL_NAME_HEAVY,
-        contents=prompt,
-    )
-    return resp.text.strip()
-
-
-def browser_search_and_extract(query: str, task: str, headless: bool = True) -> str:
-    """Google 検索して上位ページを開き、task に回答する。
-
-    Args:
-        query: 検索クエリ
-        task:  抽出タスク
-        headless: ヘッドレス実行するか
-
-    Returns:
-        Gemini の回答テキスト
-    """
-    search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}&hl=ja"
-    print(f"[Browser] Searching: {query}")
-
-    try:
-        with BrowserSession(headless=headless) as b:
-            b.navigate(search_url)
-            # 検索結果の最初のリンク URL を取得
-            hrefs = b.get_all_text("h3")
-            first_link = b.get_attribute("a:has(h3)", "href")
-
-            if first_link and first_link.startswith("http"):
-                print(f"[Browser] Navigating to first result: {first_link}")
-                b.navigate(first_link)
-                page_text = b.get_inner_text()
-            else:
-                # 検索結果ページ自体から抽出
-                page_text = b.get_inner_text()
-    except Exception as e:
-        return f"[Browser] 検索エラー: {e}"
-
-    trimmed = page_text[:8000]
-    prompt = f"""以下は検索クエリ「{query}」の結果ページのテキストです。
-
---- ページ内容 ---
-{trimmed}
---- ここまで ---
-
-タスク: {task}
-
-簡潔に日本語で回答してください。"""
-
     resp = client.models.generate_content(
         model=MODEL_NAME_HEAVY,
         contents=prompt,

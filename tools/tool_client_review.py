@@ -140,49 +140,6 @@ def revise_deliverable(deliverable: str, job_description: str, persona_id: str, 
     except Exception as e:
         return f"Error during revision: {e}"
 
-def run_client_review_loop(deliverable: str, job_description: str, persona_id: str = "other", max_loops: int = 3) -> dict:
-    """
-    自律的な改訂ループを実行するバックエンド関数。
-    ※Discord側からは非同期で段階的に呼ぶ設計のため、これはUIを介さないエージェント自律時等に使用される想定。
-    Discordからは状態を維持して evaluate -> revise を個別に呼ぶ設計とする。
-    """
-    current_text = deliverable
-    logs = []
-    
-    for i in range(max_loops):
-        print(f"[ClientReview] Loop {i+1} starting...")
-        eval_result = evaluate_deliverable(current_text, job_description, persona_id)
-        
-        log_entry = {
-            "loop": i+1,
-            "text": current_text,
-            "evaluation": eval_result
-        }
-        logs.append(log_entry)
-        
-        status = eval_result.get("status", "fail")
-        if status == "pass":
-            print("[ClientReview] Passed!")
-            break
-            
-        if i < max_loops - 1:
-            print("[ClientReview] Revising based on feedback...")
-            current_text = revise_deliverable(current_text, job_description, persona_id, eval_result)
-            
-    # 学習用にログを保存（最初と最後のスコア差分など）
-    if len(logs) > 1:
-        _save_improvement_log(
-            job_description, persona_id,
-            logs[0]["text"], logs[-1]["text"],
-            logs[0]["evaluation"], logs[-1]["evaluation"]
-        )
-        
-    return {
-        "final_text": current_text,
-        "logs": logs,
-        "final_status": logs[-1]["evaluation"].get("status") if logs else "fail"
-    }
-
 def _save_improvement_log(job: str, persona: str, before_text: str, after_text: str, before_eval: dict, after_eval: dict):
     """改訂のビフォーアフターを保存し、今後のシステム改善学習パッチに活かす"""
     try:

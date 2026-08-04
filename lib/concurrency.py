@@ -91,7 +91,6 @@ def _get_ollama_semaphore() -> threading.BoundedSemaphore:
                 limit = _env_int("OLLAMA_MAX_CONCURRENCY",
                                  DEFAULT_OLLAMA_MAX_CONCURRENCY)
                 _ollama_sem = threading.BoundedSemaphore(limit)
-                _ollama_sem._arms_limit = limit  # テストと診断用 (読み取り専用)
     return _ollama_sem
 
 

@@ -16,7 +16,6 @@ from lib.bot_errors import log_command_error
 from lib.pid_guard import acquire as _acquire_pid_lock, release as _release_pid_lock, read_owner as _read_pid_owner
 from lib import watchdog as _watchdog
 import datetime
-import signal
 import time
 import tempfile
 import wave
@@ -70,8 +69,6 @@ from lib.lib_shared import (
 
 from engine_plan_execute import (
     run_plan_and_execute,
-    extract_patterns,
-    generate_performance_dashboard,
 )
 
 from tools.tool_web import (

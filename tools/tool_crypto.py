@@ -404,11 +404,7 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
     def _pct(level: float) -> float:
         return (level / current_price - 1) * 100 if current_price else 0.0
 
-    signal_emoji = {
-        "STRONG BUY": "🔥", "BUY": "🟢", "WATCH LIST": "👀",
-        "WAIT": "⏳", "STAY AWAY": "⛔",
-        "OVERBOUGHT": "🔴", "NEUTRAL": "⚪"
-    }.get(signal, "⚪")
+    signal_emoji = SIGNAL_EMOJI.get(signal, "⚪")
     analysis_text = "\n".join([f"- {r}" for r in reasons]) if reasons else "- 特筆すべきシグナルなし。様子見推奨。"
 
     # 7. Geminiで初心者向け要約を生成
@@ -458,10 +454,7 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
         print(f"  ⚠️ Beginner summary generation failed: {e}")
         beginner_summary = "（初心者向け要約の生成に失敗しました）"
 
-    beginner_callout = "\n".join(
-        f"> {line}" if line.strip() else ">"
-        for line in beginner_summary.split("\n")
-    )
+    beginner_callout = _to_callout(beginner_summary)
 
     # 8. レポート作成
     today_str = datetime.datetime.now().strftime('%Y-%m-%d')
@@ -592,6 +585,18 @@ def tool_analyze_crypto(symbol: str = "BTC/USDT") -> str:
             print(f"  ⚠️ Prediction log failed: {e}")
 
     return f"Success: {symbol} = **{signal}** (RSI:{current_rsi:.1f}, F&G:{fng_value}, Risk:{news_risk}). Report: [[{CRYPTO_DIR_NAME}/{filename}]] (Path: {save_path})"
+
+
+SIGNAL_EMOJI = {
+    "STRONG BUY": "🔥", "BUY": "🟢", "WATCH LIST": "👀",
+    "WAIT": "⏳", "STAY AWAY": "⛔",
+    "OVERBOUGHT": "🔴", "NEUTRAL": "⚪",
+}
+
+
+def _to_callout(text: str) -> str:
+    """Geminiの返答をObsidianの `> ` コールアウト形式に整形する。"""
+    return "\n".join(f"> {line}" if line.strip() else ">" for line in text.split("\n"))
 
 
 # 主要アルトコインのスキャン対象リスト
@@ -847,19 +852,13 @@ Fear & Greed Index: {fng_value} ({fng_class})
         beginner_overview = "（初心者向け解説の生成に失敗しました）"
 
     # Callout用に各行に "> " を付与
-    overview_callout = "\n".join(
-        f"> {line}" if line.strip() else ">"
-        for line in beginner_overview.split("\n")
-    )
+    overview_callout = _to_callout(beginner_overview)
 
     # レポート作成
     today_str = datetime.datetime.now().strftime('%Y-%m-%d')
     # フル分析 (tool_analyze_crypto) と同じ対応表。スキャンが _decide_signal を
     # 通すようになり WATCH LIST / WAIT / STAY AWAY も出るため揃える
-    signal_emoji_map = {
-        "STRONG BUY": "🔥", "BUY": "🟢", "WATCH LIST": "👀",
-        "WAIT": "⏳", "STAY AWAY": "⛔", "OVERBOUGHT": "🔴", "NEUTRAL": "⚪",
-    }
+    signal_emoji_map = SIGNAL_EMOJI
 
     table_rows = ""
     for r in results:
