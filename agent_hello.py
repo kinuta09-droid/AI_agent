@@ -9,24 +9,11 @@ import sys
 import os
 
 
-# Re-exports for Backward Compatibility
-from tools.tool_crypto import (
-    tool_analyze_crypto, tool_scan_crypto_market, tool_audit_predictions,
-    SCAN_SYMBOLS
-)
-from engine_plan_execute import (
-    run_plan_and_execute, extract_patterns, generate_performance_dashboard,
-    log_execution, generate_plan, execute_plan, critique_results
-)
-from tools.tool_web import (
-    tool_web_search, tool_get_youtube_transcript, tool_fetch_url, tool_fetch_daily_news
-)
-from tools.tool_obsidian import (
-    tool_vault_search, tool_create_note, tool_read_note, tool_update_note, tool_merge_weekly_reports
-)
-from tools.tool_vault_index import tool_vault_semantic_search
-from tools.tool_briefing_manager import tool_generate_briefing, add_provider
-from tools.tool_gmail_manager import get_gmail_summary as tool_gmail_check
+# Re-exports for Backward Compatibility (実使用のあるものだけ残す — 2026-08-04)
+from tools.tool_crypto import tool_analyze_crypto, tool_scan_crypto_market
+from engine_plan_execute import run_plan_and_execute
+from tools.tool_web import tool_web_search, tool_fetch_daily_news
+from tools.tool_obsidian import tool_create_note
 
 
 # ---------------------------------------------------------
