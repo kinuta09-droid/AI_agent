@@ -4,16 +4,15 @@ Browser Use Tool — AI エージェントによるブラウザ自動操作
 
 静的 HTML 取得 (tool_web.py) との役割分担:
   tool_web.py       → 静的コンテンツ取得・Tavily 検索
-  tool_browser_use  → JS レンダリング・クリック・フォーム入力など動的操作
+  tool_browser_use  → JS レンダリング後のページテキストを取得
 
 Usage:
   from tools.tool_browser_use import BrowserSession, browse_and_extract
 
-  # セッション管理 (複数操作)
+  # セッション管理
   with BrowserSession() as b:
       b.navigate("https://example.com")
-      b.click("button#submit")
-      text = b.get_text("h1")
+      text = b.get_inner_text()
 
   # ワンショット (URL + 抽出タスクを渡すと Gemini が回答)
   result = browse_and_extract("https://example.com", "このページの主要サービスを箇条書きで")
@@ -21,7 +20,6 @@ Usage:
 
 import os
 import sys
-import datetime
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -35,10 +33,7 @@ load_dotenv(ENV_PATH)
 
 from urllib.parse import urlparse
 
-from lib.lib_shared import client, MODEL_NAME_HEAVY, WORK_DIR
-
-# スクリーンショット保存先
-SCREENSHOT_DIR = os.path.join(WORK_DIR, "40_Report", "BrowserCaptures")
+from lib.lib_shared import client, MODEL_NAME_HEAVY
 
 # 許可する URL スキーム（file:// や javascript: 等によるローカルファイル読み取りを防ぐ）
 ALLOWED_URL_SCHEMES = {"http", "https"}
@@ -68,7 +63,7 @@ class BrowserSession:
     Example::
         with BrowserSession(headless=True) as b:
             b.navigate("https://example.com")
-            html = b.get_page_content()
+            text = b.get_inner_text()
     """
 
     def __init__(self, headless: bool = True, timeout: int = 30_000):
@@ -143,7 +138,6 @@ class BrowserSession:
     def get_inner_text(self) -> str:
         """ページ全体のプレーンテキスト（body.innerText）を返す。広告除去済み。"""
         return self._page.evaluate("() => document.body.innerText")
-
 
 
 # ---------------------------------------------------------
