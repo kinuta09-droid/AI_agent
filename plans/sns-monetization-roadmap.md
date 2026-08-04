@@ -1,6 +1,6 @@
 # SNS 運用マネタイズ ロードマップ — 累計10万円まで
 
-> 作成: 2026-07-31 / 更新: 2026-08-01 / ブランチ: `plans/sns-monetization-roadmap`
+> 作成: 2026-07-31 / 更新: 2026-08-04 / 以後は master 直接管理
 > **目標: 累計10万円（手取り）**。月次の継続収入ではなく、まず一度到達すること。
 > 経路: X アカウント開設 → note 有料記事 → SNS運用代行 → BOOTH でツール販売
 
@@ -15,10 +15,10 @@
 | # | 内容 | 状態 | 実施日 | 備考 / 実測値 |
 |---|---|---|---|---|
 | 0-1 | ニッチ・ペルソナ確定 + X アカウント開設 | 未着手 | | **AI に丸投げ不可。全 Phase の前提** |
-| 0-2 | Agent Reach 実機導入 | **進行中** | 2026-08-01 | `plans/agent-reach-setup.md` STEP 1〜4は実機完了(ブランチ`claude/agent-reach-mcp-k91vmv`、未push)。**残るSTEP 5(X cookie設定・この導入の主目的)が未着手** — Twitter/Xは`--from-browser`自動抽出が未対応でCookie-Editor手動エクスポートが要る |
+| 0-2 | Agent Reach 実機導入 | **完了** | 2026-08-04 | STEP 1〜5すべて完了。X(twitter-cli, cookie認証)・Reddit・Instagram・Facebook(profileのみ精度粗い既知の制約)の4プラットフォームで実機検証済み。TikTokは無料CLIが実質存在しない(唯一の候補が2022年から更新停止)ため保留 |
 | 0-3 | docling Phase 0 の Go/No-Go 判定 | **完了 (Go)** | 2026-08-01 | 想定より前進: Phase 0〜3全体が完了し[PR #42](https://github.com/kinuta09-droid/AI_agent/pull/42)でmasterへ統合済み。`tool_paper_radar.py`/`tool_paper_digest.py`もmaster上に存在。**ただしSNS投稿導線(Phase1)への接続はまだ無い** |
-| 0-4 | X Developer 登録 + 従量課金の支払い設定 | 未着手 | | テスト投稿1本が API 経由で通ること |
-| 1-1 | `tools/tool_x_post.py`（X API v2 投稿） | 未着手 | | |
+| 0-4 | X Developer 登録 + 従量課金の支払い設定 | **進行中** | 2026-08-04 | 申請承認・プロジェクト作成(`hiyumetaphor`)・支払い方法登録・OAuth1.0aキー発行(Read and Write)・`.env`設定まで完了。**$500無料クレジットが反映されない既知の不具合**でバウチャー反映待ち中断 — 完了条件(実投稿+課金確認)は未達。Freeプランは廃止済みで想定コスト月$2〜4 |
+| 1-1 | `tools/tool_x_post.py`（X API v2 投稿） | **進行中** | 2026-08-04 | `tools/tool_twitter_post.py`として実装済み(`tool_post_tweet(text)`、通常実行はドライラン=課金なし、`--live`で実投稿)。**git未追跡・tool_registry未登録**。実投稿テストはバウチャー反映待ち |
 | 1-2 | 投稿コストガード（`lib/cost_guard.py` に日次カウンタ追加） | 未着手 | | 既存の Gemini カウンタ機構を流用 |
 | 1-3 | Discord 承認キュー（下書き → ボタンで投稿/却下/修正） | 未着手 | | skill `discord-bot-patterns`（View 永続化） |
 | 1-4 | べき等性（再送で二重投稿・二重課金しない） | 未着手 | | |
@@ -83,7 +83,8 @@ Phase 2 で投稿量が増えたら、この上限とのバランスを再度確
 |---|---|---|
 | 論文レーダー + 要約 + **X スレッド下書き + note 記事下書き** | **master**（`tool_paper_radar.py`/`tool_paper_digest.py`。2026-08-01 PR #42 マージ済。**SNS投稿導線への接続はまだ無い**） | コンテンツ生産ライン本体 |
 | docling 変換層（PDF→Markdown・サイドカー変換・意味検索接続まで完了） | **master**（`lib/docling_client.py` 他。Phase 0〜3完了、hit@5 +0.059で実証済み） | 一次情報の質での差別化 |
-| Agent Reach 導入手順（地雷5件を検証済） + STEP1〜4実機導入済 | `claude/agent-reach-mcp-k91vmv`（未push commit `c650c22` 含む） | X/Reddit/YouTube の生ネタ取得。**Xだけ未稼働**(STEP5待ち) |
+| Agent Reach 導入手順 + STEP1〜5全完了 | `claude/agent-reach-mcp-k91vmv`（未push commit `c650c22` 含む） | X/Reddit/Instagram/Facebook/YouTube の生ネタ取得、全稼働 |
+| X投稿ツール（ドライラン確認済・実投稿未検証） | ローカル未追跡 `tools/tool_twitter_post.py` | `.env`にOAuth1.0aキー設定済。tool_registry未登録 |
 | XTrend / Curator / FutureSearch / Vault RAG | master | ネタの多様化 |
 | Engagement Log Phase 1（354件収集済） | master + `claude/multi-agent-rag-monetization-m1a7mx` | 反応の計測基盤 |
 | スケジューラ / Discord View 基盤 / コストガード / Verifier | master | 運用の自動化と品質ゲート |
@@ -116,21 +117,26 @@ Phase 3 を飛ばして Phase 4 に行けないのは、営業材料が無くな
 
 **完了条件**: アカウント名・プロフィール文・固定ポストが確定して公開されている。
 
-### 0-2. Agent Reach 実機導入 — 進行中 (STEP 1〜4 完了・2026-08-01)
+### 0-2. Agent Reach 実機導入 — ✅ 完了 (2026-08-04)
 `plans/agent-reach-setup.md`（ブランチ `claude/agent-reach-mcp-k91vmv`、実機作業はcommit
-`c650c22`・**まだ未push**）の STEP 1〜5。
+`c650c22`・**まだ未push**）の STEP 1〜5すべて完了。
 
 **実機で判明した計画からの差分** (`docs/agent-reach.md` に反映済み):
 - `skill --install` の書き込み先は `~/.claude/skills/` ではなく `~/.agents/skills/`
 - GitHub は `gh` CLI 導入・認証済みのため doctor の `[!]` 表示は実害なし
 - YouTube は STEP 4-a (js-runtimes 設定) 後、`yt-dlp --dump-json` で実データ取得を確認
-- **Twitter/X だけ `--from-browser` 自動抽出が未対応**。Cookie-Editor での手動エクスポートが必須
+- Twitter/X は `--from-browser` 自動抽出が未対応のため Cookie-Editor での手動エクスポートで対応
+- **STEP5完了時に、当初想定のXだけでなくReddit/Instagram/Facebookも合わせてセットアップ**
+  (OpenCLI+Chrome拡張連携)。Facebookの`profile`は解析精度が粗い既知の制約あり
+- TikTokは無料の専用CLIが実質存在しない(唯一の候補`tiktok-scraper`が2022年から更新停止)ため保留。
+  代替としてReddit経由(r/TikTokCringe等)の間接把握は可能だが「数日遅れの厳選済みトレンド」であり
+  リアルタイム性は無い
 
 > 🔐 **cookie は情報収集専用サブアカウントのものを使う。** 収益アカウントの cookie を
 > ローカルツールに渡さない（BAN = 収益源の消滅）。
 
-**残作業**: STEP 5 (X cookie 設定・**この導入の主目的**) のみ。完了条件は変わらず
-`agent-reach doctor` で Web / RSS / YouTube / GitHub / X が `✅`。
+完了条件どおり `agent-reach doctor` は自動検証しない仕様のため、各プラットフォームで
+実コマンドを叩いて動作確認済み(詳細はセッション「ソーシャルメディアアカウント準備」)。
 
 ### 0-3. docling Phase 0 の Go/No-Go 判定 — ✅ 完了 (2026-08-01)
 `plans/docling-integration.md`（[PR #42](https://github.com/kinuta09-droid/AI_agent/pull/42) → master。以後は master 上のファイルを参照すればよい）。
@@ -143,8 +149,26 @@ Discord `/doc`・サイドカー変換 + 意味検索接続）まで完了し、
 master にあるが、**Discord 承認キュー（Phase 1-3）や X 投稿（Phase 1-1）にはまだ
 繋がっていない**。ここを繋ぐのは本ロードマップの Phase 1 の仕事のまま変わらない。
 
-### 0-4. X Developer 登録 + 従量課金の支払い設定
-**完了条件**: テスト投稿1本が API 経由で通り、課金が想定どおり（$0.015）計上される。
+### 0-4. X Developer 登録 + 従量課金の支払い設定 — 進行中 (2026-08-04)
+Free プランは廃止済みで Pay Per Use 一択(想定コスト月$2〜4程度)なのは外部条件のとおり実測確認済み。
+アプリ`hiyumetaphor`を作成し、申請承認・支払い方法登録・OAuth1.0aキー(Consumer Key/Secret,
+Access Token/Secret、Read and Write権限)発行・`.env`設定まで完了。
+
+**中断理由**: 新規プロジェクトに付与されるはずの$500無料クレジットが、カード登録後もダッシュボードに
+反映されない(X公式コミュニティに同様の報告多数の既知不具合)。反映を待って実投稿テストする方針で
+一時中断。クレジット無しでも月数百円程度の想定なので、待たずに課金前提で進める選択肢もある。
+
+**完了条件**: テスト投稿1本が API 経由で通り、課金が想定どおり（$0.015）計上される（未達）。
+
+### 1-1. `tools/tool_x_post.py` — 進行中 (2026-08-04)
+`tools/tool_twitter_post.py` として実装済み（ロードマップ想定のファイル名とは異なる）。
+`tool_post_tweet(text)` を実装し、通常実行は認証確認のみのドライラン(課金なし)、
+`--live` フラグで実投稿。ドライランでの認証情報読み込みは確認済み。
+
+**残作業**: (a) 実投稿(`--live`)のテスト — 0-4のバウチャー反映待ちで未実施、
+(b) **git未追跡・`lib/tool_registry.py`未登録** — commit・レジストリ登録をしないと
+Discord/エージェント経路からは呼べない、(c) 本文にURLを含めない設計（$0.20回避）に
+なっているかの確認
 
 ---
 
