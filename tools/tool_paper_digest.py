@@ -347,7 +347,9 @@ def _resolve_paper(index: int = 1, arxiv_id: str = "", field: str = "") -> dict:
         print("[PaperDigest] 候補が無いので Paper Radar を実行します...")
         # レーダーの戻り値は捨てない: ここで捨てると「なぜ候補が0件なのか」
         # (arXiv 障害なのか、単にヒット0件なのか) が呼び出し側に伝わらない
-        radar_msg = run_paper_radar(field=field, top_k=5, save=False)
+        # title_ja/abstract_ja はここでは使わない (digest は原文 title/abstract しか
+        # 読まない) ので、翻訳コストをかけない
+        radar_msg = run_paper_radar(field=field, top_k=5, save=False, translate=False)
         candidates = load_latest_candidates()
     if not candidates:
         raise ValueError(f"候補論文がありません — Paper Radar の結果: {radar_msg or '(未実行)'}")

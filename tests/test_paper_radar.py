@@ -153,9 +153,32 @@ def test_render_radar_markdown_shows_score_breakdown():
     ranked = radar.rank_papers([_paper("2607.00030", days_ago=1, upvotes=120, citations=4)],
                                NOW, top_k=1)
     md = radar.render_radar_markdown(ranked, ["ai_agent"], NOW)
-    for token in ["2607.00030", "スコア", "HF upvote 120", "被引用 4件", "新しさ"]:
+    for token in ["2607.00030", "スコア", "HF注目度 120", "被引用 4件", "新しさ"]:
         assert token in md, f"レポートに {token!r} が出ていない:\n{md}"
     print("✅ [4] render_radar_markdown: スコア内訳が読める")
+
+
+def test_render_radar_markdown_prefers_japanese_translation_when_present():
+    """title_ja/abstract_ja があればそちらを見出し・要旨に使い、無ければ原文へ
+    フォールバックすること (translate_papers_ja が失敗/未実行でも壊れない)。
+    """
+    ranked = radar.rank_papers(
+        [_paper("2607.00031", title="English Title", abstract="English abstract text.")],
+        NOW, top_k=1)
+    ranked[0]["title_ja"] = "日本語タイトル"
+    ranked[0]["abstract_ja"] = "日本語の要旨です。"
+    md = radar.render_radar_markdown(ranked, ["ai_agent"], NOW)
+    assert "日本語タイトル" in md, md
+    assert "日本語の要旨です。" in md, md
+    assert "English Title" not in md, md
+
+    # ja フィールドが無いときは原文のまま
+    ranked_en = radar.rank_papers(
+        [_paper("2607.00032", title="English Only", abstract="English abstract text.")],
+        NOW, top_k=1)
+    md_en = radar.render_radar_markdown(ranked_en, ["ai_agent"], NOW)
+    assert "English Only" in md_en, md_en
+    print("✅ [4b] render_radar_markdown: title_ja/abstract_ja を優先し無ければ原文へ")
 
 
 # [5][6][7][8] SNS下書き・キャプチャ劣化フォールバックのテストは
@@ -183,6 +206,114 @@ def test_seen_cache_roundtrip_in_tmpdir():
         finally:
             radar.SEEN_PATH, radar.LOGS_DIR = orig_seen, orig_logs
     print("✅ [10] seen キャッシュ: 正規化・重複排除・一時パスへ隔離")
+
+
+# ---------------------------------------------------------
+# [14] Semantic Scholar: バッチ全件未収録 (400) は失敗ではない
+# ---------------------------------------------------------
+
+class _FakeS2Resp:
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = str(payload)
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise Exception(f"{self.status_code} Client Error")
+
+
+def test_fetch_citation_metrics_treats_all_unindexed_400_as_empty_not_failure():
+    """S2 batch は「全件未収録」だと 200+null配列ではなく 400 'No valid paper ids given'
+    を返す。新着論文のみを渡すとこれが必ず起きるが、失敗ではなく0件として続行すること
+    (直近論文はS2の索引ラグで丸ごと未収録になり得るのが設計上の前提)。
+    """
+    orig = radar.requests.post
+    radar.requests.post = lambda *a, **k: _FakeS2Resp(400, {"error": "No valid paper ids given"})
+    try:
+        metrics = radar.fetch_citation_metrics(["2608.00001", "2608.00002"])
+    finally:
+        radar.requests.post = orig
+    assert metrics == {}, metrics
+    print("✅ [14a] fetch_citation_metrics: 全件未収録の400は空dictで正常終了")
+
+
+def test_fetch_citation_metrics_still_treats_other_400_as_failure():
+    """本当に想定外の400 (不正リクエスト等) は従来どおり失敗として扱われること。"""
+    orig = radar.requests.post
+    radar.requests.post = lambda *a, **k: _FakeS2Resp(400, {"error": "Bad request format"})
+    try:
+        metrics = radar.fetch_citation_metrics(["2608.00001"])
+    finally:
+        radar.requests.post = orig
+    assert metrics == {}, metrics  # フォールバックの挙動自体は同じ (0件)
+    print("✅ [14b] fetch_citation_metrics: 想定外の400も落ちずに0件へフォールバック")
+
+
+def test_fetch_citation_metrics_parses_mixed_known_and_null():
+    orig = radar.requests.post
+    radar.requests.post = lambda *a, **k: _FakeS2Resp(
+        200, [{"citationCount": 5, "influentialCitationCount": 1}, None])
+    try:
+        metrics = radar.fetch_citation_metrics(["2608.00001", "2608.00002"])
+    finally:
+        radar.requests.post = orig
+    assert metrics == {"2608.00001": {"citations": 5, "influential_citations": 1}}, metrics
+    print("✅ [14c] fetch_citation_metrics: 既知/未収録の混在を正しく突き合わせる")
+
+
+# ---------------------------------------------------------
+# [13] 上位候補の日本語訳 (失敗時は英語のままフォールバック)
+# ---------------------------------------------------------
+
+class _FakeResp:
+    def __init__(self, text):
+        self.text = text
+
+
+def test_translate_papers_ja_fills_in_translated_fields():
+    import lib.lib_shared as lib_shared
+    ranked = [_paper("2607.00050", title="Original Title", abstract="Original abstract.")]
+
+    original_fn = lib_shared.client.models.generate_content
+    try:
+        lib_shared.client.models.generate_content = (
+            lambda model, contents: _FakeResp(
+                '[{"arxiv_id": "2607.00050", "title_ja": "翻訳済みタイトル", '
+                '"abstract_ja": "翻訳済み要旨"}]'))
+        radar.translate_papers_ja(ranked)
+    finally:
+        lib_shared.client.models.generate_content = original_fn
+
+    assert ranked[0]["title_ja"] == "翻訳済みタイトル", ranked[0]
+    assert ranked[0]["abstract_ja"] == "翻訳済み要旨", ranked[0]
+    print("✅ [13a] translate_papers_ja: 翻訳結果を title_ja/abstract_ja へ反映する")
+
+
+def test_translate_papers_ja_failure_falls_back_to_english():
+    """Gemini呼び出しが失敗しても例外を外へ伝播させず、原文のまま残ること。
+
+    毎朝自動実行されるレーダー本体は課金ゼロが前提 (docstring)。翻訳ステップの
+    失敗でレーダー全体を止めると、その前提が崩れた上に本編まで失われる。
+    """
+    import lib.lib_shared as lib_shared
+    ranked = [_paper("2607.00051", title="Original Title", abstract="Original abstract.")]
+
+    original_fn = lib_shared.client.models.generate_content
+    try:
+        def _boom(model, contents):
+            raise RuntimeError("quota exceeded")
+        lib_shared.client.models.generate_content = _boom
+        radar.translate_papers_ja(ranked)  # 例外を投げないこと
+    finally:
+        lib_shared.client.models.generate_content = original_fn
+
+    assert "title_ja" not in ranked[0], ranked[0]
+    assert ranked[0]["title"] == "Original Title", ranked[0]
+    print("✅ [13b] translate_papers_ja: 翻訳失敗時は例外を外へ出さず原文のまま")
 
 
 # ---------------------------------------------------------

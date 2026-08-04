@@ -179,7 +179,8 @@ except ImportError as _e:
     _HAS_PAPER_RADAR = False
 
 def _run_paper_radar() -> str:
-    """注目論文レーダー (Gemini を呼ばないので API 課金ゼロ)。"""
+    """注目論文レーダー (スコアリング自体は課金ゼロ。上位5件のタイトル・要旨の
+    日本語訳のみ Gemini LIGHT を呼ぶ — tools/tool_paper_radar.py の docstring参照)。"""
     if not _HAS_PAPER_RADAR:
         return f"Paper Radar: tool_paper_radar not available ({_paper_radar_err})"
     return _paper_radar(top_k=5, days=7)
