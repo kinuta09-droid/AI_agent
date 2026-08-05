@@ -39,9 +39,10 @@ py agent_trigger.py            # Trigger webhook
 ```
 
 ## MCP Servers
-`.mcp.json` (プロジェクトスコープ・コミット済み) に2つ登録済み。初回は承認プロンプトが出る:
+`.mcp.json` (プロジェクトスコープ・コミット済み) に3つ登録済み。初回は承認プロンプトが出る:
 - `context7`: ライブラリの最新ドキュメント参照 (`todoist-api-python` v3+ 等のバージョン差異バグの予防)
 - `chrome-devtools`: `tool_browser_use.py` / `tool_xtrend.py` のセレクタ崩れを実ブラウザで確認 (要 Node.js 22+)
+- `code-review-graph`: Tree-sitterでコード構造をグラフ化し、変更影響範囲・テストギャップをトークン効率よく返す (`pipx install code-review-graph`)。`/review-changes` `/explore-codebase` `/debug-issue` `/refactor-safely` の4スキル付き。**既知の罠**: (a) `.mcp.json`の`command`は`code-review-graph`本体(`~/.local/bin`)の絶対パス直呼びにすること — `install`が既定で書く`uvx code-review-graph serve`は`pipx`とは別環境で、`pipx inject code-review-graph sentence-transformers`(意味検索用embedding、¥0)が効かない。(b) `detect_changes_tool`等の既定`base`は`HEAD~1`。未コミット分だけ見たいときは`base="HEAD"`を明示する。(c) スキル内のツール名(`list_graph_stats`等)は実際のMCP登録名(`..._tool`サフィックス付き)と食い違うので、ToolSearchで正式名を引く。(d) PostToolUseフックが編集のたびにグラフを自動更新する(実測0.74秒/回のブロッキング遅延)
 
 GitHub MCP は個人の PAT が要るため `.mcp.json` に含めていない。使う場合は各自:
 `claude mcp add --transport http github https://api.githubcopilot.com/mcp/ --header "Authorization: Bearer YOUR_PAT"`
