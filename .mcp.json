@@ -13,9 +13,8 @@
       ]
     },
     "code-review-graph": {
-      "command": "uvx",
+      "command": "C:\\Users\\amami\\.local\\bin\\code-review-graph.exe",
       "args": [
-        "code-review-graph",
         "serve"
       ],
       "cwd": "C:\\AI_agent",
