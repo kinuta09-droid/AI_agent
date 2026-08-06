@@ -1,0 +1,284 @@
+# -*- coding: utf-8 -*-
+"""
+Skill Radar のユニットテスト
+
+方針:
+  - ネットワークに一切出ない。GitHub Search API / Gemini はすべてスタブに差し替える
+    (CLAUDE.md: テストを一周回すだけで課金や実副作用が起きてはいけない)。
+  - 本番の可変資源 (logs/skill_radar_seen_ids.json・Obsidian Vault・実際の
+    .claude/skills, .claude/commands) には触らない。seen キャッシュとローカル在庫の
+    ディレクトリはテスト内で一時ディレクトリへ差し替える
+    (test_curate_note_save の「本番資源を見続けていた」事故の再発防止)。
+
+実行: py tests/test_skill_radar.py
+"""
+import datetime
+import os
+import sys
+import tempfile
+
+sys.stdout.reconfigure(encoding='utf-8')
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+import tools.tool_skill_radar as radar
+from lib.bot_errors import is_failure_result
+
+NOW = datetime.datetime(2026, 8, 9, 10, 0, 0)
+
+
+def _repo(full_name, stars=0, days_ago=1, description="A helpful tool", topics=None):
+    pushed = NOW - datetime.timedelta(days=days_ago)
+    return {
+        "full_name": full_name,
+        "html_url": f"https://github.com/{full_name}",
+        "description": description,
+        "stars": stars,
+        "pushed_at": pushed.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "topics": topics or [],
+    }
+
+
+# ---------------------------------------------------------
+# [1] キーワード抽出 / 重複判定
+# ---------------------------------------------------------
+
+def test_extract_keywords_filters_common_and_short_words():
+    """"claude"/"skill" のような全候補に必ず現れる語を落とさないと、
+    重複判定が常に True になり候補が全滅する。
+    """
+    kws = radar._extract_keywords("Claude Code Skill for debugging and testing workflows")
+    assert "claude" not in kws and "skill" not in kws and "code" not in kws, kws
+    assert "debugging" in kws and "testing" in kws and "workflows" in kws, kws
+    print("✅ [1] _extract_keywords: 汎用語を除外し実質的なキーワードだけ残す")
+
+
+def test_is_likely_duplicate_detects_overlap_with_local_inventory():
+    """既存Skillと2語以上キーワードが被れば重複とみなして弾くこと。"""
+    local = [{
+        "name": "debug-issue",
+        "description": "disciplined debugging with instrumentation feedback loops",
+        "keywords": radar._extract_keywords("debug-issue disciplined debugging instrumentation feedback loops"),
+    }]
+    dup = _repo("someone/awesome-debugging-instrumentation",
+                description="disciplined debugging with feedback loops")
+    novel = _repo("someone/lora-factory", description="LoRA training helper for ComfyUI")
+    assert radar.is_likely_duplicate(dup, local) is True
+    assert radar.is_likely_duplicate(novel, local) is False
+    print("✅ [1b] is_likely_duplicate: キーワード重複で既存Skillとの被りを検出")
+
+
+# ---------------------------------------------------------
+# [2] スコアリング (純関数)
+# ---------------------------------------------------------
+
+def test_score_repo_monotonic_in_stars_and_recency():
+    """stars が多いほど・更新が新しいほどスコアが上がること。"""
+    low_star = _repo("a/low", stars=1, days_ago=5)
+    high_star = _repo("a/high", stars=5000, days_ago=5)
+    assert radar.score_repo(high_star, NOW)["score"] > radar.score_repo(low_star, NOW)["score"]
+
+    fresh = _repo("a/fresh", stars=100, days_ago=1)
+    stale = _repo("a/stale", stars=100, days_ago=900)
+    assert radar.score_repo(fresh, NOW)["score"] > radar.score_repo(stale, NOW)["score"]
+    print("✅ [2] score_repo: stars / 新しさで単調に増える")
+
+
+def test_score_repo_rewards_relevance_keywords():
+    """CLAUDE.mdのSkill領域語 (debug, refactor 等) に当たるほど加点されること。"""
+    plain = _repo("a/plain", stars=10, description="just a random tool")
+    relevant = _repo("a/relevant", stars=10, description="a debugging and refactoring assistant",
+                     topics=["testing", "tdd"])
+    s_plain = radar.score_repo(plain, NOW)
+    s_relevant = radar.score_repo(relevant, NOW)
+    assert s_relevant["score"] > s_plain["score"], (s_relevant, s_plain)
+    assert set(radar.score_repo(plain, NOW)["breakdown"]) == set(radar.WEIGHTS)
+    print("✅ [2b] score_repo: 関連キーワード一致で加点される")
+
+
+# ---------------------------------------------------------
+# [3] ランキング
+# ---------------------------------------------------------
+
+def test_rank_repos_orders_excludes_seen_dupes_and_is_deterministic():
+    repos = [
+        _repo("x/low", stars=5, days_ago=2),
+        _repo("x/high", stars=500, days_ago=2),
+        _repo("x/mid", stars=50, days_ago=2),
+    ]
+    ranked = radar.rank_repos(repos, [], NOW, top_k=2)
+    assert [r["full_name"] for r in ranked] == ["x/high", "x/mid"], ranked
+
+    # 既出は候補から外れる
+    ranked = radar.rank_repos(repos, [], NOW, top_k=3, exclude_ids=["x/high"])
+    assert [r["full_name"] for r in ranked] == ["x/mid", "x/low"], ranked
+
+    # 既存Skillと被る候補も外れる
+    local = [{"name": "grill", "description": "adversarial review",
+             "keywords": radar._extract_keywords("grill adversarial review")}]
+    grillish = _repo("x/adversarial-review-bot", stars=999, description="adversarial review tool")
+    ranked = radar.rank_repos(repos + [grillish], local, NOW, top_k=4)
+    assert "x/adversarial-review-bot" not in [r["full_name"] for r in ranked], ranked
+
+    # 完全同点でも順序が実行ごとに揺れないこと
+    twins = [_repo("z/bbb", stars=10, days_ago=3), _repo("z/aaa", stars=10, days_ago=3)]
+    tie_order = [r["full_name"] for r in radar.rank_repos(twins, [], NOW, top_k=2)]
+    assert tie_order == ["z/aaa", "z/bbb"], f"同点は full_name で決定的に並ぶこと: {tie_order}"
+    print("✅ [3] rank_repos: 降順 / 既出除外 / 重複除外 / 同点の決定性")
+
+
+# ---------------------------------------------------------
+# [4] レポート生成
+# ---------------------------------------------------------
+
+def test_render_radar_markdown_shows_score_breakdown_and_comment():
+    ranked = radar.rank_repos([_repo("a/example", stars=42, description="an example tool")],
+                              [], NOW, top_k=1)
+    ranked[0]["comment_ja"] = "テスト用コメント"
+    md = radar.render_radar_markdown(ranked, NOW)
+    for token in ["a/example", "スコア", "⭐ 42", "テスト用コメント"]:
+        assert token in md, f"レポートに {token!r} が出ていない:\n{md}"
+    print("✅ [4] render_radar_markdown: スコア内訳とAIコメントが読める")
+
+
+# ---------------------------------------------------------
+# [5] ローカルSkill在庫の読み込み (本番ディレクトリではなく一時ディレクトリで検証)
+# ---------------------------------------------------------
+
+def test_load_local_skill_inventory_parses_frontmatter_and_commands():
+    with tempfile.TemporaryDirectory() as tmp:
+        skills_dir = os.path.join(tmp, "skills")
+        commands_dir = os.path.join(tmp, "commands")
+        os.makedirs(os.path.join(skills_dir, "example-skill"))
+        os.makedirs(commands_dir)
+        with open(os.path.join(skills_dir, "example-skill", "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write("---\nname: example-skill\ndescription: debugging helper for tests\n---\n\n# Body\n")
+        with open(os.path.join(commands_dir, "grill.md"), "w", encoding="utf-8") as f:
+            f.write("# /grill — adversarial code review\n\nbody...\n")
+
+        inventory = radar.load_local_skill_inventory(skills_dir=skills_dir, commands_dir=commands_dir)
+        names = {i["name"] for i in inventory}
+        assert names == {"example-skill", "grill"}, names
+        by_name = {i["name"]: i for i in inventory}
+        assert "debugging" in by_name["example-skill"]["keywords"]
+        assert "adversarial" in by_name["grill"]["keywords"]
+    print("✅ [5] load_local_skill_inventory: SKILL.md frontmatter とコマンドの見出しを解析")
+
+
+# ---------------------------------------------------------
+# [6] 既出キャッシュ (本番 logs を汚さない)
+# ---------------------------------------------------------
+
+def test_seen_cache_roundtrip_in_tmpdir():
+    with tempfile.TemporaryDirectory() as tmp:
+        orig_seen, orig_logs = radar.SEEN_PATH, radar.LOGS_DIR
+        radar.SEEN_PATH = os.path.join(tmp, "skill_seen_ids.json")
+        radar.LOGS_DIR = tmp
+        try:
+            assert radar.load_seen_ids() == [], "初回は空"
+            radar.mark_seen(["a/repo1", "a/repo2", ""])
+            seen = radar.load_seen_ids()
+            assert seen == ["a/repo1", "a/repo2"], seen
+            radar.mark_seen(["a/repo1"])  # 重複は増えない
+            assert radar.load_seen_ids() == ["a/repo1", "a/repo2"], radar.load_seen_ids()
+        finally:
+            radar.SEEN_PATH, radar.LOGS_DIR = orig_seen, orig_logs
+    print("✅ [6] seen キャッシュ: 重複排除・一時パスへ隔離")
+
+
+# ---------------------------------------------------------
+# [7] 上位候補のAIコメント (失敗時はコメント無しでフォールバック)
+# ---------------------------------------------------------
+
+class _FakeResp:
+    def __init__(self, text):
+        self.text = text
+
+
+def test_comment_repos_ja_fills_in_comment_field():
+    import lib.lib_shared as lib_shared
+    ranked = radar.rank_repos([_repo("a/example", stars=10)], [], NOW, top_k=1)
+
+    original_fn = lib_shared.client.models.generate_content
+    try:
+        lib_shared.client.models.generate_content = (
+            lambda model, contents: _FakeResp(
+                '[{"full_name": "a/example", "comment_ja": "導入する価値があります"}]'))
+        radar.comment_repos_ja(ranked, [])
+    finally:
+        lib_shared.client.models.generate_content = original_fn
+
+    assert ranked[0]["comment_ja"] == "導入する価値があります", ranked[0]
+    print("✅ [7a] comment_repos_ja: コメント結果を comment_ja へ反映する")
+
+
+def test_comment_repos_ja_failure_does_not_raise():
+    """Gemini呼び出しが失敗しても例外を外へ伝播させず、コメント無しのまま続くこと。"""
+    import lib.lib_shared as lib_shared
+    ranked = radar.rank_repos([_repo("a/example", stars=10)], [], NOW, top_k=1)
+
+    original_fn = lib_shared.client.models.generate_content
+    try:
+        def _boom(model, contents):
+            raise RuntimeError("quota exceeded")
+        lib_shared.client.models.generate_content = _boom
+        radar.comment_repos_ja(ranked, [])  # 例外を投げないこと
+    finally:
+        lib_shared.client.models.generate_content = original_fn
+
+    assert "comment_ja" not in ranked[0], ranked[0]
+    print("✅ [7b] comment_repos_ja: 失敗時は例外を外へ出さずコメント無しで継続")
+
+
+# ---------------------------------------------------------
+# [8] 「該当なし」と「本当の失敗」を区別すること
+# ---------------------------------------------------------
+
+def test_empty_result_is_not_a_failure_but_errors_are():
+    """0件は成功 (収集は動いた)。収集自体の例外は "Error:" で失敗と分かること。
+
+    ここを取り違えると、定時ジョブが「静かな週」と「壊れた週」を同じ ❌ で
+    通知する / 逆に壊れた週を ✅ で流す (CLAUDE.md Known Bug Patterns §A)。
+    """
+    orig = radar.collect_candidates
+
+    radar.collect_candidates = lambda *a, **k: ([], 1)  # 全クエリ成功・0件
+    try:
+        msg = radar.run_skill_radar(save=False, comment=False)
+    finally:
+        radar.collect_candidates = orig
+    assert not is_failure_result(msg), f"0件を失敗として返している: {msg!r}"
+
+    def _boom(*a, **k):
+        raise RuntimeError("GitHub API down")
+
+    radar.collect_candidates = _boom
+    try:
+        msg = radar.run_skill_radar(save=False, comment=False)
+    finally:
+        radar.collect_candidates = orig
+    assert is_failure_result(msg), f"収集失敗が失敗として判定されない: {msg!r}"
+
+    radar.collect_candidates = lambda *a, **k: ([], 0)  # 全クエリ失敗
+    try:
+        msg = radar.run_skill_radar(save=False, comment=False)
+    finally:
+        radar.collect_candidates = orig
+    assert is_failure_result(msg), f"全クエリ失敗が失敗として判定されない: {msg!r}"
+    print("✅ [8] run_skill_radar: 0件は成功 / 収集失敗は失敗接頭辞")
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    failed = 0
+    for t in tests:
+        try:
+            t()
+        except AssertionError as e:
+            failed += 1
+            print(f"❌ {t.__name__}: {e}")
+    if failed:
+        print(f"\nFAILURE: {failed}/{len(tests)} tests failed")
+        sys.exit(1)
+    print(f"\nSUCCESS: all {len(tests)} tests passed")

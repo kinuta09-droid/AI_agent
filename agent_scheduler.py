@@ -185,6 +185,23 @@ def _run_paper_radar() -> str:
         return f"Paper Radar: tool_paper_radar not available ({_paper_radar_err})"
     return _paper_radar(top_k=5, days=7)
 
+
+# Skill Radar (optional — import失敗でスケジューラ全体を壊さない)
+try:
+    from tools.tool_skill_radar import run_skill_radar as _skill_radar
+    _HAS_SKILL_RADAR = True
+except ImportError as _e:
+    _skill_radar_err = str(_e)
+    _HAS_SKILL_RADAR = False
+
+def _run_skill_radar() -> str:
+    """GitHub巡回でARMS/Claude Code向けの新着Skillを見つける (スコアリングは課金ゼロ、
+    上位のみ Gemini LIGHT で一言コメント — tools/tool_skill_radar.py の docstring参照)。"""
+    if not _HAS_SKILL_RADAR:
+        return f"Skill Radar: tool_skill_radar not available ({_skill_radar_err})"
+    return _skill_radar(top_k=5)
+
+
 def _run_paper_digest() -> str:
     """レーダー1位を docling でキャプチャして要約 + 投稿下書きを生成する。
 
@@ -362,6 +379,15 @@ SCHEDULE = [
         "name": "Paper Digest (Radar TOP1)",
         "func": _run_paper_digest,
         "weekday": 5,  # 土曜
+        "catch_up": True,
+    },
+    # Skill Radar: GitHub Search API のみ (課金ゼロ)。上位のみ Gemini LIGHT で一言コメント。
+    # Paper Digest (土曜) の翌日、日曜朝に週1回。
+    {
+        "time": "10:00",
+        "name": "Skill Radar",
+        "func": _run_skill_radar,
+        "weekday": 6,  # 日曜
         "catch_up": True,
     },
     {
