@@ -87,15 +87,29 @@ WEIGHTS = {
 }
 RECENCY_HALF_LIFE_DAYS = 60.0  # 論文と違いSkillリポジトリは更新頻度が低いので長めに取る
 
-# ARMSの既存Skill領域 + 一般的な開発ワークフロー用語 (CLAUDE.mdのSkill一覧が出どころ)。
-# ここに当たる語が多いほど「このプロジェクトの開発フローに関連しそう」と加点する。
+# ARMSの既存Skill領域の固有語 + 実際の技術スタック (CLAUDE.mdのSkill一覧・
+# Architecture節が出どころ)。「debug/test/review/architecture/workflow」等の
+# 汎用開発ワークフロー語は意図的に外してある — 2026-08-06のチューニングで判明した
+# 実害: GodotMaker・cti-expert のような Claude Code Skill と無関係なリポジトリでも
+# 汎用語には必ずどれか一致するため、関連度スコアが「stars/新しさの言い換え」に
+# なり下がっていた (ランキングを差別化する情報を持っていなかった)。ここに残す/足す語は
+# 「ARMSというPython+Discord Bot+Gemini構成のプロジェクトに構造的に近いか」を測る語に絞る。
 RELEVANCE_KEYWORDS = {
-    "debug", "debugging", "test", "testing", "tdd", "refactor", "refactoring",
-    "review", "architecture", "encoding", "windows", "discord", "process",
-    "lifecycle", "retrieval", "rerank", "crypto", "backtest", "prompt",
-    "injection", "safety", "verifier", "agent", "parallel", "concurrency",
-    "domain", "modeling", "documentation", "handoff", "planning", "spec",
-    "ticket", "workflow", "grill", "techdebt",
+    # 既存Skillフォルダ名の固有語 (.claude/skills/*)
+    "encoding", "windows", "discord", "process", "lifecycle", "retrieval",
+    "rerank", "crypto", "backtest", "prompt", "injection", "safety",
+    "verifier", "agent", "parallel", "concurrency", "grill", "techdebt",
+    # ARMSの技術スタック (CLAUDE.md Architecture/Tools節)
+    "python", "gemini", "llm", "obsidian", "mcp", "subprocess", "cli",
+    "scheduler", "cron", "vault", "bot", "markdown", "webhook", "ollama",
+}
+
+# 単語境界つきマッチ ("cli" が "client" の部分文字列として誤爆する等を防ぐ)。
+# ハイフンは境界として扱う (GitHub topics は "mcp-server" のようにハイフン連結の
+# スラッグが多く、それらは一致させたいため — a-z のみを「同じ単語」とみなす。
+_RELEVANCE_PATTERNS = {
+    kw: re.compile(rf"(?<![a-z]){re.escape(kw)}(?![a-z])")
+    for kw in RELEVANCE_KEYWORDS
 }
 
 # 全候補に必ず含まれてしまい重複判定を無意味にする語 (プロジェクト名・カテゴリ名そのもの)。
@@ -174,7 +188,7 @@ def score_repo(repo: dict, now: datetime.datetime) -> dict:
         f"{repo.get('full_name', '')} {repo.get('description', '')} "
         f"{' '.join(repo.get('topics', []) or [])}"
     ).lower()
-    matched = sorted({kw for kw in RELEVANCE_KEYWORDS if kw in text})
+    matched = sorted(kw for kw, pat in _RELEVANCE_PATTERNS.items() if pat.search(text))
 
     breakdown = {
         "stars": round(WEIGHTS["stars"] * math.log1p(stars), 3),

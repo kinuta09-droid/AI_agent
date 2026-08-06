@@ -86,15 +86,48 @@ def test_score_repo_monotonic_in_stars_and_recency():
 
 
 def test_score_repo_rewards_relevance_keywords():
-    """CLAUDE.mdのSkill領域語 (debug, refactor 等) に当たるほど加点されること。"""
+    """ARMSの技術スタック語 (discord, gemini, mcp 等) に当たるほど加点されること。"""
     plain = _repo("a/plain", stars=10, description="just a random tool")
-    relevant = _repo("a/relevant", stars=10, description="a debugging and refactoring assistant",
-                     topics=["testing", "tdd"])
+    relevant = _repo("a/relevant", stars=10, description="a discord bot with gemini and mcp support",
+                     topics=["python", "agent"])
     s_plain = radar.score_repo(plain, NOW)
     s_relevant = radar.score_repo(relevant, NOW)
     assert s_relevant["score"] > s_plain["score"], (s_relevant, s_plain)
     assert set(radar.score_repo(plain, NOW)["breakdown"]) == set(radar.WEIGHTS)
     print("✅ [2b] score_repo: 関連キーワード一致で加点される")
+
+
+def test_score_repo_does_not_reward_generic_dev_buzzwords():
+    """test/review/architecture等の汎用語はもう関連度に効かないこと (2026-08-06チューニング)。
+
+    これらは Claude Code Skill と無関係なリポジトリにも必ず現れる語で、
+    関連度スコアを stars/新しさの言い換えにしてしまっていた (実害: GodotMaker等が上位に来た)。
+    """
+    buzzwordy = _repo("a/buzzwordy", stars=10,
+                      description="a test-driven architecture and workflow review tool",
+                      topics=["documentation", "planning"])
+    assert radar.score_repo(buzzwordy, NOW)["matched_keywords"] == []
+    print("✅ [2c] score_repo: 汎用開発ワークフロー語には加点しない")
+
+
+def test_score_repo_relevance_uses_word_boundaries_not_substring():
+    """短いキーワード追加 (cli/cron/bot) が英単語への部分文字列一致で誤爆しないこと。
+
+    /grill で指摘: "cli" in "client", "cron" in "acronym", "bot" in "robot" は
+    素朴な部分文字列一致だと誤って加点してしまう (今回のチューニングが解消しようとした
+    バグを、短い新語で再導入してしまう形)。一方でGitHub topicsはハイフン連結スラッグ
+    ("mcp-server", "discord-bot") が多いため、そちらは一致し続ける必要がある。
+    """
+    false_positive = _repo("a/client-lib", stars=10,
+                           description="An API client library with acronym glossary and robot support")
+    assert radar.score_repo(false_positive, NOW)["matched_keywords"] == [], \
+        radar.score_repo(false_positive, NOW)["matched_keywords"]
+
+    hyphenated = _repo("a/mcp-tool", stars=10, description="a tool",
+                       topics=["mcp-server", "discord-bot"])
+    matched = radar.score_repo(hyphenated, NOW)["matched_keywords"]
+    assert "mcp" in matched and "discord" in matched and "bot" in matched, matched
+    print("✅ [2d] score_repo: 単語境界で誤爆を防ぎつつハイフン連結topicsは一致")
 
 
 # ---------------------------------------------------------
