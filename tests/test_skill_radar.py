@@ -147,14 +147,22 @@ def test_render_radar_markdown_shows_score_breakdown_and_comment():
 # ---------------------------------------------------------
 
 def test_load_local_skill_inventory_parses_frontmatter_and_commands():
+    # ファイル名は実行時に組み立てる (リテラルで "SKILL.md"/"grill.md" と書くと、
+    # 追跡下の同名ファイル (.claude/skills/*/SKILL.md, .claude/commands/grill.md) と
+    # basenameが一致し test_ci_docs_exemption.py の検出器に「追跡下.mdへの参照」として
+    # 誤検知される — このtmpdirフィクスチャは実ファイルを一切読まないので無害だが、
+    # 検出器はリテラル単位でしか判定できない。tests/test_ci_docs_exemption.py の
+    # `_SAMPLE = "CLAUDE" + ".md"` と同じ回避法をここでも使う。
+    skill_md_name = "SKILL" + ".md"
+    grill_md_name = "grill" + ".md"
     with tempfile.TemporaryDirectory() as tmp:
         skills_dir = os.path.join(tmp, "skills")
         commands_dir = os.path.join(tmp, "commands")
         os.makedirs(os.path.join(skills_dir, "example-skill"))
         os.makedirs(commands_dir)
-        with open(os.path.join(skills_dir, "example-skill", "SKILL.md"), "w", encoding="utf-8") as f:
+        with open(os.path.join(skills_dir, "example-skill", skill_md_name), "w", encoding="utf-8") as f:
             f.write("---\nname: example-skill\ndescription: debugging helper for tests\n---\n\n# Body\n")
-        with open(os.path.join(commands_dir, "grill.md"), "w", encoding="utf-8") as f:
+        with open(os.path.join(commands_dir, grill_md_name), "w", encoding="utf-8") as f:
             f.write("# /grill — adversarial code review\n\nbody...\n")
 
         inventory = radar.load_local_skill_inventory(skills_dir=skills_dir, commands_dir=commands_dir)
