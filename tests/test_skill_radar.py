@@ -410,17 +410,24 @@ def test_run_skill_radar_no_comment_skips_ai_fit_call():
 
     「Gemini呼び出しゼロ」はCLIヘルプ文言・CLAUDE.mdのコスト分離方針で明言している契約。
     /grill で指摘: この契約自体を検証するテストが無かった。
+    run_skill_radar は mark_seen() で本番の SEEN_PATH に書き込むため、テスト[9]と同様に
+    一時ディレクトリへ退避する (退避漏れで実際に "a/x" が本番キャッシュへ混入した事故の再発防止)。
     """
-    orig_evaluate = radar.evaluate_fit_ja
-    orig_collect = radar.collect_candidates
-    called = []
-    radar.evaluate_fit_ja = lambda *a, **k: (called.append(1), {})[1]
-    radar.collect_candidates = lambda *a, **k: ([_repo("a/x", stars=1)], 1)
-    try:
-        radar.run_skill_radar(save=False, comment=False)
-    finally:
-        radar.evaluate_fit_ja = orig_evaluate
-        radar.collect_candidates = orig_collect
+    with tempfile.TemporaryDirectory() as tmp:
+        orig_seen, orig_logs = radar.SEEN_PATH, radar.LOGS_DIR
+        orig_evaluate = radar.evaluate_fit_ja
+        orig_collect = radar.collect_candidates
+        called = []
+        radar.SEEN_PATH = os.path.join(tmp, "skill_seen_ids.json")
+        radar.LOGS_DIR = tmp
+        radar.evaluate_fit_ja = lambda *a, **k: (called.append(1), {})[1]
+        radar.collect_candidates = lambda *a, **k: ([_repo("a/x", stars=1)], 1)
+        try:
+            radar.run_skill_radar(save=False, comment=False)
+        finally:
+            radar.evaluate_fit_ja = orig_evaluate
+            radar.collect_candidates = orig_collect
+            radar.SEEN_PATH, radar.LOGS_DIR = orig_seen, orig_logs
 
     assert called == [], "comment=False なのに evaluate_fit_ja が呼ばれている (課金ゼロ契約違反)"
     print("✅ [9b] run_skill_radar: comment=False は evaluate_fit_ja を呼ばない")
