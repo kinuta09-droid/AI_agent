@@ -195,8 +195,9 @@ except ImportError as _e:
     _HAS_SKILL_RADAR = False
 
 def _run_skill_radar() -> str:
-    """GitHub巡回でARMS/Claude Code向けの新着Skillを見つける (スコアリングは課金ゼロ、
-    上位のみ Gemini LIGHT で一言コメント — tools/tool_skill_radar.py の docstring参照)。"""
+    """GitHub巡回でARMS/Claude Code向けの新着Skillを見つける (Gemini LIGHTで全候補の
+    ARMS適合度を判定しスコアに反映、無料枠運用のため実課金なし
+    — tools/tool_skill_radar.py の docstring参照)。"""
     if not _HAS_SKILL_RADAR:
         return f"Skill Radar: tool_skill_radar not available ({_skill_radar_err})"
     return _skill_radar(top_k=5)

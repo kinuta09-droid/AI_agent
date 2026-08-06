@@ -130,6 +130,27 @@ def test_score_repo_relevance_uses_word_boundaries_not_substring():
     print("✅ [2d] score_repo: 単語境界で誤爆を防ぎつつハイフン連結topicsは一致")
 
 
+def test_score_repo_ai_fit_can_override_star_advantage():
+    """AI適合度 not_applicable が、stars優位な候補を下位に逆転させられること。
+
+    2026-08-06のチューニングセッションで手動検証した実データ (nexu-io/open-design ⭐8.4万等)
+    では、キーワード一致だけでは「stars は多いが単体の完成された製品でSkillとして切り出せない」
+    候補を弾けなかった。ai_fit の not_applicable がその失敗モードを是正する役目を持つこと、
+    None (未評価) は従来どおり無加点であることを確認する。
+    """
+    huge_star_product = _repo("big/product", stars=80000, description="a design app")
+    small_star_fit = _repo("small/plan-helper", stars=10, description="a planning helper")
+
+    no_ai = radar.score_repo(huge_star_product, NOW)
+    assert no_ai["breakdown"]["ai_fit"] == 0.0, no_ai  # 未評価は無加点
+
+    penalized = radar.score_repo(huge_star_product, NOW, ai_fit="not_applicable")
+    boosted = radar.score_repo(small_star_fit, NOW, ai_fit="high")
+    assert penalized["score"] < no_ai["score"], (penalized, no_ai)
+    assert boosted["score"] > penalized["score"], (boosted, penalized)
+    print("✅ [2e] score_repo: ai_fit=not_applicable がstars優位を逆転させる")
+
+
 # ---------------------------------------------------------
 # [3] ランキング
 # ---------------------------------------------------------
@@ -161,16 +182,37 @@ def test_rank_repos_orders_excludes_seen_dupes_and_is_deterministic():
     print("✅ [3] rank_repos: 降順 / 既出除外 / 重複除外 / 同点の決定性")
 
 
+def test_rank_repos_ai_fit_map_reorders_results():
+    """ai_fit_map を渡すと、stars優位でも not_applicable 判定の候補が下位へ落ちること。
+
+    ai_fit_map 省略時 (既定 None) は従来どおりの並びのままであることも合わせて確認する
+    (既存呼び出し元への後方互換)。
+    """
+    repos = [
+        _repo("big/product", stars=80000),
+        _repo("small/plan-helper", stars=10),
+    ]
+    default_order = [r["full_name"] for r in radar.rank_repos(repos, [], NOW, top_k=2)]
+    assert default_order == ["big/product", "small/plan-helper"], default_order
+
+    ai_fit_map = {"big/product": "not_applicable", "small/plan-helper": "high"}
+    reordered = [r["full_name"] for r in
+                radar.rank_repos(repos, [], NOW, top_k=2, ai_fit_map=ai_fit_map)]
+    assert reordered == ["small/plan-helper", "big/product"], reordered
+    print("✅ [3b] rank_repos: ai_fit_map でstars優位の並びを逆転できる")
+
+
 # ---------------------------------------------------------
 # [4] レポート生成
 # ---------------------------------------------------------
 
 def test_render_radar_markdown_shows_score_breakdown_and_comment():
     ranked = radar.rank_repos([_repo("a/example", stars=42, description="an example tool")],
-                              [], NOW, top_k=1)
+                              [], NOW, top_k=1, ai_fit_map={"a/example": "high"})
     ranked[0]["comment_ja"] = "テスト用コメント"
+    ranked[0]["ai_fit"] = "high"
     md = radar.render_radar_markdown(ranked, NOW)
-    for token in ["a/example", "スコア", "⭐ 42", "テスト用コメント"]:
+    for token in ["a/example", "スコア", "⭐ 42", "テスト用コメント", "AI適合度[high]"]:
         assert token in md, f"レポートに {token!r} が出ていない:\n{md}"
     print("✅ [4] render_radar_markdown: スコア内訳とAIコメントが読める")
 
@@ -229,7 +271,7 @@ def test_seen_cache_roundtrip_in_tmpdir():
 
 
 # ---------------------------------------------------------
-# [7] 上位候補のAIコメント (失敗時はコメント無しでフォールバック)
+# [7] AI適合度判定 (失敗時は加点なし・コメント無しでフォールバック)
 # ---------------------------------------------------------
 
 class _FakeResp:
@@ -237,39 +279,58 @@ class _FakeResp:
         self.text = text
 
 
-def test_comment_repos_ja_fills_in_comment_field():
+def test_evaluate_fit_ja_returns_fit_and_comment_per_repo():
     import lib.lib_shared as lib_shared
-    ranked = radar.rank_repos([_repo("a/example", stars=10)], [], NOW, top_k=1)
+    candidates = [_repo("a/example", stars=10)]
 
     original_fn = lib_shared.client.models.generate_content
     try:
         lib_shared.client.models.generate_content = (
             lambda model, contents: _FakeResp(
-                '[{"full_name": "a/example", "comment_ja": "導入する価値があります"}]'))
-        radar.comment_repos_ja(ranked, [])
+                '[{"full_name": "a/example", "fit": "high", '
+                '"comment_ja": "導入する価値があります"}]'))
+        result = radar.evaluate_fit_ja(candidates, [])
     finally:
         lib_shared.client.models.generate_content = original_fn
 
-    assert ranked[0]["comment_ja"] == "導入する価値があります", ranked[0]
-    print("✅ [7a] comment_repos_ja: コメント結果を comment_ja へ反映する")
+    assert result == {"a/example": {"fit": "high", "comment_ja": "導入する価値があります"}}, result
+    print("✅ [7a] evaluate_fit_ja: fit と comment_ja を候補ごとに返す")
 
 
-def test_comment_repos_ja_failure_does_not_raise():
-    """Gemini呼び出しが失敗しても例外を外へ伝播させず、コメント無しのまま続くこと。"""
+def test_evaluate_fit_ja_ignores_unknown_fit_values():
+    """fit がスコア変換テーブルに無い値なら黙って捨てること (壊れたLLM出力を混入させない)。"""
     import lib.lib_shared as lib_shared
-    ranked = radar.rank_repos([_repo("a/example", stars=10)], [], NOW, top_k=1)
+    candidates = [_repo("a/example", stars=10)]
+
+    original_fn = lib_shared.client.models.generate_content
+    try:
+        lib_shared.client.models.generate_content = (
+            lambda model, contents: _FakeResp(
+                '[{"full_name": "a/example", "fit": "amazing", "comment_ja": "..."}]'))
+        result = radar.evaluate_fit_ja(candidates, [])
+    finally:
+        lib_shared.client.models.generate_content = original_fn
+
+    assert result == {}, result
+    print("✅ [7b] evaluate_fit_ja: 未知のfit値は捨てる")
+
+
+def test_evaluate_fit_ja_failure_does_not_raise():
+    """Gemini呼び出しが失敗しても例外を外へ伝播させず、空dictで継続すること。"""
+    import lib.lib_shared as lib_shared
+    candidates = [_repo("a/example", stars=10)]
 
     original_fn = lib_shared.client.models.generate_content
     try:
         def _boom(model, contents):
             raise RuntimeError("quota exceeded")
         lib_shared.client.models.generate_content = _boom
-        radar.comment_repos_ja(ranked, [])  # 例外を投げないこと
+        result = radar.evaluate_fit_ja(candidates, [])  # 例外を投げないこと
     finally:
         lib_shared.client.models.generate_content = original_fn
 
-    assert "comment_ja" not in ranked[0], ranked[0]
-    print("✅ [7b] comment_repos_ja: 失敗時は例外を外へ出さずコメント無しで継続")
+    assert result == {}, result
+    print("✅ [7c] evaluate_fit_ja: 失敗時は例外を外へ出さず空dictで継続")
 
 
 # ---------------------------------------------------------
@@ -308,6 +369,61 @@ def test_empty_result_is_not_a_failure_but_errors_are():
         radar.collect_candidates = orig
     assert is_failure_result(msg), f"全クエリ失敗が失敗として判定されない: {msg!r}"
     print("✅ [8] run_skill_radar: 0件は成功 / 収集失敗は失敗接頭辞")
+
+
+# ---------------------------------------------------------
+# [9] run_skill_radar 全体を通した統合確認 (AI適合度がランキングまで届くこと)
+# ---------------------------------------------------------
+
+def test_run_skill_radar_applies_ai_fit_to_ranking():
+    """AI適合度評価が rank_repos より前で走り、stars優位を逆転させてランキングに反映されること。"""
+    import lib.lib_shared as lib_shared
+    with tempfile.TemporaryDirectory() as tmp:
+        orig_seen, orig_logs = radar.SEEN_PATH, radar.LOGS_DIR
+        orig_collect = radar.collect_candidates
+        original_fn = lib_shared.client.models.generate_content
+        radar.SEEN_PATH = os.path.join(tmp, "skill_seen_ids.json")
+        radar.LOGS_DIR = tmp
+        radar.collect_candidates = lambda *a, **k: (
+            [_repo("big/product", stars=80000), _repo("small/plan-helper", stars=10)], 1)
+        lib_shared.client.models.generate_content = (
+            lambda model, contents: _FakeResp(
+                '[{"full_name": "big/product", "fit": "not_applicable", '
+                '"comment_ja": "製品本体で導入不可"}, '
+                '{"full_name": "small/plan-helper", "fit": "high", '
+                '"comment_ja": "計画支援と相性が良い"}]'))
+        try:
+            msg = radar.run_skill_radar(top_k=2, save=False, comment=True)
+        finally:
+            radar.collect_candidates = orig_collect
+            lib_shared.client.models.generate_content = original_fn
+            radar.SEEN_PATH, radar.LOGS_DIR = orig_seen, orig_logs
+
+    assert "small/plan-helper" in msg and "big/product" in msg, msg
+    assert msg.index("small/plan-helper") < msg.index("big/product"), \
+        f"AI適合度が反映されずstars優位のままの並びになっている:\n{msg}"
+    print("✅ [9] run_skill_radar: AI適合度評価がランキングの逆転まで届く")
+
+
+def test_run_skill_radar_no_comment_skips_ai_fit_call():
+    """comment=False (--no-comment) は evaluate_fit_ja を一切呼ばないこと。
+
+    「Gemini呼び出しゼロ」はCLIヘルプ文言・CLAUDE.mdのコスト分離方針で明言している契約。
+    /grill で指摘: この契約自体を検証するテストが無かった。
+    """
+    orig_evaluate = radar.evaluate_fit_ja
+    orig_collect = radar.collect_candidates
+    called = []
+    radar.evaluate_fit_ja = lambda *a, **k: (called.append(1), {})[1]
+    radar.collect_candidates = lambda *a, **k: ([_repo("a/x", stars=1)], 1)
+    try:
+        radar.run_skill_radar(save=False, comment=False)
+    finally:
+        radar.evaluate_fit_ja = orig_evaluate
+        radar.collect_candidates = orig_collect
+
+    assert called == [], "comment=False なのに evaluate_fit_ja が呼ばれている (課金ゼロ契約違反)"
+    print("✅ [9b] run_skill_radar: comment=False は evaluate_fit_ja を呼ばない")
 
 
 if __name__ == "__main__":
