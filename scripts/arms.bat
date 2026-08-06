@@ -9,7 +9,7 @@ rem launcher on purpose.
 rem
 rem chcp 65001 affects this console window only (no registry, no profile
 rem write) so the UTF-8 output of arms_ctl.py renders correctly.
-rem That is LEVEL 1 in the Encoding Safety Rules of CLAUDE.md.
+rem That is LEVEL 1 in .claude/rules/encoding-safety.md.
 rem
 rem ASCII only on purpose: cmd.exe reads .bat in the OEM codepage
 rem (cp932 here) and a UTF-8 Japanese comment can swallow the CR of its

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""PreToolUse hook (Edit|Write): CLAUDE.md の Encoding Safety Rules を機械的に強制する。
+"""PreToolUse hook (Edit|Write): .claude/rules/encoding-safety.md を機械的に強制する。
 
-守る規約 (skill windows-encoding / CLAUDE.md Encoding Safety Rules と対応):
+守る規約 (skill windows-encoding / .claude/rules/encoding-safety.md と対応):
   - `.bat` / `.vbs` は ASCII のみ (cp932 が日本語コメントを化けさせ、
     `。` の末尾バイトが行末 CR を食う実障害があった)
   - `os.environ["PYTHONIOENCODING"] = ...` の代入は LEVEL 2 違反として禁止
@@ -58,7 +58,11 @@ def main() -> int:
             )
             return 2
 
-    if re.search(r"""os\.environ\s*\[\s*['"]PYTHONIOENCODING['"]\s*\]\s*=""", text):
+    # .md は実行されないので誤検知の温床 (禁止パターンを NEVER 節で引用するだけで
+    # 発火する)。CLAUDE.md/.claude/rules/*.md のドキュメント記述を止めないよう除外。
+    if not lower_path.endswith(".md") and re.search(
+        r"""os\.environ\s*\[\s*['"]PYTHONIOENCODING['"]\s*\]\s*=""", text
+    ):
         print(
             "Blocked: os.environ[\"PYTHONIOENCODING\"] への代入は LEVEL 2 違反です"
             " (全ての子プロセスを汚染します)。sys.stdout.reconfigure(encoding='utf-8')"

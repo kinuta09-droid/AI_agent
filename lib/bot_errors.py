@@ -13,7 +13,7 @@
   scripts/arms_core.bat が logs/launcher.log にリダイレクトしている。
   bot_discord.py:39 で stdout を utf-8 に reconfigure 済みなので、
   日本語を含む例外メッセージを print しても cp932 で落ちない
-  (CLAUDE.md の Encoding Safety Rules LEVEL 0 に沿う。環境変数は触らない)。
+  (.claude/rules/encoding-safety.md の LEVEL 0 に沿う。環境変数は触らない)。
 """
 import re
 import traceback

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """PreToolUse hook (Bash|PowerShell): エンコーディング設定のスコープ逸脱を機械的に禁止する。
 
-守る規約 (CLAUDE.md Encoding Safety Rules の NEVER 節と対応):
+守る規約 (.claude/rules/encoding-safety.md の NEVER 節と対応):
   - LEVEL 4: `setx PYTHONIOENCODING ...` / レジストリ経由の環境変数永続化は絶対禁止
   - LEVEL 3: PowerShell プロファイル ($PROFILE) / .bashrc への追記は
              ユーザーの明示指示なしに禁止

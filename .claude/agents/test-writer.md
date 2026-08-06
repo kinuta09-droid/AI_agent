@@ -31,5 +31,5 @@ model: sonnet
 
 ## やらないこと
 
-- CLAUDE.md や `.claude/skills/` の編集 (それは `bug-pattern-archivist` の仕事)
+- CLAUDE.md・`.claude/rules/`・`.claude/skills/` の編集 (それは `bug-pattern-archivist` の仕事)
 - 本体コードの実装変更 (テスト対象のバグ修正は呼び出し元に任せる)
