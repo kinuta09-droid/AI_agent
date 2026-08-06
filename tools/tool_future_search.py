@@ -723,7 +723,8 @@ def _notify_discord(topic: str, report: str, filename: str) -> None:
 # ---------------------------------------------------------
 
 def run_future_search(topic: str = "", depth: str = DEFAULT_DEPTH,
-                      uncensored: bool = False, progress_cb=None) -> str:
+                      uncensored: bool = False, progress_cb=None,
+                      context_hint: str = "") -> str:
     """未来シナリオ分析: 英訳 → Tavily検索 → Gemini 10視点マルチレンズ推論 → 個人化。
 
     Args:
@@ -731,6 +732,9 @@ def run_future_search(topic: str = "", depth: str = DEFAULT_DEPTH,
         depth: "quick" / "standard" / "deep"。ソース数と詳細度を決める。
         uncensored: True で DavidAU 辛口診断を追加生成 (遅いので明示選択制)。
         progress_cb: 各段階で呼ばれる同期コールバック fn(msg:str)。None なら無視。
+        context_hint: Tavily検索クエリにのみ付与する補強語 (英語推奨)。topic自体が
+            短く曖昧な語 (例: XTrendのfeature_name) のとき、無関係なドメインの
+            ソースを引いてしまう事故を防ぐ (2026-08-06 Maple-Preview事故対策)。
     """
     def _progress(msg: str):
         print(f"[FutureSearch] {msg}")
@@ -763,8 +767,9 @@ def run_future_search(topic: str = "", depth: str = DEFAULT_DEPTH,
         print(f"[FutureSearch] 🌐 EN query: '{en_query}'")
 
     # Step 2: Tavily で英語ソース収集
+    search_query = f"{en_query} {context_hint}".strip() if context_hint else en_query
     _progress(f"🔍 英語ソースを検索中 ({n_sources}件)...")
-    sources = _search_topic(en_query, max_results=n_sources)
+    sources = _search_topic(search_query, max_results=n_sources)
     if not sources:
         return f"Error: Tavily検索でソースが取得できませんでした。トピック: '{topic}'"
     print(f"[FutureSearch] 📰 Found {len(sources)} sources.")

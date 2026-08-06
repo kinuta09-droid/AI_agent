@@ -215,6 +215,51 @@ def test_empty_topic_rejected():
     print("✅ 空トピックはエラー返し (input()でブロックしない)")
 
 
+def test_context_hint_appended_to_search_query():
+    """context_hint はTavily検索クエリにのみ付与され、topic自体は変えないこと。"""
+    calls = []
+    monkey = {
+        "_RUN_COUNTER": _NoQuotaCounter(),
+        "_translate_to_english_query": lambda topic, llm_fn=None: "Maple-Preview",
+        "_search_topic": lambda q, max_results=10: (calls.append(q), SOURCES[:max_results])[1],
+        "_load_user_context": lambda: "",
+        "_multi_lens_analysis": lambda t, s, c, d: "# R",
+        "_generate_happiness_advice": lambda t, r, c: "## H",
+        "_save_to_obsidian": lambda t, r: "F",
+        "_notify_discord": lambda t, r, f: None,
+    }
+    originals = _patch(monkey)
+    try:
+        fs.run_future_search("Maple-Preview", depth="quick",
+                             context_hint="LLM, Ternary Weights, C++")
+    finally:
+        _restore(originals)
+    assert calls[0] == "Maple-Preview LLM, Ternary Weights, C++", calls
+    print("✅ context_hint ありでは検索クエリに補強語が付与される")
+
+
+def test_context_hint_omitted_keeps_query_unchanged():
+    """context_hint省略時 (従来の呼び出し) はクエリが変わらない後方互換確認。"""
+    calls = []
+    monkey = {
+        "_RUN_COUNTER": _NoQuotaCounter(),
+        "_translate_to_english_query": lambda topic, llm_fn=None: "en query",
+        "_search_topic": lambda q, max_results=10: (calls.append(q), SOURCES[:max_results])[1],
+        "_load_user_context": lambda: "",
+        "_multi_lens_analysis": lambda t, s, c, d: "# R",
+        "_generate_happiness_advice": lambda t, r, c: "## H",
+        "_save_to_obsidian": lambda t, r: "F",
+        "_notify_discord": lambda t, r, f: None,
+    }
+    originals = _patch(monkey)
+    try:
+        fs.run_future_search("topic", depth="quick")
+    finally:
+        _restore(originals)
+    assert calls[0] == "en query", calls
+    print("✅ context_hint省略時はクエリが従来どおり変化しない")
+
+
 def test_invalid_depth_falls_back():
     monkey = {
         "_RUN_COUNTER": _NoQuotaCounter(),
@@ -250,5 +295,7 @@ if __name__ == "__main__":
     test_run_pipeline_orchestration()
     test_run_pipeline_uncensored_and_no_callback()
     test_empty_topic_rejected()
+    test_context_hint_appended_to_search_query()
+    test_context_hint_omitted_keeps_query_unchanged()
     test_invalid_depth_falls_back()
     print("\n🎉 ALL FUTURE SEARCH PIPELINE TESTS PASSED")

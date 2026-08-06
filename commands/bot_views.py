@@ -132,6 +132,9 @@ class BriefingDeepDiveView(AllowedUserView):
                 return
 
             topic = features[index].get("feature_name", "").strip()
+            # feature_name は短く曖昧な語のことがあるため、tech_stackで検索文脈を補強
+            # (2026-08-06 Maple-Preview事故対策。agent_scheduler.py と同型)
+            context_hint = features[index].get("tech_stack", "").strip()
             if not topic:
                 await interaction.response.send_message("❌ トピック名が空です。", ephemeral=True)
                 return
@@ -152,7 +155,7 @@ class BriefingDeepDiveView(AllowedUserView):
             try:
                 from tools.tool_future_search import run_future_search
                 result = await asyncio.to_thread(
-                    run_future_search, topic, "standard", False
+                    run_future_search, topic, "standard", False, context_hint=context_hint
                 )
             except Exception as e:
                 raised = True

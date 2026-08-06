@@ -155,8 +155,12 @@ def _run_auto_deep_dive() -> str:
     topic = top.get("feature_name", "").strip()
     if not topic:
         return "Auto Deep-Dive: TOP1のfeature_nameが空。スキップ。"
-    logger.info(f"Auto Deep-Dive: topic='{topic}'")
-    return _future_search(topic, depth="standard", uncensored=False)
+    # feature_name は短く曖昧な語のことがあり (例: "Maple-Preview" がMapleStoryと衝突)、
+    # そのままTavily検索に投げると無関係なドメインのソースを引く事故が起きるため、
+    # xtrendが既に抽出済みのtech_stackで検索文脈を補強する
+    context_hint = top.get("tech_stack", "").strip()
+    logger.info(f"Auto Deep-Dive: topic='{topic}' context_hint='{context_hint}'")
+    return _future_search(topic, depth="standard", uncensored=False, context_hint=context_hint)
 
 # X Trend (optional)
 try:
