@@ -93,6 +93,7 @@ SERIAL_TESTS = {
 PARALLEL_TESTS = frozenset({
     "test_activity_corpus.py",
     "test_agent_feedback.py",
+    "test_agent_scheduler_deep_dive.py",
     "test_answer_grounding.py",
     "test_audio_automation.py",
     "test_backtest_engine.py",
