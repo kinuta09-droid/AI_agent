@@ -23,7 +23,8 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from tools.tool_vault_hybrid import tool_vault_hybrid_search, NOT_FOUND
+import tools.tool_vault_hybrid as vh_mod
+from tools.tool_vault_hybrid import tool_vault_hybrid_search, tool_find_related_notes, NOT_FOUND
 
 
 def _hit(rel_path, score, snippet="snippet-body"):
@@ -114,6 +115,87 @@ def test_semantic_chunks_dedup():
     assert result.index("[[x.md]]") < result.index("[[y.md]]"), "x.md keeps its best rank"
     assert "chunk1" in result, "snippet must come from the best-ranked chunk"
     print("✅ hybrid: per-file dedup of semantic chunks")
+
+
+# ---------------------------------------------------------
+# tool_find_related_notes (/idea 関連ノート自動検出)
+#
+# _hybrid_hits の構造化結果をそのまま使う薄いラッパーなので、keyword_fn/semantic_fn
+# ではなく _hybrid_hits 自体をモジュールレベルで退避・monkeypatch する
+# (tests/test_idea_brainstorm.py と同じtry/finallyパターン)。
+# ---------------------------------------------------------
+
+def _rel_hit(filename, rel_path=None):
+    return {"filename": filename, "rel_path": rel_path or f"30_Main/{filename}"}
+
+
+def test_find_related_notes_excludes_self_case_insensitive():
+    """exclude_filenameは拡張子の有無・大小文字を無視して除外する"""
+    hits = [_rel_hit("Idea.MD"), _rel_hit("other.md"), _rel_hit("third.md")]
+    orig = vh_mod._hybrid_hits
+    try:
+        vh_mod._hybrid_hits = lambda q, top_k: (hits, [], [q])
+        result = tool_find_related_notes("query", exclude_filename="idea")
+    finally:
+        vh_mod._hybrid_hits = orig
+    names = [r["filename"] for r in result]
+    assert "Idea.MD" not in names, f"exclude_filenameの正規化が効いていない: {names}"
+    assert names == ["other.md", "third.md"], names
+    print("✅ find_related_notes: exclude_filenameを拡張子/大小文字無視で除外")
+
+
+def test_find_related_notes_empty_hits():
+    orig = vh_mod._hybrid_hits
+    try:
+        vh_mod._hybrid_hits = lambda q, top_k: ([], [], [q])
+        result = tool_find_related_notes("query")
+    finally:
+        vh_mod._hybrid_hits = orig
+    assert result == [], result
+    print("✅ find_related_notes: _hybrid_hitsが空なら[]")
+
+
+def test_find_related_notes_empty_query_skips_search():
+    called = {"n": 0}
+
+    def _fake(q, top_k):
+        called["n"] += 1
+        return ([], [], [q])
+
+    orig = vh_mod._hybrid_hits
+    try:
+        vh_mod._hybrid_hits = _fake
+        result = tool_find_related_notes("   ")
+    finally:
+        vh_mod._hybrid_hits = orig
+    assert result == [], result
+    assert called["n"] == 0, "空queryなのに_hybrid_hitsが呼ばれた"
+    print("✅ find_related_notes: 空queryは_hybrid_hitsを呼ばず[]")
+
+
+def test_find_related_notes_top_k_limit():
+    hits = [_rel_hit(f"f{i}.md") for i in range(5)]
+    orig = vh_mod._hybrid_hits
+    try:
+        vh_mod._hybrid_hits = lambda q, top_k: (hits[:top_k], [], [q])
+        result = tool_find_related_notes("query", top_k=2)
+    finally:
+        vh_mod._hybrid_hits = orig
+    assert len(result) == 2, f"top_k=2を超えて返っている: {result}"
+    print("✅ find_related_notes: top_k件に絞る")
+
+
+def test_find_related_notes_dedup_same_filename():
+    hits = [_rel_hit("dup.md", "a/dup.md"), _rel_hit("dup.md", "b/dup.md"), _rel_hit("other.md")]
+    orig = vh_mod._hybrid_hits
+    try:
+        vh_mod._hybrid_hits = lambda q, top_k: (hits, [], [q])
+        result = tool_find_related_notes("query", top_k=5)
+    finally:
+        vh_mod._hybrid_hits = orig
+    names = [r["filename"] for r in result]
+    assert names.count("dup.md") == 1, f"同名filenameが重複している: {names}"
+    print("✅ find_related_notes: 同じfilenameは重複排除")
 
 
 if __name__ == "__main__":

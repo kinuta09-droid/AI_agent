@@ -1208,6 +1208,13 @@ async def cmd_idea(interaction: discord.Interaction, text: str):
 @app_commands.autocomplete(text=bot_commands_idea.idea_autocomplete)
 async def cmd_brainstorm(interaction: discord.Interaction, text: str):
     await bot_commands_idea.cmd_brainstorm(interaction, text)
+
+
+@tree.command(name="idea-relink", description="既存の完成アイデアノートについて、Vault内の関連ノートを再検索する")
+@app_commands.describe(title="対象のアイデアノート（候補から選択）")
+@app_commands.autocomplete(title=bot_commands_idea.permanent_idea_autocomplete)
+async def cmd_idea_relink(interaction: discord.Interaction, title: str):
+    await bot_commands_idea.cmd_idea_relink(interaction, title)
 # ---------------------------------------------------------
 # Webhook Listener (HTTP Shortcuts → Obsidian)
 # ---------------------------------------------------------

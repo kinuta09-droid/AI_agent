@@ -133,6 +133,7 @@ PARALLEL_TESTS = frozenset({
     "test_hybrid_injection_contract.py",
     "test_hybrid_search.py",
     "test_idea_brainstorm.py",
+    "test_idea_relink.py",
     "test_import_modularized.py",
     "test_keyword_hits.py",
     "test_learning_db_rotation.py",

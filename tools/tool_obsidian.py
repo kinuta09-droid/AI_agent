@@ -326,6 +326,108 @@ def tool_list_open_ideas(limit: int = 25) -> list[dict]:
     return items[:limit] if limit else items
 
 
+_TAGS_BLOCK_RE = re.compile(r'^tags:\n((?:  - .*\n)*)', re.MULTILINE)
+_RELATED_NOTES_BLOCK_RE = re.compile(r'(### 関連ノート\n)((?:- .*\n?)*)')
+
+
+def _add_tag_to_note(path: str, tag: str) -> None:
+    """frontmatterのtagsブロックにtagを追記する（既にあれば何もしない=冪等）。"""
+    with open(path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    m = _TAGS_BLOCK_RE.search(content)
+    if not m:
+        return  # tags: ブロックが無いノートは対象外（Fleeting Note等の想定外フォーマット）
+
+    existing_lines = m.group(1)
+    if any(line.strip() == f'- {tag}' for line in existing_lines.splitlines()):
+        return  # 既に付与済み
+
+    new_block = existing_lines + f'  - {tag}\n'
+    content = content[:m.start(1)] + new_block + content[m.end(1):]
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+
+def _append_related_note_links(path: str, links: list[str]) -> None:
+    """### 関連ノート セクションへwikilinkを追記する（プレースホルダ置換 or 重複しない追記）。"""
+    with open(path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    m = _RELATED_NOTES_BLOCK_RE.search(content)
+    if not m:
+        return  # 想定外フォーマットのノートは対象外
+
+    existing_body = m.group(2)
+    existing_lines = [l for l in existing_body.splitlines() if l.strip() and l.strip() != '- [[ ]]']
+    for link in links:
+        line = f'- {link}'
+        if line not in existing_lines:
+            existing_lines.append(line)
+
+    new_body = "".join(f'{l}\n' for l in existing_lines) if existing_lines else '- [[ ]]\n'
+    content = content[:m.start(2)] + new_body + content[m.end(2):]
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+
+def tool_confirm_related_notes(idea_filename: str, candidate_filenames: list[str]) -> str:
+    """関連ノート通知で「全部リンクする」が選ばれた際の確定処理。
+
+    アイデア自身と各候補に同じ階層タグ idea/<タイトル> を付け、アイデア側の
+    ### 関連ノート にwikilinkを追記する。連番ID方式はやめ、既に一意な
+    アイデアのタイトル（_resolve_unique_path が保証）をそのままタグ名に流用する。
+    """
+    print(f"[Tool] 🔗 Confirming related notes for: {idea_filename} <- {candidate_filenames}")
+    idea_path = find_file_in_vault(idea_filename)
+    if not idea_path:
+        return f"Error: Idea note {idea_filename} not found."
+
+    idea_title = os.path.splitext(os.path.basename(idea_path))[0]
+    tag = f"idea/{idea_title}"
+
+    try:
+        _add_tag_to_note(idea_path, tag)
+        _append_related_note_links(idea_path, [f'[[{os.path.splitext(c)[0]}]]' for c in candidate_filenames])
+
+        linked = []
+        for candidate in candidate_filenames:
+            candidate_path = find_file_in_vault(candidate)
+            if not candidate_path:
+                print(f"[Tool] ⚠️ Related note not found, skipped: {candidate}")
+                continue
+            _add_tag_to_note(candidate_path, tag)
+            linked.append(candidate)
+
+        return f"Success: Linked {len(linked)} related note(s) to [[{idea_title}]] with tag #{tag}."
+    except Exception as e:
+        return f"Error confirming related notes: {e}"
+
+
+def tool_list_permanent_ideas(limit: int = 25) -> list[dict]:
+    """30_Main内の type/permanent なノートを mtime 降順で返す（/idea-relink のautocomplete用）。"""
+    main_dir = os.path.join(WORK_DIR, '30_Main')
+    if not os.path.isdir(main_dir):
+        return []
+    items = []
+    for f in os.listdir(main_dir):
+        if not f.endswith('.md'):
+            continue
+        path = os.path.join(main_dir, f)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, 'r', encoding='utf-8') as fh:
+                head = fh.read(500)
+        except Exception:
+            continue
+        if 'type/permanent' not in head:
+            continue
+        items.append({"title": os.path.splitext(f)[0], "mtime": os.path.getmtime(path)})
+    items.sort(key=lambda x: -x["mtime"])
+    return items[:limit] if limit else items
+
+
 def tool_delete_idea(title: str) -> str:
     """00_inboxのFleeting Noteを削除する(壁打ち完了後の後処理用)。
 

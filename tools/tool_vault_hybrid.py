@@ -1212,3 +1212,35 @@ def tool_vault_hybrid_search(query: str, top_k: int = 5,
     if not hits:
         return header + NOT_FOUND
     return header + "\n\n".join(_format_hit(h) for h in hits)
+
+
+def tool_find_related_notes(query: str, exclude_filename: str = "", top_k: int = 5) -> list[dict]:
+    """アイデアの関連ノート候補を探す薄いラッパー。_hybrid_hits の構造化結果をそのまま使う。
+
+    exclude_filename はアイデア自身のノート（自己ヒット除外用、拡張子・大小文字を無視して比較）。
+    しきい値は設けない — v1は「除外後0件か否か」のみで判定する。
+    top_k は既定5（当初3で運用し、実例で5位相当の関連ノートが枠から漏れたため引き上げ済み）。
+    # ponytail: スコア閾値なしの簡易版。ノイズが実害になったら scripts/eval_retrieval.py と
+    # 同じ方法論で閾値を計測して足す
+    """
+    if not query or not str(query).strip():
+        return []
+    exclude_norm = exclude_filename.strip().lower()
+    if exclude_norm and not exclude_norm.endswith('.md'):
+        exclude_norm += '.md'
+
+    hits, _notes, _queries = _hybrid_hits(query, max(1, int(top_k)) + 1)
+
+    seen = set()
+    results = []
+    for h in hits:
+        filename = h.get("filename", "")
+        if filename.strip().lower() == exclude_norm:
+            continue
+        if filename in seen:
+            continue
+        seen.add(filename)
+        results.append({"filename": filename, "rel_path": h.get("rel_path", "")})
+        if len(results) >= top_k:
+            break
+    return results

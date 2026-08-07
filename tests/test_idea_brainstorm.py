@@ -213,10 +213,12 @@ def test_cmd_brainstorm_loads_idea_seed():
 
 async def _run_summarize_and_save_links_and_deletes_source():
     session = {"seed": "seed", "turns": [], "source_title": "音声作品"}
+    thread = AsyncMock()
     created, deleted = {}, {}
 
-    orig_summarize, orig_create, orig_delete = (
-        idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea
+    orig_summarize, orig_create, orig_delete, orig_find_related = (
+        idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea,
+        idea_mod.tool_find_related_notes,
     )
     try:
         idea_mod.summarize_idea_session = lambda seed, turns: {"title": "T", "summary": "S", "content": "本文"}
@@ -232,15 +234,20 @@ async def _run_summarize_and_save_links_and_deletes_source():
             return "Success: deleted"
 
         idea_mod.tool_delete_idea = _fake_delete
-        result = await idea_mod._summarize_and_save(session)
+        # 関連ノート通知が実Vault検索を引き起こさないよう空候補にスタブする
+        # (候補0件ならthread.sendは呼ばれない設計。この関数の主目的の検証を汚さない)
+        idea_mod.tool_find_related_notes = lambda *a, **k: []
+        result = await idea_mod._summarize_and_save(session, thread)
     finally:
         idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea = (
             orig_summarize, orig_create, orig_delete
         )
+        idea_mod.tool_find_related_notes = orig_find_related
 
     assert result == "Success: saved", result
     assert "> Source: [[音声作品]]" in created.get("content", ""), created
     assert deleted.get("title") == "音声作品", f"元アイデアが削除呼び出しされていない: {deleted}"
+    assert thread.send.await_count == 0, "候補0件なのに関連ノート通知が送られた"
 
 
 def test_summarize_and_save_links_and_deletes_source():
@@ -250,24 +257,93 @@ def test_summarize_and_save_links_and_deletes_source():
 
 async def _run_summarize_and_save_delete_failure_does_not_fail_result():
     session = {"seed": "seed", "turns": [], "source_title": "音声作品"}
-    orig_summarize, orig_create, orig_delete = (
-        idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea
+    thread = AsyncMock()
+    orig_summarize, orig_create, orig_delete, orig_find_related = (
+        idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea,
+        idea_mod.tool_find_related_notes,
     )
     try:
         idea_mod.summarize_idea_session = lambda seed, turns: {"title": "T", "summary": "S", "content": "本文"}
         idea_mod.tool_create_note = lambda *a, **k: "Success: saved"
         idea_mod.tool_delete_idea = lambda title: "Error: not found"
-        result = await idea_mod._summarize_and_save(session)
+        idea_mod.tool_find_related_notes = lambda *a, **k: []
+        result = await idea_mod._summarize_and_save(session, thread)
     finally:
         idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea = (
             orig_summarize, orig_create, orig_delete
         )
+        idea_mod.tool_find_related_notes = orig_find_related
     assert result == "Success: saved", f"削除失敗が要約の成功結果に影響してしまった: {result}"
 
 
 def test_summarize_and_save_delete_failure_does_not_fail_result():
     asyncio.run(_run_summarize_and_save_delete_failure_does_not_fail_result())
     print("✅ [9] _summarize_and_save: 元アイデア削除の失敗は要約の成功結果に影響しない")
+
+
+async def _run_summarize_and_save_notifies_related_notes():
+    session = {"seed": "seed", "turns": [], "source_title": None}
+    thread = AsyncMock()
+    orig_summarize, orig_create, orig_delete, orig_find_related = (
+        idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea,
+        idea_mod.tool_find_related_notes,
+    )
+    try:
+        idea_mod.summarize_idea_session = lambda seed, turns: {"title": "T", "summary": "S", "content": "本文"}
+        idea_mod.tool_create_note = lambda *a, **k: "Success: Created [[T]] with template."
+        idea_mod.tool_delete_idea = lambda title: "Success: deleted"
+        idea_mod.tool_find_related_notes = lambda *a, **k: [
+            {"filename": "既存ノート.md", "rel_path": "30_Main/既存ノート.md"}
+        ]
+        result = await idea_mod._summarize_and_save(session, thread)
+    finally:
+        idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea = (
+            orig_summarize, orig_create, orig_delete
+        )
+        idea_mod.tool_find_related_notes = orig_find_related
+
+    assert result == "Success: Created [[T]] with template.", result
+    assert thread.send.await_count == 1, f"候補ありなのに関連ノート通知が送られていない: {thread.send.await_count}"
+    sent_body = thread.send.call_args[0][0]
+    assert "[[既存ノート]]" in sent_body, sent_body
+
+
+def test_summarize_and_save_notifies_related_notes():
+    asyncio.run(_run_summarize_and_save_notifies_related_notes())
+    print("✅ [10] _summarize_and_save: 保存成功後、候補があれば関連ノート通知をthreadに送る")
+
+
+async def _run_summarize_and_save_notify_exception_does_not_fail_result():
+    session = {"seed": "seed", "turns": [], "source_title": None}
+    thread = AsyncMock()
+    orig_summarize, orig_create, orig_delete, orig_find_related = (
+        idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea,
+        idea_mod.tool_find_related_notes,
+    )
+
+    def _boom(*a, **k):
+        raise RuntimeError("vault検索が壊れた")
+
+    try:
+        idea_mod.summarize_idea_session = lambda seed, turns: {"title": "T", "summary": "S", "content": "本文"}
+        idea_mod.tool_create_note = lambda *a, **k: "Success: Created [[T]] with template."
+        idea_mod.tool_delete_idea = lambda title: "Success: deleted"
+        idea_mod.tool_find_related_notes = _boom
+        result = await idea_mod._summarize_and_save(session, thread)
+    finally:
+        idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea = (
+            orig_summarize, orig_create, orig_delete
+        )
+        idea_mod.tool_find_related_notes = orig_find_related
+
+    assert result == "Success: Created [[T]] with template.", (
+        f"関連ノート通知の例外が要約の成功結果に影響してしまった: {result}"
+    )
+
+
+def test_summarize_and_save_notify_exception_does_not_fail_result():
+    asyncio.run(_run_summarize_and_save_notify_exception_does_not_fail_result())
+    print("✅ [11] _summarize_and_save: 関連ノート通知が例外を出しても戻り値は保存成功のまま")
 
 
 if __name__ == "__main__":

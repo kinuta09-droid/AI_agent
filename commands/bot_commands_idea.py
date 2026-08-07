@@ -13,13 +13,22 @@ bot_commands_article.py と同じ自己完結スタイル (init_helpers 不要)�
 import discord
 from discord import app_commands
 import asyncio
+import os
+import re
 
 from tools.tool_obsidian import (
     tool_create_note, tool_save_idea, tool_list_open_ideas, tool_delete_idea, tool_read_note,
+    tool_confirm_related_notes, tool_list_permanent_ideas,
 )
+from tools.tool_vault_hybrid import tool_find_related_notes
 from lib.bot_errors import log_command_error, is_failure_result
 from commands.bot_views import AllowedUserView
 from scripts.generate_idea_dialogue import generate_next_question, summarize_idea_session
+
+# > [!SUMMARY] callout の次行にある要約本文を拾う（Tpl_Permanent.md の固定フォーマット）。
+_SUMMARY_CALLOUT_RE = re.compile(r'^> \[!SUMMARY\].*\n((?:^>.*\n?)*)', re.MULTILINE)
+# tool_create_note の成功文字列 "Success: Created [[filename]] with template." からfilenameを拾う。
+_CREATED_FILENAME_RE = re.compile(r'\[\[(.+?)\]\]')
 
 # /brainstorm の text 引数がオートコンプリート候補から選ばれたことを示す印。
 # 自由入力にはまず出てこない接頭辞なので、通常の新規アイデア開始と衝突しない。
@@ -91,7 +100,7 @@ class WrapUpView(AllowedUserView):
         _brainstorm_sessions.pop(self.thread.id, None)
         try:
             if session:
-                result = await _summarize_and_save(session)
+                result = await _summarize_and_save(session, self.thread)
                 await self.thread.send(f"⌛ 壁打ちの有効期限が切れたため自動的にまとめました。\n{result}")
             if self.message is not None:
                 await self.message.edit(view=self)
@@ -119,7 +128,7 @@ class WrapUpView(AllowedUserView):
         session["busy"] = True
         try:
             await interaction.response.defer()
-            result = await _summarize_and_save(session)
+            result = await _summarize_and_save(session, self.thread)
         finally:
             session["busy"] = False
 
@@ -135,7 +144,81 @@ class WrapUpView(AllowedUserView):
         await interaction.followup.send(f"✅ {result}")
 
 
-async def _summarize_and_save(session: dict) -> str:
+class RelatedNotesView(AllowedUserView):
+    """関連ノート通知の「全部リンクする/スキップ」ボタン。WrapUpViewと違い一発ボタンで
+    セッション辞書を持たない (押した時点で idea_filename/candidate_filenames は確定済み)。
+    """
+
+    def __init__(self, idea_filename: str, candidate_filenames: list[str]):
+        super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
+        self.idea_filename = idea_filename
+        self.candidate_filenames = candidate_filenames
+        self.message: discord.Message | None = None
+        # WrapUpViewと同じ連打対策 (grill指摘): busyはdefer()より前に立てる。
+        # 後に立てると2回目のクリックが1回目のdefer中に割り込みチェックをすり抜ける。
+        self.busy = False
+
+    async def _disable_and_edit(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+        self.stop()
+
+    @discord.ui.button(label="🔗 全部リンクする", style=discord.ButtonStyle.success)
+    async def link_all(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.busy:
+            await interaction.response.send_message("⏳ 処理中です。少々お待ちください。", ephemeral=True)
+            return
+        self.busy = True
+        try:
+            await interaction.response.defer()
+            result = await asyncio.to_thread(
+                tool_confirm_related_notes, self.idea_filename, self.candidate_filenames
+            )
+        finally:
+            self.busy = False
+        await self._disable_and_edit()
+        icon = "❌" if is_failure_result(result) else "✅"
+        await interaction.followup.send(f"{icon} {result}")
+
+    @discord.ui.button(label="⏭️ スキップ", style=discord.ButtonStyle.secondary)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.busy:
+            await interaction.response.send_message("⏳ 処理中です。少々お待ちください。", ephemeral=True)
+            return
+        self.busy = True
+        try:
+            await interaction.response.defer()
+        finally:
+            self.busy = False
+        await self._disable_and_edit()
+        await interaction.followup.send("⏭️ スキップしました。")
+
+
+async def _notify_related_notes(target, idea_filename: str, query: str):
+    """Vault内の関連ノート候補を検索し、あれば target (Thread/Channel) に通知する。
+
+    候補0件なら何も送らない (通知疲れ防止)。target は .send を持てば Thread/Channel どちらでも良い
+    — /brainstorm 保存直後は壁打ちスレッド、/idea-relink はコマンド実行チャンネルを渡す。
+    """
+    candidates = await asyncio.to_thread(tool_find_related_notes, query, idea_filename)
+    if not candidates:
+        return
+
+    filenames = [c["filename"] for c in candidates]
+    lines = "\n".join(f"- [[{os.path.splitext(f)[0]}]]" for f in filenames)
+    body = f"🔍 **[[{os.path.splitext(idea_filename)[0]}]]** に関連しそうなノートが見つかりました:\n{lines}"
+
+    view = RelatedNotesView(idea_filename, filenames)
+    message = await target.send(body, view=view)
+    view.message = message
+
+
+async def _summarize_and_save(session: dict, thread: discord.Thread) -> str:
     """対話を要約し tool_create_note で保存する。tool 層の規約に合わせ Error 文字列を返す。
 
     session["source_title"] があれば (= /brainstorm が00_inboxのアイデアから始まった)、
@@ -143,6 +226,9 @@ async def _summarize_and_save(session: dict) -> str:
     _extract_and_integrate_sections がこの1行を自動的に「### 関連ノート」へ移設し、
     元のFleeting Noteへのバックリンクになる。保存成功後は元ノートを削除する
     (削除失敗はログのみ、要約自体の成功には影響させない — 副次的な後処理のため)。
+
+    保存成功後、関連ノートの検索・通知も行う (失敗してもこの関数の戻り値には影響させない —
+    削除失敗と同じ「副次的な後処理」の扱い)。
     """
     idea = await asyncio.to_thread(summarize_idea_session, session["seed"], session["turns"])
     if not idea or not idea.get("content"):
@@ -162,6 +248,14 @@ async def _summarize_and_save(session: dict) -> str:
         del_result = await asyncio.to_thread(tool_delete_idea, source_title)
         if is_failure_result(del_result):
             print(f"[bot_commands_idea] ⚠️ Failed to delete source idea [[{source_title}]]: {del_result}")
+
+    if not is_failure_result(result):
+        m = _CREATED_FILENAME_RE.search(result)
+        if m:
+            try:
+                await _notify_related_notes(thread, m.group(1), idea.get("summary", ""))
+            except Exception as e:
+                print(f"[bot_commands_idea] ⚠️ Failed to notify related notes: {e}")
 
     return result
 
@@ -269,3 +363,38 @@ async def handle_brainstorm_reply(message: discord.Message):
         await _send_question(message.channel, question)
     finally:
         session["busy"] = False
+
+
+async def permanent_idea_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """/idea-relink の title 引数向け。30_Mainの完成アイデアノート一覧を候補に出す。"""
+    try:
+        ideas = await asyncio.to_thread(tool_list_permanent_ideas)
+    except Exception:
+        return []
+    current_lower = current.lower()
+    return [
+        app_commands.Choice(name=f"📄 {idea['title']}"[:100], value=idea["title"])
+        for idea in ideas
+        if current_lower in idea["title"].lower()
+    ][:25]
+
+
+async def cmd_idea_relink(interaction: discord.Interaction, title: str):
+    """既存の完成アイデアノートについて、Vault内の関連ノートを能動的に再検索する。"""
+    await interaction.response.defer(ephemeral=True)
+
+    note_content = await asyncio.to_thread(tool_read_note, title)
+    if is_failure_result(note_content):
+        await interaction.followup.send(f"❌ {note_content}", ephemeral=True)
+        return
+
+    m = _SUMMARY_CALLOUT_RE.search(note_content)
+    if m:
+        query = " ".join(line.lstrip('>').strip() for line in m.group(1).splitlines()).strip()
+    else:
+        query = note_content[:200]
+
+    await interaction.followup.send(f"🔍 [[{title}]] の関連ノートを検索します...", ephemeral=True)
+    await _notify_related_notes(interaction.channel, title, query)
