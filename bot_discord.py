@@ -122,6 +122,7 @@ except ImportError:
 
 # 新機能: 記事生成 UI
 from commands import bot_commands_article
+from commands import bot_commands_idea
 from commands import bot_commands_curator
 from commands import bot_commands_calendar
 from commands import bot_commands_tools
@@ -1194,6 +1195,18 @@ async def cmd_persona_list(interaction: discord.Interaction):
 @tree.command(name="article", description="対話形式で自分らしい体験談記事を作成する")
 async def cmd_article(interaction: discord.Interaction):
     await bot_commands_article.cmd_article(interaction)
+
+
+@tree.command(name="idea", description="雑なアイデアを1文のままVaultに即保存する")
+@app_commands.describe(text="思いついたことをそのまま（曖昧でOK）")
+async def cmd_idea(interaction: discord.Interaction, text: str):
+    await bot_commands_idea.cmd_idea(interaction, text)
+
+
+@tree.command(name="brainstorm", description="AIと壁打ちしながらアイデアを育て、1枚のメモに要約する")
+@app_commands.describe(text="育てたいアイデアの種（曖昧でOK）")
+async def cmd_brainstorm(interaction: discord.Interaction, text: str):
+    await bot_commands_idea.cmd_brainstorm(interaction, text)
 # ---------------------------------------------------------
 # Webhook Listener (HTTP Shortcuts → Obsidian)
 # ---------------------------------------------------------
@@ -1221,6 +1234,7 @@ async def on_message(message: discord.Message):
     # --- 記事生成スレッドのメッセージ処理 ---
     if isinstance(message.channel, discord.Thread):
         await bot_commands_article.handle_article_reply(message)
+        await bot_commands_idea.handle_brainstorm_reply(message)
 
     # --- Chat Session Handler ---
     user_id = message.author.id
