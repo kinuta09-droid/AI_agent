@@ -1214,12 +1214,14 @@ def tool_vault_hybrid_search(query: str, top_k: int = 5,
     return header + "\n\n".join(_format_hit(h) for h in hits)
 
 
-def tool_find_related_notes(query: str, exclude_filename: str = "", top_k: int = 5) -> list[dict]:
+def tool_find_related_notes(query: str, exclude_filename: str = "", top_k: int = 8) -> list[dict]:
     """アイデアの関連ノート候補を探す薄いラッパー。_hybrid_hits の構造化結果をそのまま使う。
 
     exclude_filename はアイデア自身のノート（自己ヒット除外用、拡張子・大小文字を無視して比較）。
     しきい値は設けない — v1は「除外後0件か否か」のみで判定する。
-    top_k は既定5（当初3で運用し、実例で5位相当の関連ノートが枠から漏れたため引き上げ済み）。
+    top_k は既定8（3→5→8と変遷: 通知UIが全自動リンクのボタン方式だった頃はノイズを避けて
+    小さく保っていたが、チェック式選択（RelatedNotesSelect）に変えて関係の薄い候補を
+    ユーザーが個別に外せるようになったため、取りこぼしより候補を広めに出す方向へ倒した）。
     # ponytail: スコア閾値なしの簡易版。ノイズが実害になったら scripts/eval_retrieval.py と
     # 同じ方法論で閾値を計測して足す
     """

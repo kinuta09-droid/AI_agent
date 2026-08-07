@@ -456,7 +456,8 @@ def tag_untagged_clips(limit: int = 20) -> str:
 
 
 def tool_confirm_related_notes(idea_filename: str, candidate_filenames: list[str]) -> str:
-    """関連ノート通知で「全部リンクする」が選ばれた際の確定処理。
+    """関連ノート通知でチェック式メニューから選ばれた候補を確定する処理。
+    candidate_filenames は通知した全候補ではなく、ユーザーが選択したサブセット。
 
     アイデア自身と各候補に同じ階層タグ idea/<タイトル> を付け、アイデア側の
     ### 関連ノート にwikilinkを追記する。連番ID方式はやめ、既に一意な

@@ -274,7 +274,32 @@ def test_cmd_idea_relink_read_failure_skips_notify():
 # RelatedNotesView
 # ---------------------------------------------------------
 
-async def _run_related_notes_view_link_all_success_icon():
+async def _run_related_notes_view_defaults_to_all_selected():
+    """Select操作前は全候補が選択済み扱い (SelectOptionのdefault=Trueと揃える)。"""
+    view = idea_mod.RelatedNotesView("アイデア.md", ["候補1.md", "候補2.md"])
+    assert view.selected == ["候補1.md", "候補2.md"], view.selected
+
+
+def test_related_notes_view_defaults_to_all_selected():
+    asyncio.run(_run_related_notes_view_defaults_to_all_selected())
+    print("✅ [10a] RelatedNotesView: 未操作なら全候補が選択済み扱い")
+
+
+async def _run_related_notes_select_callback_updates_view_selected():
+    view = idea_mod.RelatedNotesView("アイデア.md", ["候補1.md", "候補2.md"])
+    select = next(c for c in view.children if isinstance(c, idea_mod.RelatedNotesSelect))
+    select._values = ["候補1.md"]  # discord.pyのSelect.valuesはinteraction.data由来だがテストでは直接設定
+    interaction = _make_fake_interaction(1)
+    await select.callback(interaction)
+    assert view.selected == ["候補1.md"], view.selected
+
+
+def test_related_notes_select_callback_updates_view_selected():
+    asyncio.run(_run_related_notes_select_callback_updates_view_selected())
+    print("✅ [10b] RelatedNotesSelect.callback: 選択結果をview.selectedへ反映する")
+
+
+async def _run_related_notes_view_confirm_success_icon():
     orig = idea_mod.tool_confirm_related_notes
     try:
         idea_mod.tool_confirm_related_notes = lambda idea_filename, candidates: (
@@ -282,7 +307,7 @@ async def _run_related_notes_view_link_all_success_icon():
         )
         view = idea_mod.RelatedNotesView("アイデア.md", ["候補1.md", "候補2.md"])
         interaction = _make_fake_interaction(1)
-        await view.link_all.callback(interaction)
+        await view.confirm.callback(interaction)
     finally:
         idea_mod.tool_confirm_related_notes = orig
 
@@ -290,12 +315,12 @@ async def _run_related_notes_view_link_all_success_icon():
     assert sent.startswith("✅"), sent
 
 
-def test_related_notes_view_link_all_success_icon():
-    asyncio.run(_run_related_notes_view_link_all_success_icon())
-    print("✅ [10] RelatedNotesView.link_all: 成功時は✅ (✅ハードコード禁止規約)")
+def test_related_notes_view_confirm_success_icon():
+    asyncio.run(_run_related_notes_view_confirm_success_icon())
+    print("✅ [10] RelatedNotesView.confirm: 成功時は✅ (✅ハードコード禁止規約)")
 
 
-async def _run_related_notes_view_link_all_calls_confirm_once_and_failure_icon():
+async def _run_related_notes_view_confirm_calls_once_with_selected_subset_and_failure_icon():
     calls = {"n": 0, "args": None}
 
     def _confirm(idea_filename, candidates):
@@ -306,24 +331,25 @@ async def _run_related_notes_view_link_all_calls_confirm_once_and_failure_icon()
     orig = idea_mod.tool_confirm_related_notes
     try:
         idea_mod.tool_confirm_related_notes = _confirm
-        view = idea_mod.RelatedNotesView("アイデア.md", ["候補1.md"])
+        view = idea_mod.RelatedNotesView("アイデア.md", ["候補1.md", "候補2.md"])
+        view.selected = ["候補1.md"]  # ユーザーが候補2のチェックを外した状態を模す
         interaction = _make_fake_interaction(1)
-        await view.link_all.callback(interaction)
+        await view.confirm.callback(interaction)
     finally:
         idea_mod.tool_confirm_related_notes = orig
 
     assert calls["n"] == 1, f"tool_confirm_related_notesが1回だけ呼ばれていない: {calls['n']}"
-    assert calls["args"] == ("アイデア.md", ["候補1.md"]), calls["args"]
+    assert calls["args"] == ("アイデア.md", ["候補1.md"]), f"外した候補2が含まれてしまった: {calls['args']}"
     sent = interaction.followup.send.call_args[0][0]
     assert sent.startswith("❌"), sent
 
 
-def test_related_notes_view_link_all_calls_confirm_once_and_failure_icon():
-    asyncio.run(_run_related_notes_view_link_all_calls_confirm_once_and_failure_icon())
-    print("✅ [11] RelatedNotesView.link_all: tool_confirm_related_notesを1回だけ呼び失敗時は❌")
+def test_related_notes_view_confirm_calls_once_with_selected_subset_and_failure_icon():
+    asyncio.run(_run_related_notes_view_confirm_calls_once_with_selected_subset_and_failure_icon())
+    print("✅ [11] RelatedNotesView.confirm: 選択したサブセットだけでtool_confirm_related_notesを1回呼び失敗時は❌")
 
 
-async def _run_related_notes_view_skip_does_not_call_confirm():
+async def _run_related_notes_view_confirm_empty_selection_skips():
     called = {"n": 0}
 
     def _counting(*a, **k):
@@ -334,22 +360,23 @@ async def _run_related_notes_view_skip_does_not_call_confirm():
     try:
         idea_mod.tool_confirm_related_notes = _counting
         view = idea_mod.RelatedNotesView("アイデア.md", ["候補1.md"])
+        view.selected = []  # 全チェックを外した状態
         interaction = _make_fake_interaction(1)
-        await view.skip.callback(interaction)
+        await view.confirm.callback(interaction)
     finally:
         idea_mod.tool_confirm_related_notes = orig
 
-    assert called["n"] == 0, "スキップなのにtool_confirm_related_notesが呼ばれた"
+    assert called["n"] == 0, "選択なしなのにtool_confirm_related_notesが呼ばれた"
     sent = interaction.followup.send.call_args[0][0]
     assert "スキップ" in sent, sent
 
 
-def test_related_notes_view_skip_does_not_call_confirm():
-    asyncio.run(_run_related_notes_view_skip_does_not_call_confirm())
-    print("✅ [12] RelatedNotesView.skip: tool_confirm_related_notesを呼ばない")
+def test_related_notes_view_confirm_empty_selection_skips():
+    asyncio.run(_run_related_notes_view_confirm_empty_selection_skips())
+    print("✅ [12] RelatedNotesView.confirm: 選択なしで確定するとtool_confirm_related_notesを呼ばずスキップ")
 
 
-async def _run_related_notes_view_link_all_double_click_does_not_double_process():
+async def _run_related_notes_view_confirm_double_click_does_not_double_process():
     """WrapUpViewで一度grillが検出した連打バグ (test_idea_brainstorm.py [1]) と同型の回帰。
     busyフラグをdefer()より前に立てないと、2回目のクリックが1回目のdefer中に割り込んで
     tool_confirm_related_notesが二重に走ってしまう。
@@ -371,16 +398,16 @@ async def _run_related_notes_view_link_all_double_click_does_not_double_process(
         i1.response.defer.side_effect = _slow_defer
         i2.response.defer.side_effect = _slow_defer
 
-        await asyncio.gather(view.link_all.callback(i1), view.link_all.callback(i2))
+        await asyncio.gather(view.confirm.callback(i1), view.confirm.callback(i2))
     finally:
         idea_mod.tool_confirm_related_notes = orig
 
     assert calls["n"] == 1, f"busyガードが効かず二重にtool_confirm_related_notesが走った (n={calls['n']})"
 
 
-def test_related_notes_view_link_all_double_click_does_not_double_process():
-    asyncio.run(_run_related_notes_view_link_all_double_click_does_not_double_process())
-    print("✅ [13] RelatedNotesView.link_all: 連打してもtool_confirm_related_notesは1回だけ")
+def test_related_notes_view_confirm_double_click_does_not_double_process():
+    asyncio.run(_run_related_notes_view_confirm_double_click_does_not_double_process())
+    print("✅ [13] RelatedNotesView.confirm: 連打してもtool_confirm_related_notesは1回だけ")
 
 
 if __name__ == "__main__":

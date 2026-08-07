@@ -144,19 +144,43 @@ class WrapUpView(AllowedUserView):
         await interaction.followup.send(f"✅ {result}")
 
 
+class RelatedNotesSelect(discord.ui.Select):
+    """関連ノート候補のチェック式選択（min_values=0で「全部外して確定」もスキップとして許容）。
+    既定で全候補を選択済みにする — 大半は使う想定なので、関係の薄い候補だけ外す方が手間が少ない。
+    """
+
+    def __init__(self, candidate_filenames: list[str]):
+        options = [
+            discord.SelectOption(
+                label=os.path.splitext(f)[0][:100], value=f, default=True,
+            )
+            for f in candidate_filenames
+        ]
+        super().__init__(
+            placeholder="紐づけるノートを選択（関係が薄いものは外してください）",
+            min_values=0, max_values=len(options), options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        self.view.selected = self.values
+
+
 class RelatedNotesView(AllowedUserView):
-    """関連ノート通知の「全部リンクする/スキップ」ボタン。WrapUpViewと違い一発ボタンで
-    セッション辞書を持たない (押した時点で idea_filename/candidate_filenames は確定済み)。
+    """関連ノート通知のチェック式選択+確定ボタン。WrapUpViewと違いセッション辞書を持たない
+    (押した時点で idea_filename/candidate_filenames は確定済み)。
     """
 
     def __init__(self, idea_filename: str, candidate_filenames: list[str]):
         super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
         self.idea_filename = idea_filename
         self.candidate_filenames = candidate_filenames
+        self.selected = list(candidate_filenames)  # Selectのdefault=Trueと揃える (未操作なら全選択)
         self.message: discord.Message | None = None
         # WrapUpViewと同じ連打対策 (grill指摘): busyはdefer()より前に立てる。
         # 後に立てると2回目のクリックが1回目のdefer中に割り込みチェックをすり抜ける。
         self.busy = False
+        self.add_item(RelatedNotesSelect(candidate_filenames))
 
     async def _disable_and_edit(self):
         for item in self.children:
@@ -168,35 +192,28 @@ class RelatedNotesView(AllowedUserView):
                 pass
         self.stop()
 
-    @discord.ui.button(label="🔗 全部リンクする", style=discord.ButtonStyle.success)
-    async def link_all(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="✅ 確定", style=discord.ButtonStyle.success, row=1)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.busy:
             await interaction.response.send_message("⏳ 処理中です。少々お待ちください。", ephemeral=True)
             return
         self.busy = True
         try:
             await interaction.response.defer()
-            result = await asyncio.to_thread(
-                tool_confirm_related_notes, self.idea_filename, self.candidate_filenames
-            )
+            if not self.selected:
+                result = None
+            else:
+                result = await asyncio.to_thread(
+                    tool_confirm_related_notes, self.idea_filename, self.selected
+                )
         finally:
             self.busy = False
         await self._disable_and_edit()
+        if result is None:
+            await interaction.followup.send("⏭️ 選択なしのためスキップしました。")
+            return
         icon = "❌" if is_failure_result(result) else "✅"
         await interaction.followup.send(f"{icon} {result}")
-
-    @discord.ui.button(label="⏭️ スキップ", style=discord.ButtonStyle.secondary)
-    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.busy:
-            await interaction.response.send_message("⏳ 処理中です。少々お待ちください。", ephemeral=True)
-            return
-        self.busy = True
-        try:
-            await interaction.response.defer()
-        finally:
-            self.busy = False
-        await self._disable_and_edit()
-        await interaction.followup.send("⏭️ スキップしました。")
 
 
 async def _notify_related_notes(target, idea_filename: str, query: str):
@@ -211,7 +228,10 @@ async def _notify_related_notes(target, idea_filename: str, query: str):
 
     filenames = [c["filename"] for c in candidates]
     lines = "\n".join(f"- [[{os.path.splitext(f)[0]}]]" for f in filenames)
-    body = f"🔍 **[[{os.path.splitext(idea_filename)[0]}]]** に関連しそうなノートが見つかりました:\n{lines}"
+    body = (
+        f"🔍 **[[{os.path.splitext(idea_filename)[0]}]]** に関連しそうなノートが見つかりました"
+        f"（全て選択済み・関係が薄いものはメニューで外してください）:\n{lines}"
+    )
 
     view = RelatedNotesView(idea_filename, filenames)
     message = await target.send(body, view=view)
