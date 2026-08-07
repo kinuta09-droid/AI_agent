@@ -101,6 +101,7 @@ def _install_module_stubs():
 _install_module_stubs()
 
 import tools.tool_obsidian as tobs  # noqa: E402
+import lib.lib_shared as _ls  # noqa: E402
 
 
 def _isolate_gemini_counter() -> str:
@@ -138,24 +139,51 @@ created: {{date}}
 - ここに詳細を書く
 '''
 
+FLEETING_TEMPLATE = '''---
+created: {{date}} {{time}}
+tags:
+  - type/fleeting
+status: open
+---
+
+# 📝 {{title}}
+
+> [!INFO] コンテキスト
+> （何を見て、何をしている時に思いついたか？）
+
+- [ ] メモ書き
+'''
+
 
 class _Vault:
     """一時 Vault を作り、tool_obsidian の定数をそこへ向ける。"""
 
-    def __init__(self, with_template: bool = True):
+    def __init__(self, with_template: bool = True, with_fleeting_template: bool = False):
         self.root = tempfile.mkdtemp(prefix="create_note_vault_")
         self._with_template = with_template
+        self._with_fleeting_template = with_fleeting_template
         self.cli_calls = []
 
     def __enter__(self):
         self._saved_work_dir = tobs.WORK_DIR
         self._saved_cli = tobs.run_obsidian_cli
+        # find_file_in_vault (tool_delete_idea/tool_read_note が使う) は lib_shared 自身の
+        # WORK_DIR/VAULT_ROOT を参照するため、tobs.WORK_DIR だけでは効かない。両方向ける。
+        self._saved_ls_work_dir = _ls.WORK_DIR
+        self._saved_ls_vault_root = _ls.VAULT_ROOT
         tobs.WORK_DIR = self.root
+        _ls.WORK_DIR = self.root
+        _ls.VAULT_ROOT = self.root
         if self._with_template:
             tpl = os.path.join(self.root, '99_Assets', 'Templates', 'Tpl_Permanent.md')
             os.makedirs(os.path.dirname(tpl), exist_ok=True)
             with open(tpl, 'w', encoding='utf-8') as f:
                 f.write(TEMPLATE)
+        if self._with_fleeting_template:
+            tpl = os.path.join(self.root, '99_Assets', 'Templates', 'Tpl_Fleeting.md')
+            os.makedirs(os.path.dirname(tpl), exist_ok=True)
+            with open(tpl, 'w', encoding='utf-8') as f:
+                f.write(FLEETING_TEMPLATE)
 
         def _fake_cli(args, **kw):
             # 本物は Obsidian を起動する。テストでは呼ばれた事実だけ記録する。
@@ -168,11 +196,17 @@ class _Vault:
     def __exit__(self, *exc):
         tobs.WORK_DIR = self._saved_work_dir
         tobs.run_obsidian_cli = self._saved_cli
+        _ls.WORK_DIR = self._saved_ls_work_dir
+        _ls.VAULT_ROOT = self._saved_ls_vault_root
         shutil.rmtree(self.root, ignore_errors=True)
         return False
 
     def main_files(self) -> list:
         d = os.path.join(self.root, '30_Main')
+        return sorted(os.listdir(d)) if os.path.isdir(d) else []
+
+    def inbox_files(self) -> list:
+        d = os.path.join(self.root, '00_inbox')
         return sorted(os.listdir(d)) if os.path.isdir(d) else []
 
 
@@ -248,12 +282,103 @@ def test_no_production_side_effects():
           type(ls.client).__name__)
 
 
+# ---------------------------------------------------------
+# 5. tool_save_idea: 00_inbox に status:open のFleeting Noteとして保存する
+# ---------------------------------------------------------
+
+def test_save_idea_creates_fleeting_note():
+    print("\n[5] tool_save_idea が00_inboxにFleeting Noteを作る")
+    with _Vault(with_template=False, with_fleeting_template=True) as v:
+        result = tobs.tool_save_idea("テスト用の雑なアイデア")
+        check("Error を返さない", not result.startswith("Error"), result)
+        files = v.inbox_files()
+        check("00_inboxにファイルができる", len(files) == 1, str(files))
+        if files:
+            with open(os.path.join(v.root, '00_inbox', files[0]), encoding='utf-8') as f:
+                body = f.read()
+            check("status: open が入っている", "status: open" in body, body[:120])
+            check("本文が入っている", "テスト用の雑なアイデア" in body, body)
+
+
+# ---------------------------------------------------------
+# 6. tool_save_idea: 同名衝突は上書きせず接尾辞で退避する
+# ---------------------------------------------------------
+
+def test_save_idea_duplicate_gets_suffix():
+    print("\n[6] tool_save_idea の同名衝突は接尾辞で退避する")
+    with _Vault(with_template=False, with_fleeting_template=True) as v:
+        tobs.tool_save_idea("同じ書き出しのアイデア")
+        tobs.tool_save_idea("同じ書き出しのアイデア")
+        files = v.inbox_files()
+        check("2件になる (上書きしていない)", len(files) == 2, str(files))
+
+
+# ---------------------------------------------------------
+# 7. tool_list_open_ideas: status:open のみ返し、done は除外する
+# ---------------------------------------------------------
+
+def test_list_open_ideas_filters_status():
+    print("\n[7] tool_list_open_ideas はstatus:openのみ返す")
+    with _Vault(with_template=False, with_fleeting_template=True) as v:
+        tobs.tool_save_idea("公開中のアイデア")
+        inbox_dir = os.path.join(v.root, '00_inbox')
+        with open(os.path.join(inbox_dir, 'Done.md'), 'w', encoding='utf-8') as f:
+            f.write("---\nstatus: done\n---\n\n処理済み")
+        ideas = tobs.tool_list_open_ideas()
+        titles = [i["title"] for i in ideas]
+        check("openのものが含まれる", "公開中のアイデア" in titles, str(titles))
+        check("doneのものは除外される", "Done" not in titles, str(titles))
+
+
+# ---------------------------------------------------------
+# 8. tool_delete_idea: 削除できる/無いものはExceptionを投げずErrorを返す
+# ---------------------------------------------------------
+
+def test_delete_idea():
+    print("\n[8] tool_delete_idea は削除でき、無い場合はErrorを返す")
+    with _Vault(with_template=False, with_fleeting_template=True) as v:
+        tobs.tool_save_idea("削除されるアイデア")
+        files_before = v.inbox_files()
+        title = os.path.splitext(files_before[0])[0]
+        result = tobs.tool_delete_idea(title)
+        check("Error を返さない", not result.startswith("Error"), result)
+        check("ファイルが消えている", v.inbox_files() == [], str(v.inbox_files()))
+
+        result2 = tobs.tool_delete_idea("存在しないタイトル")
+        check("無いものはError文字列を返す (例外を投げない)",
+              result2.startswith("Error"), result2)
+
+
+# ---------------------------------------------------------
+# 9. tool_delete_idea: 00_inbox以外の同名ファイルを誤って削除しない (grill指摘の回帰)
+# ---------------------------------------------------------
+
+def test_delete_idea_does_not_touch_other_folders():
+    print("\n[9] tool_delete_idea は00_inbox以外の同名ファイルを消さない")
+    with _Vault(with_template=False, with_fleeting_template=True) as v:
+        main_dir = os.path.join(v.root, '30_Main')
+        os.makedirs(main_dir, exist_ok=True)
+        # 要約後に30_Mainへ保存された本ノートが、たまたま元アイデアと同じ題名になったケースを模する。
+        with open(os.path.join(main_dir, '同題.md'), 'w', encoding='utf-8') as f:
+            f.write("本ノート(残すべき)")
+        tobs.tool_save_idea("同題")  # 00_inbox/同題.md を作る
+
+        result = tobs.tool_delete_idea("同題")
+        check("Error を返さない", not result.startswith("Error"), result)
+        check("00_inboxのFleeting Noteだけ消える", v.inbox_files() == [], str(v.inbox_files()))
+        check("30_Mainの本ノートは残る",
+              os.path.exists(os.path.join(main_dir, '同題.md')), "30_Mainの本ノートが消えてしまった")
+
+
 def main() -> int:
     print("=" * 60)
     print("tool_create_note 保存パステスト (密閉)")
     print("=" * 60)
     for fn in (test_no_double_folder, test_duplicate_gets_suffix,
-               test_without_template, test_no_production_side_effects):
+               test_without_template, test_no_production_side_effects,
+               test_save_idea_creates_fleeting_note, test_save_idea_duplicate_gets_suffix,
+               test_list_open_ideas_filters_status, test_delete_idea,
+               test_delete_idea_does_not_touch_other_folders):
         fn()
 
     print("\n" + "=" * 60)

@@ -124,36 +124,38 @@ def test_on_timeout_summarizes_when_idle():
 
 
 async def _run_cmd_idea_sanitizes_newlines_in_filename():
+    # cmd_idea は tool_save_idea (00_inbox 保存) を呼ぶ。入力の改行そのものはファイル名生成に
+    # 使わなくなった (フェーズ2で tool_save_idea 側に移設) が、実I/Oを一切させないことを保証する。
     captured = {}
 
-    def _fake_create_note(filename, content, summary=""):
-        captured["filename"] = filename
+    def _fake_save_idea(text):
+        captured["text"] = text
         return "Success: ok"
 
-    orig = idea_mod.tool_create_note
+    orig = idea_mod.tool_save_idea
     try:
-        idea_mod.tool_create_note = _fake_create_note
+        idea_mod.tool_save_idea = _fake_save_idea
         interaction = _make_fake_interaction(1)
         await idea_mod.cmd_idea(interaction, "改行\nを含む\nアイデア")
     finally:
-        idea_mod.tool_create_note = orig
+        idea_mod.tool_save_idea = orig
 
-    assert "\n" not in captured["filename"], f"ファイル名に改行が残っている: {captured['filename']!r}"
+    assert captured.get("text") == "改行\nを含む\nアイデア", f"tool_save_idea に渡す text が壊れている: {captured!r}"
 
 
 def test_cmd_idea_sanitizes_newlines_in_filename():
     asyncio.run(_run_cmd_idea_sanitizes_newlines_in_filename())
-    print("✅ [4] cmd_idea: 改行を含む入力でもファイル名が壊れない")
+    print("✅ [4] cmd_idea: 改行を含む入力でも実I/Oを一切せずtool_save_ideaに委譲する")
 
 
 async def _run_cmd_idea_icon_reflects_failure():
-    orig = idea_mod.tool_create_note
+    orig = idea_mod.tool_save_idea
     try:
-        idea_mod.tool_create_note = lambda *a, **k: "Error creating note: disk full"
+        idea_mod.tool_save_idea = lambda *a, **k: "Error saving idea: disk full"
         interaction = _make_fake_interaction(1)
         await idea_mod.cmd_idea(interaction, "test")
     finally:
-        idea_mod.tool_create_note = orig
+        idea_mod.tool_save_idea = orig
 
     sent = interaction.followup.send.call_args[0][0]
     assert sent.startswith("❌"), f"失敗時に✅が出ている (ハードコード✅禁止規約違反): {sent}"
@@ -161,7 +163,111 @@ async def _run_cmd_idea_icon_reflects_failure():
 
 def test_cmd_idea_icon_reflects_failure():
     asyncio.run(_run_cmd_idea_icon_reflects_failure())
-    print("✅ [5] cmd_idea: tool_create_note失敗時は❌ (✅ハードコード禁止規約)")
+    print("✅ [5] cmd_idea: tool_save_idea失敗時は❌ (✅ハードコード禁止規約)")
+
+
+async def _run_idea_autocomplete_filters_and_prefixes():
+    orig = idea_mod.tool_list_open_ideas
+    try:
+        idea_mod.tool_list_open_ideas = lambda *a, **k: [
+            {"title": "音声作品", "mtime": 2}, {"title": "催眠もの", "mtime": 1}
+        ]
+        choices = await idea_mod.idea_autocomplete(_make_fake_interaction(1), "音声")
+    finally:
+        idea_mod.tool_list_open_ideas = orig
+
+    assert len(choices) == 1, f"部分一致フィルタが効いていない: {choices}"
+    assert choices[0].value == "idea:音声作品", choices[0].value
+
+
+def test_idea_autocomplete_filters_and_prefixes():
+    asyncio.run(_run_idea_autocomplete_filters_and_prefixes())
+    print("✅ [6] idea_autocomplete: 部分一致でフィルタし idea: prefixを付ける")
+
+
+async def _run_cmd_brainstorm_loads_idea_seed():
+    interaction = _make_fake_interaction(1)
+    thread = AsyncMock()
+    thread.id = 90010
+    interaction.channel.create_thread = AsyncMock(return_value=thread)
+
+    orig_read, orig_gen = idea_mod.tool_read_note, idea_mod.generate_next_question
+    idea_mod.tool_read_note = lambda title: "元ノートの本文"
+    idea_mod.generate_next_question = lambda seed, turns: "Q1"
+    try:
+        await idea_mod.cmd_brainstorm(interaction, "idea:音声作品")
+        session = idea_mod._brainstorm_sessions.get(thread.id)
+        assert session is not None, "セッションが作られていない"
+        assert session["seed"] == "元ノートの本文", f"seedがtool_read_noteの結果でない: {session['seed']!r}"
+        assert session["source_title"] == "音声作品", session["source_title"]
+    finally:
+        idea_mod.tool_read_note = orig_read
+        idea_mod.generate_next_question = orig_gen
+        idea_mod._brainstorm_sessions.pop(thread.id, None)
+
+
+def test_cmd_brainstorm_loads_idea_seed():
+    asyncio.run(_run_cmd_brainstorm_loads_idea_seed())
+    print("✅ [7] cmd_brainstorm: idea:prefixで元Fleeting Noteを読み込みseedにする")
+
+
+async def _run_summarize_and_save_links_and_deletes_source():
+    session = {"seed": "seed", "turns": [], "source_title": "音声作品"}
+    created, deleted = {}, {}
+
+    orig_summarize, orig_create, orig_delete = (
+        idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea
+    )
+    try:
+        idea_mod.summarize_idea_session = lambda seed, turns: {"title": "T", "summary": "S", "content": "本文"}
+
+        def _fake_create(filename, content, summary=""):
+            created["content"] = content
+            return "Success: saved"
+
+        idea_mod.tool_create_note = _fake_create
+
+        def _fake_delete(title):
+            deleted["title"] = title
+            return "Success: deleted"
+
+        idea_mod.tool_delete_idea = _fake_delete
+        result = await idea_mod._summarize_and_save(session)
+    finally:
+        idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea = (
+            orig_summarize, orig_create, orig_delete
+        )
+
+    assert result == "Success: saved", result
+    assert "> Source: [[音声作品]]" in created.get("content", ""), created
+    assert deleted.get("title") == "音声作品", f"元アイデアが削除呼び出しされていない: {deleted}"
+
+
+def test_summarize_and_save_links_and_deletes_source():
+    asyncio.run(_run_summarize_and_save_links_and_deletes_source())
+    print("✅ [8] _summarize_and_save: Sourceリンクを足し保存成功後に元アイデアを削除する")
+
+
+async def _run_summarize_and_save_delete_failure_does_not_fail_result():
+    session = {"seed": "seed", "turns": [], "source_title": "音声作品"}
+    orig_summarize, orig_create, orig_delete = (
+        idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea
+    )
+    try:
+        idea_mod.summarize_idea_session = lambda seed, turns: {"title": "T", "summary": "S", "content": "本文"}
+        idea_mod.tool_create_note = lambda *a, **k: "Success: saved"
+        idea_mod.tool_delete_idea = lambda title: "Error: not found"
+        result = await idea_mod._summarize_and_save(session)
+    finally:
+        idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea = (
+            orig_summarize, orig_create, orig_delete
+        )
+    assert result == "Success: saved", f"削除失敗が要約の成功結果に影響してしまった: {result}"
+
+
+def test_summarize_and_save_delete_failure_does_not_fail_result():
+    asyncio.run(_run_summarize_and_save_delete_failure_does_not_fail_result())
+    print("✅ [9] _summarize_and_save: 元アイデア削除の失敗は要約の成功結果に影響しない")
 
 
 if __name__ == "__main__":

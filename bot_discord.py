@@ -1204,7 +1204,8 @@ async def cmd_idea(interaction: discord.Interaction, text: str):
 
 
 @tree.command(name="brainstorm", description="AIと壁打ちしながらアイデアを育て、1枚のメモに要約する")
-@app_commands.describe(text="育てたいアイデアの種（曖昧でOK）")
+@app_commands.describe(text="育てたいアイデアの種（曖昧でOK。候補から00_inboxの既存アイデアも選べる）")
+@app_commands.autocomplete(text=bot_commands_idea.idea_autocomplete)
 async def cmd_brainstorm(interaction: discord.Interaction, text: str):
     await bot_commands_idea.cmd_brainstorm(interaction, text)
 # ---------------------------------------------------------

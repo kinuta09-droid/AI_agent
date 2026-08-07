@@ -11,12 +11,19 @@ bot_commands_article.py と同じ自己完結スタイル (init_helpers 不要)�
 (article の _article_sessions と同じ耐久性)。
 """
 import discord
+from discord import app_commands
 import asyncio
 
-from tools.tool_obsidian import tool_create_note
+from tools.tool_obsidian import (
+    tool_create_note, tool_save_idea, tool_list_open_ideas, tool_delete_idea, tool_read_note,
+)
 from lib.bot_errors import log_command_error, is_failure_result
 from commands.bot_views import AllowedUserView
 from scripts.generate_idea_dialogue import generate_next_question, summarize_idea_session
+
+# /brainstorm の text 引数がオートコンプリート候補から選ばれたことを示す印。
+# 自由入力にはまず出てこない接頭辞なので、通常の新規アイデア開始と衝突しない。
+IDEA_REF_PREFIX = "idea:"
 
 # View の有効期限。/brainstorm の質問メッセージは thread.send() の素の Message
 # (bot トークンで編集できる) であり interaction token 経由ではないため、
@@ -34,18 +41,30 @@ _brainstorm_sessions: dict[int, dict] = {}
 
 
 async def cmd_idea(interaction: discord.Interaction, text: str):
-    """雑なアイデアを1文のままVaultに保存する。"""
+    """雑なアイデアを1文のまま00_inboxにFleeting Noteとして即保存する。"""
     await interaction.response.defer()
     try:
-        # 改行を含むまま24文字切り出すとファイル名の途中に改行が入り、
-        # OS側のパスエラーで「Error creating note」になる (原因が分かりにくい失敗)。
-        # 先に空白類を1個ずつに畳んでから切り出す。
-        filename = " ".join(text.split())[:24] or "idea"
-        result = await asyncio.to_thread(tool_create_note, filename, text)
+        result = await asyncio.to_thread(tool_save_idea, text)
     except Exception as e:
         result = log_command_error("/idea", e)
     icon = "❌" if is_failure_result(result) else "✅"
     await interaction.followup.send(f"{icon} {result}")
+
+
+async def idea_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """/brainstorm の text 引数向け。00_inboxのstatus:openなアイデアを候補に出す。"""
+    try:
+        ideas = await asyncio.to_thread(tool_list_open_ideas)
+    except Exception:
+        return []
+    current_lower = current.lower()
+    return [
+        app_commands.Choice(name=f"💡 {idea['title']}"[:100], value=f"{IDEA_REF_PREFIX}{idea['title']}")
+        for idea in ideas
+        if current_lower in idea["title"].lower()
+    ][:25]
 
 
 class WrapUpView(AllowedUserView):
@@ -117,23 +136,58 @@ class WrapUpView(AllowedUserView):
 
 
 async def _summarize_and_save(session: dict) -> str:
-    """対話を要約し tool_create_note で保存する。tool 層の規約に合わせ Error 文字列を返す。"""
+    """対話を要約し tool_create_note で保存する。tool 層の規約に合わせ Error 文字列を返す。
+
+    session["source_title"] があれば (= /brainstorm が00_inboxのアイデアから始まった)、
+    content先頭に `> Source: [[title]]` を足す。tool_create_note の
+    _extract_and_integrate_sections がこの1行を自動的に「### 関連ノート」へ移設し、
+    元のFleeting Noteへのバックリンクになる。保存成功後は元ノートを削除する
+    (削除失敗はログのみ、要約自体の成功には影響させない — 副次的な後処理のため)。
+    """
     idea = await asyncio.to_thread(summarize_idea_session, session["seed"], session["turns"])
     if not idea or not idea.get("content"):
         return "Error: 要約の生成に失敗しました。"
+
+    content = idea["content"]
+    source_title = session.get("source_title")
+    if source_title:
+        content = f"> Source: [[{source_title}]]\n\n{content}"
+
     filename = (idea.get("title") or session["seed"])[:24]
-    return await asyncio.to_thread(
-        tool_create_note, filename, idea["content"], idea.get("summary", "")
+    result = await asyncio.to_thread(
+        tool_create_note, filename, content, idea.get("summary", "")
     )
+
+    if source_title and not is_failure_result(result):
+        del_result = await asyncio.to_thread(tool_delete_idea, source_title)
+        if is_failure_result(del_result):
+            print(f"[bot_commands_idea] ⚠️ Failed to delete source idea [[{source_title}]]: {del_result}")
+
+    return result
 
 
 async def cmd_brainstorm(interaction: discord.Interaction, text: str):
-    """AIと1問1答を繰り返す壁打ちセッションを開始する。"""
+    """AIと1問1答を繰り返す壁打ちセッションを開始する。
+
+    text が "idea:{title}" (オートコンプリート経由) なら00_inboxの該当ノートを読み込んで
+    シードにする。それ以外は従来通り text をそのまま新規アイデアの種にする。
+    """
     await interaction.response.defer(ephemeral=True)
 
+    source_title = None
+    seed = text
+    if text.startswith(IDEA_REF_PREFIX):
+        source_title = text[len(IDEA_REF_PREFIX):]
+        note_content = await asyncio.to_thread(tool_read_note, source_title)
+        if is_failure_result(note_content):
+            await interaction.followup.send(f"❌ {note_content}", ephemeral=True)
+            return
+        seed = note_content
+
+    display_title = source_title or text
     try:
         thread = await interaction.channel.create_thread(
-            name=f"💡壁打ち: {text[:20]}",
+            name=f"💡壁打ち: {display_title[:20]}",
             type=discord.ChannelType.public_thread,
             auto_archive_duration=60,
         )
@@ -146,16 +200,17 @@ async def cmd_brainstorm(interaction: discord.Interaction, text: str):
         return
 
     await interaction.followup.send(f"スレッドを作成しました: {thread.mention}", ephemeral=True)
-    await thread.send(f"## 💡 壁打ちセッションを開始します\n**お題**: {text}\n\n最初の質問を考え中...")
+    await thread.send(f"## 💡 壁打ちセッションを開始します\n**お題**: {display_title}\n\n最初の質問を考え中...")
 
-    question = await asyncio.to_thread(generate_next_question, text, [])
+    question = await asyncio.to_thread(generate_next_question, seed, [])
     if not question:
         await thread.send("❌ 質問の生成に失敗しました。もう一度 `/brainstorm` を実行してください。")
         return
 
     _brainstorm_sessions[thread.id] = {
         "user_id": interaction.user.id,
-        "seed": text,
+        "seed": seed,
+        "source_title": source_title,
         "turns": [],
         "pending_question": question,
         "busy": False,

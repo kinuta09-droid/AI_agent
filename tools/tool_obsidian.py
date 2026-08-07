@@ -188,25 +188,30 @@ def _determine_parent_moc(content: str) -> str | None:
         print(f"⚠️ MOC determination failed: {e}")
         return None
 
-@retry(max_retries=3)
-def tool_create_note(filename: str, content: str, summary: str = "") -> str:
-    """Vault内に新規ノートを作成する。Templateを使用する。"""
-    print(f"[Tool] 📝 Creating Note: {filename}")
-    filename = filename.replace('\\', '/').split('/')[-1]
-    
-    if not filename.endswith('.md'): filename += '.md'
-    filename = re.sub(r'[\\/:*?"<>|]', '_', filename)
-
-    save_dir = os.path.join(WORK_DIR, '30_Main')
+def _resolve_unique_path(save_dir: str, filename: str) -> tuple[str, str]:
+    """save_dir 内で同名衝突が無いファイル名・パスを返す(上書きせずタイムスタンプ接尾辞で退避)。"""
     save_path = os.path.join(save_dir, filename)
-    template_path = os.path.join(WORK_DIR, '99_Assets', 'Templates', 'Tpl_Permanent.md')
-
     if os.path.exists(save_path):
         timestamp = datetime.datetime.now().strftime('%H%M%S')
         base_name = os.path.splitext(filename)[0]
         filename = f"{base_name}_{timestamp}.md"
         save_path = os.path.join(save_dir, filename)
         print(f"[Tool] ⚠️ File exists, creating with suffix: {filename}")
+    return filename, save_path
+
+
+@retry(max_retries=3)
+def tool_create_note(filename: str, content: str, summary: str = "") -> str:
+    """Vault内に新規ノートを作成する。Templateを使用する。"""
+    print(f"[Tool] 📝 Creating Note: {filename}")
+    filename = filename.replace('\\', '/').split('/')[-1]
+
+    if not filename.endswith('.md'): filename += '.md'
+    filename = re.sub(r'[\\/:*?"<>|]', '_', filename)
+
+    save_dir = os.path.join(WORK_DIR, '30_Main')
+    template_path = os.path.join(WORK_DIR, '99_Assets', 'Templates', 'Tpl_Permanent.md')
+    filename, save_path = _resolve_unique_path(save_dir, filename)
 
     try:
         os.makedirs(save_dir, exist_ok=True)
@@ -258,6 +263,86 @@ def tool_create_note(filename: str, content: str, summary: str = "") -> str:
         return f"Success: Created [[{filename}]] with template."
     except Exception as e:
         return f"Error creating note: {e}"
+
+
+def tool_save_idea(text: str) -> str:
+    """雑なアイデアを00_inboxにFleeting Note (status: open) として即保存する。"""
+    print(f"[Tool] 💡 Saving Idea: {text[:24]}")
+    title = " ".join(text.split())[:24] or "idea"
+    filename = re.sub(r'[\\/:*?"<>|]', '_', title) + '.md'
+
+    save_dir = os.path.join(WORK_DIR, '00_inbox')
+    template_path = os.path.join(WORK_DIR, '99_Assets', 'Templates', 'Tpl_Fleeting.md')
+
+    try:
+        os.makedirs(save_dir, exist_ok=True)
+        filename, save_path = _resolve_unique_path(save_dir, filename)
+
+        note_content = text
+        if os.path.exists(template_path):
+            with open(template_path, 'r', encoding='utf-8') as f:
+                tpl = f.read()
+            now = datetime.datetime.now()
+            tpl = tpl.replace('{{date}}', now.strftime('%Y-%m-%d'))
+            tpl = tpl.replace('{{time}}', now.strftime('%H:%M'))
+            tpl = tpl.replace('{{title}}', os.path.splitext(filename)[0])
+            note_content = tpl.rstrip('\n') + '\n' + text + '\n'
+
+        with open(save_path, 'w', encoding='utf-8') as f:
+            f.write(note_content)
+
+        try:
+            run_obsidian_cli(["open", f"00_inbox/{filename}"])
+        except Exception as e:
+            print(f"[Tool] ⚠️ Failed to trigger Obsidian CLI open: {e}")
+
+        return f"Success: Created [[{filename}]] in 00_inbox."
+    except Exception as e:
+        return f"Error saving idea: {e}"
+
+
+def tool_list_open_ideas(limit: int = 25) -> list[dict]:
+    """00_inbox内の status: open (または未設定) なFleeting Noteを mtime 降順で返す。"""
+    inbox_dir = os.path.join(WORK_DIR, '00_inbox')
+    if not os.path.isdir(inbox_dir):
+        return []
+    items = []
+    for f in os.listdir(inbox_dir):
+        if not f.endswith('.md'):
+            continue
+        path = os.path.join(inbox_dir, f)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, 'r', encoding='utf-8') as fh:
+                head = fh.read(500)
+        except Exception:
+            continue
+        m = re.search(r'^status:\s*(\S+)', head, re.MULTILINE)
+        if m and m.group(1) != 'open':
+            continue
+        items.append({"title": os.path.splitext(f)[0], "mtime": os.path.getmtime(path)})
+    items.sort(key=lambda x: -x["mtime"])
+    return items[:limit] if limit else items
+
+
+def tool_delete_idea(title: str) -> str:
+    """00_inboxのFleeting Noteを削除する(壁打ち完了後の後処理用)。
+
+    find_file_in_vault (vault全域を os.walk で探す) は使わない — 要約後に保存する本ノートが
+    元アイデアと同じ題名になった場合、列挙順次第でそちらを消してしまう恐れがあるため、
+    00_inbox 直下のパスだけを見る (grill 指摘)。
+    """
+    filename = title if title.endswith('.md') else title + '.md'
+    path = os.path.join(WORK_DIR, '00_inbox', filename)
+    if not os.path.exists(path):
+        return f"Error: Idea note {title} not found."
+    try:
+        os.remove(path)
+        return f"Success: Deleted [[{title}]]."
+    except Exception as e:
+        return f"Error deleting idea: {e}"
+
 
 def tool_read_note(filename: str) -> str:
     """Vault内のノートの内容を読み込む"""
