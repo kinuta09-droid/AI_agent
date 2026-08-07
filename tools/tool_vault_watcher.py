@@ -21,10 +21,14 @@ import datetime
 
 from lib.paths import VAULT_ROOT, LOGS_DIR
 from lib.file_lock import FileLock
+from lib.lib_obsidian_utils import format_wikilink, split_heading_anchor
 
 SCAN_DIR = os.path.join(VAULT_ROOT, "30_Main")
 SEEN_MTIMES_CACHE = os.path.join(LOGS_DIR, "vault_insight_seen_mtimes.json")
 INSIGHT_LOG = os.path.join(LOGS_DIR, "vault_insight_log.jsonl")
+CONTRADICTIONS_NOTE = os.path.join(VAULT_ROOT, "00_System", "Vault_Contradictions.md")
+
+_CONTRADICTIONS_HEADER = "# Vault Contradictions\n\n矛盾が検知されたノートの記録。解決したら手動でチェックを付ける。\n\n"
 
 MAX_FILES_PER_RUN = 5
 # own_snippet の上限文字数。判定プロンプトが膨れて雑になるのを防ぐ。
@@ -192,6 +196,33 @@ def _default_notify(message: str) -> None:
     send_discord_notification(message)
 
 
+def _default_write_contradiction(relpath: str, title: str, result: dict) -> None:
+    """矛盾検知を Vault 内の追記専用ノートに永続化する。
+
+    Discord の一過性メッセージと logs/ の JSONL (Obsidianから不可視) にしか
+    残らないと、Known Bug Patterns A の「無言の死」と同型 (検知はしているのに
+    後から誰も見返せない) になるため、検索可能な形で Vault に残す。
+
+    format_wikilink (出す側) / split_heading_anchor (解決する側) を対で使う
+    (CLAUDE.md §E: 片方だけ変えると Obsidian の「開く」ボタンが無言で壊れる)。
+    """
+    own_name, own_heading = split_heading_anchor(os.path.splitext(relpath)[0])
+    related_raw, related_heading = split_heading_anchor(str(result.get("related_note", "")))
+    related_name = os.path.splitext(related_raw)[0] if related_raw else ""
+    own_link = format_wikilink(own_name, own_heading)
+    related_link = format_wikilink(related_name, related_heading) if related_name else "(不明)"
+    timestamp = datetime.datetime.now().isoformat(timespec="seconds")
+    insight = result.get("insight", "")
+
+    os.makedirs(os.path.dirname(CONTRADICTIONS_NOTE), exist_ok=True)
+    if not os.path.exists(CONTRADICTIONS_NOTE):
+        with open(CONTRADICTIONS_NOTE, "w", encoding="utf-8") as f:
+            f.write(_CONTRADICTIONS_HEADER)
+    with open(CONTRADICTIONS_NOTE, "a", encoding="utf-8") as f:
+        f.write(f"- [ ] resolved | {timestamp} | {own_link} ⇔ {related_link}\n"
+                f"  {insight}\n")
+
+
 # ---------------------------------------------------------
 # ログ
 # ---------------------------------------------------------
@@ -246,15 +277,18 @@ def _sanitize_result(result) -> dict:
 
 def check_vault_insights(max_files: int = MAX_FILES_PER_RUN,
                           notify: bool = True,
-                          search_fn=None, llm_fn=None, notify_fn=None) -> str:
+                          search_fn=None, llm_fn=None, notify_fn=None,
+                          contradiction_writer_fn=None) -> str:
     """スケジューラ/Planner/スラッシュコマンド共通のエントリポイント。
 
     ツール層規約通り例外を投げず "Error: ..." を返す。
-    search_fn/llm_fn/notify_fn はテスト用の差し替えフック（既定は実実装）。
+    search_fn/llm_fn/notify_fn/contradiction_writer_fn はテスト用の差し替えフック
+    （既定は実実装）。
     """
     search_fn = search_fn or _default_search
     llm_fn = llm_fn or _call_gemini_notice
     notify_fn = notify_fn or _default_notify
+    contradiction_writer_fn = contradiction_writer_fn or _default_write_contradiction
 
     try:
         # SEEN_MTIMES_CACHE は 03:20 の定時ジョブと手動 /vault_watch の
@@ -304,6 +338,12 @@ def check_vault_insights(max_files: int = MAX_FILES_PER_RUN,
                     _append_insight_log(relpath, title, result)
                 except Exception as e:
                     print(f"[VaultWatcher] ⚠️ ログ書き込みに失敗、続行します: {relpath} ({e})")
+
+                if bool(result.get("notable")) and result.get("relation") == "contradicts":
+                    try:
+                        contradiction_writer_fn(relpath, title, result)
+                    except Exception as e:
+                        print(f"[VaultWatcher] ⚠️ 矛盾記録の書き込みに失敗、続行します: {relpath} ({e})")
 
                 # 1件処理するたびに永続化する。ループ完了後に1回だけ保存する
                 # 設計だと、後続のファイルで例外が起きたとき既にGemini課金・

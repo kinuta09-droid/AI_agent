@@ -28,12 +28,13 @@ from tools import tool_vault_watcher as watcher  # noqa: E402
 
 
 def _reset_watcher(tmp_dir: str) -> str:
-    """SCAN_DIR/SEEN_MTIMES_CACHE/INSIGHT_LOG を tempdir 配下へ差し替える。"""
+    """SCAN_DIR/SEEN_MTIMES_CACHE/INSIGHT_LOG/CONTRADICTIONS_NOTE を tempdir 配下へ差し替える。"""
     scan_dir = os.path.join(tmp_dir, "scan")
     os.makedirs(scan_dir, exist_ok=True)
     watcher.SCAN_DIR = scan_dir
     watcher.SEEN_MTIMES_CACHE = os.path.join(tmp_dir, "seen.json")
     watcher.INSIGHT_LOG = os.path.join(tmp_dir, "log.jsonl")
+    watcher.CONTRADICTIONS_NOTE = os.path.join(tmp_dir, "Vault_Contradictions.md")
     return scan_dir
 
 
@@ -310,6 +311,133 @@ def test_sanitize_result_demotes_incomplete_notable_true():
     assert watcher._sanitize_result(complete) == complete
     assert watcher._sanitize_result("not a dict") == {"notable": False}
     print("✅ [4c] _sanitize_result は必須フィールド欠如のnotable=trueをFalseに落とす")
+
+
+# ---------------------------------------------------------
+# [8] 矛盾記録の永続化 (Feature 2: plans/vault-health-and-contradictions.md)
+# ---------------------------------------------------------
+
+def _notable_result(relation="contradicts"):
+    return {"notable": True, "related_note": "Existing.md",
+            "relation": relation, "insight": "具体的な矛盾点"}
+
+
+def test_contradiction_writer_fires_only_for_contradicts_relation():
+    with tempfile.TemporaryDirectory() as tmp:
+        scan_dir = _reset_watcher(tmp)
+        watcher._save_seen_mtimes({})
+        _write(os.path.join(scan_dir, "extends.md"), "body")
+
+        calls = []
+        result = watcher.check_vault_insights(
+            notify=False,
+            search_fn=lambda query, top_k=5: "(hits)",
+            llm_fn=lambda prompt: _notable_result(relation="extends"),
+            notify_fn=lambda msg: None,
+            contradiction_writer_fn=lambda *a, **kw: calls.append((a, kw)))
+        assert "1件処理" in result, result
+        assert calls == [], f"relation=extends で書き込みが発火した: {calls}"
+    print("✅ [8a] relation=='contradicts' 以外では contradiction_writer_fn が呼ばれない")
+
+
+def test_contradiction_writer_fires_for_contradicts_relation():
+    with tempfile.TemporaryDirectory() as tmp:
+        scan_dir = _reset_watcher(tmp)
+        watcher._save_seen_mtimes({})
+        _write(os.path.join(scan_dir, "contradicts.md"), "body")
+
+        calls = []
+        watcher.check_vault_insights(
+            notify=False,
+            search_fn=lambda query, top_k=5: "(hits)",
+            llm_fn=lambda prompt: _notable_result(relation="contradicts"),
+            notify_fn=lambda msg: None,
+            contradiction_writer_fn=lambda relpath, title, result: calls.append(
+                (relpath, title, result)))
+        assert len(calls) == 1, calls
+        relpath, title, result = calls[0]
+        assert relpath == "contradicts.md", relpath
+        assert result["relation"] == "contradicts", result
+    print("✅ [8b] relation=='contradicts' のときだけ contradiction_writer_fn が呼ばれる")
+
+
+def test_contradiction_writer_not_called_when_sanitized_to_false():
+    """必須フィールド欠如で _sanitize_result が notable=False に落とすケースでは書き込まれない。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        scan_dir = _reset_watcher(tmp)
+        watcher._save_seen_mtimes({})
+        _write(os.path.join(scan_dir, "incomplete.md"), "body")
+
+        calls = []
+        watcher.check_vault_insights(
+            notify=False,
+            search_fn=lambda query, top_k=5: "(hits)",
+            # relation=contradicts だが insight が欠落 -> _sanitize_result が notable=False に降格
+            llm_fn=lambda prompt: {"notable": True, "related_note": "X.md",
+                                    "relation": "contradicts"},
+            notify_fn=lambda msg: None,
+            contradiction_writer_fn=lambda *a, **kw: calls.append((a, kw)))
+        assert calls == [], f"sanitizeでnotable=false化されたのに書き込まれた: {calls}"
+    print("✅ [8c] _sanitize_result による notable 降格時は contradiction_writer_fn が呼ばれない")
+
+
+def test_default_write_contradiction_integration():
+    """実 _default_write_contradiction: ヘッダー・wikilink・checkbox・insightが揃うこと。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        watcher.CONTRADICTIONS_NOTE = os.path.join(tmp, "sub", "Vault_Contradictions.md")
+        watcher._default_write_contradiction(
+            "30_Main/新ノート.md", "新ノート", _notable_result(relation="contradicts"))
+
+        with open(watcher.CONTRADICTIONS_NOTE, encoding="utf-8") as f:
+            content = f.read()
+        assert content.startswith("# Vault Contradictions"), content
+        assert "- [ ] resolved" in content, content
+        assert "[[30_Main/新ノート]]" in content, content
+        assert "[[Existing]]" in content, content
+        assert "具体的な矛盾点" in content, content
+    print("✅ [8d] _default_write_contradiction: ヘッダー/checkbox/wikilink/insightが揃う")
+
+
+def test_default_write_contradiction_appends_without_duplicate_header():
+    with tempfile.TemporaryDirectory() as tmp:
+        watcher.CONTRADICTIONS_NOTE = os.path.join(tmp, "Vault_Contradictions.md")
+        watcher._default_write_contradiction("A.md", "A", _notable_result())
+        watcher._default_write_contradiction("B.md", "B", _notable_result())
+
+        with open(watcher.CONTRADICTIONS_NOTE, encoding="utf-8") as f:
+            content = f.read()
+        assert content.count("# Vault Contradictions") == 1, content
+        assert "[[A]]" in content and "[[B]]" in content, content
+    print("✅ [8e] 追記のみ・ヘッダー重複なし (2回の矛盾検知をまたいで)")
+
+
+def test_check_vault_insights_survives_contradiction_writer_exception():
+    with tempfile.TemporaryDirectory() as tmp:
+        scan_dir = _reset_watcher(tmp)
+        watcher._save_seen_mtimes({})
+        _write(os.path.join(scan_dir, "note.md"), "body")
+
+        def _raise(*_a, **_kw):
+            raise RuntimeError("disk full")
+
+        result = watcher.check_vault_insights(
+            notify=False,
+            search_fn=lambda query, top_k=5: "(hits)",
+            llm_fn=lambda prompt: _notable_result(),
+            notify_fn=lambda msg: None,
+            contradiction_writer_fn=_raise)
+        assert "1件処理" in result, result
+        assert not result.startswith("Error:"), result
+    print("✅ [8f] contradiction_writer_fn が例外を投げても check_vault_insights 全体は失敗しない")
+
+
+def test_wikilink_split_heading_roundtrip_for_related_note_with_anchor():
+    """related_note に #見出し が混ざっても壊れたリンクにならない (format/split の対応関係)。"""
+    from lib.lib_obsidian_utils import format_wikilink, split_heading_anchor
+    name, heading = split_heading_anchor("Existing.md#背景")
+    assert (name, heading) == ("Existing.md", "背景"), (name, heading)
+    assert format_wikilink(name, heading) == "[[Existing.md#背景]]"
+    print("✅ [8g] format_wikilink/split_heading_anchor の対応関係")
 
 
 if __name__ == "__main__":

@@ -102,6 +102,14 @@ except ImportError as _e:
     def check_vault_insights(*args, **kwargs):
         return f"Vault Insight Watcher: tool_vault_watcher not available ({_vault_watcher_err})"
 
+# Vault Health (optional — Vault Semantic Index と同じ扱い)
+try:
+    from tools.tool_vault_health import check_vault_health
+except ImportError as _e:
+    _vault_health_err = str(_e)
+    def check_vault_health():
+        return f"Vault Health: tool_vault_health not available ({_vault_health_err})"
+
 # ボタンの custom_id は bot プロセス側の永続 View (commands/bot_views.py) と
 # 一致させる必要があるため定数を直接 import する (discord.Client は起動しない)
 from commands.bot_views import DIVE_CUSTOM_IDS, SCHEDULER_LOG_CUSTOM_ID
@@ -509,6 +517,16 @@ SCHEDULE = [
         "time": "03:25",
         "name": "Activity Index (行動ログ)",
         "func": update_activity_index,
+    },
+    # Vault Health (Feature 1): 03:25 Activity Index の直後。同じ夜の 03:15
+    # Vault Semantic Index で links/files が最新化された後に読むため。
+    # 週次トレンドとして意味があるのは週1回 (日曜) なので weekday 指定。
+    {
+        "time": "03:30",
+        "name": "Vault Health Check (未使用ノート率)",
+        "func": check_vault_health,
+        "weekday": 6,  # 日曜
+        "catch_up": True,
     },
     {
         "time": "23:30",
