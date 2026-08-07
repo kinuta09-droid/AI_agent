@@ -60,7 +60,7 @@ from tools.tool_crypto import (
 from tools.tool_crypto_watcher import tool_crypto_watch
 from tools.tool_crypto_stats import tool_weekly_crypto_report
 from engine_plan_execute import generate_performance_dashboard
-from tools.tool_obsidian import tool_merge_all_weekly_reports
+from tools.tool_obsidian import tool_merge_all_weekly_reports, tag_untagged_clips
 
 # Vault Semantic Index (optional — import失敗でスケジューラ全体を壊さない)
 try:
@@ -366,6 +366,16 @@ SCHEDULE = [
         "time": "06:00",
         "name": "X Trend Update",
         "func": _run_xtrend,
+    },
+    # Inbox Clip Auto-Tagging: Obsidian Web Clipperが00_inboxに保存したノート(source:持ち)へ
+    # BitNet(無料)でトピックタグ、Gemini(_determine_parent_moc)でMOC候補タグを付与する。
+    # タグ付けした分だけ関数末尾で update_vault_index() を自前で呼ぶ (差分更新なので安価) —
+    # 03:15 Vault Semantic Index はこの朝より前に走るため、ここで拾わないと翌日まで検索に乗らない。
+    {
+        "time": "07:00",
+        "name": "Inbox Clip Auto-Tagging",
+        "func": tag_untagged_clips,
+        "silent": True,  # "0件でした" の定型通知はスパムになるため
     },
     {
         "time": "07:30",

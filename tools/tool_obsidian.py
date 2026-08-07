@@ -371,6 +371,90 @@ def _append_related_note_links(path: str, links: list[str]) -> None:
         f.write(content)
 
 
+_FRONTMATTER_RE = re.compile(r'\A---\n(.*?)\n---\n', re.DOTALL)
+_CLIP_SOURCE_RE = re.compile(r'^source:\s*\S', re.MULTILINE)
+
+
+def tag_untagged_clips(limit: int = 20) -> str:
+    """00_inbox内の未処理Clipノート(Obsidian Web Clipper由来、frontmatterにsource:を持つ)へ
+    BitNetでトピックタグ、GeminiでMOC候補タグ(moc/<name>)を付与する。
+    処理済みは 'clip/processed' タグで判定(状態ファイル無し・毎回全件走査で冪等性確保)。
+    """
+    from tools.tool_bitnet import generate_note_tags
+
+    inbox_dir = os.path.join(WORK_DIR, '00_inbox')
+    if not os.path.isdir(inbox_dir):
+        return "Error: 00_inbox not found."
+
+    processed_count = 0
+    for f in os.listdir(inbox_dir):
+        if processed_count >= limit:
+            break
+        if not f.endswith('.md'):
+            continue
+        path = os.path.join(inbox_dir, f)
+        if not os.path.isfile(path):
+            continue
+
+        try:
+            with open(path, 'r', encoding='utf-8') as fh:
+                content = fh.read()
+        except Exception as e:
+            print(f"[Tool] ⚠️ tag_untagged_clips: failed to read {f}: {e}")
+            continue
+
+        fm_match = _FRONTMATTER_RE.match(content)
+        if not fm_match:
+            continue
+        frontmatter = fm_match.group(1)
+        if not _CLIP_SOURCE_RE.search(frontmatter):
+            continue  # source: が無い = Clipper由来ではない通常のFleeting Note
+
+        tags_match = _TAGS_BLOCK_RE.search(content)
+        if tags_match and any(
+            line.strip() == '- clip/processed' for line in tags_match.group(1).splitlines()
+        ):
+            continue  # 処理済み
+        if not tags_match:
+            # tags: がYAMLブロック形式で存在しないノートは _add_tag_to_note が
+            # 何を書いても黙って無視する = clip/processed も永遠に付かず、この
+            # ノートだけ毎日 Gemini(有料)を呼び続けるコストリークになる。
+            # BitNet/Gemini を呼ぶ前にここで弾き、無駄な呼び出しを避ける。
+            print(f"[Tool] ⚠️ tag_untagged_clips: {f} has no YAML-block tags:, skipping (fix Clipper template)")
+            continue
+
+        body = content[fm_match.end():]  # frontmatterを除いた本文だけをLLMに渡す
+        title = os.path.splitext(f)[0]
+        try:
+            tags = generate_note_tags(title, body[:200])
+            for tag in tags:
+                _add_tag_to_note(path, tag.replace(' ', '-'))
+        except Exception as e:
+            print(f"[Tool] ⚠️ tag_untagged_clips: generate_note_tags failed for {f}: {e}")
+
+        try:
+            parent_moc = _determine_parent_moc(body[:3000])
+            if parent_moc:
+                _add_tag_to_note(path, f"moc/{parent_moc}")
+        except Exception as e:
+            print(f"[Tool] ⚠️ tag_untagged_clips: MOC determination failed for {f}: {e}")
+
+        # ponytail: clip/processed は「成功」ではなく「試行済み」を意味する簡略化。
+        # BitNet/Gemini が両方落ちている間に来たクリップは空タグのまま残る(自動リトライ無し)。
+        # アップグレード: 手動タグ削除以外のリカバリが要るとわかったら、失敗時は processed を付けない設計に変える。
+        _add_tag_to_note(path, "clip/processed")
+        processed_count += 1
+
+    if processed_count > 0:
+        from tools.tool_vault_index import update_vault_index
+        try:
+            update_vault_index()
+        except Exception as e:
+            print(f"[Tool] ⚠️ tag_untagged_clips: update_vault_index failed: {e}")
+
+    return f"Tagged {processed_count} clip note(s)."
+
+
 def tool_confirm_related_notes(idea_filename: str, candidate_filenames: list[str]) -> str:
     """関連ノート通知で「全部リンクする」が選ばれた際の確定処理。
 
