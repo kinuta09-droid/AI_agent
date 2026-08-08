@@ -17,3 +17,4 @@ numpy
 # 論文本文のキャプチャ (docling) はオプション扱い。torch を引き連れて重いため
 # requirements-docling.txt に分離してある。未導入でも Paper Radar/Digest は
 # HTML 抽出にフォールバックして動く (lib/docling_client.py)。
+fal_client  # tools/tool_web_design.py (Phase2画像生成/Phase4動画生成、要 .env の FAL_KEY)

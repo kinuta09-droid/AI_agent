@@ -155,6 +155,26 @@ def _tool_curate_wrapper() -> str:
         return f"Error: {e}"
 
 
+def _tool_web_design_wrapper(action: str, pattern: str = "A", plugins: str = "trail",
+                              image_url: str = "", prompt: str = "", title: str = "",
+                              out: str = "") -> str:
+    """AI駆動型ウェブデザインSOP(.claude/skills/ai-web-design-workflow)の自動化パーツ。
+    action: 'phase2' | 'phase4_video' | 'scaffold_webgl'"""
+    try:
+        from tools.tool_web_design import run_phase2, run_phase4_video, scaffold_webgl
+        if action == "phase2":
+            return run_phase2()
+        if action == "phase4_video":
+            if not image_url:
+                return "Error: image_url is required for phase4_video"
+            return run_phase4_video(image_url, prompt=prompt)
+        if action == "scaffold_webgl":
+            return scaffold_webgl(pattern=pattern, plugins=plugins, title=title or "Your Name", out=out)
+        return f"Error: unknown action '{action}' (expected phase2 | phase4_video | scaffold_webgl)"
+    except Exception as e:
+        return f"[tool_web_design error] {e}"
+
+
 # ---------------------------------------------------------
 # Registry Entries (並び順 = プロンプト表示順)
 # ---------------------------------------------------------
@@ -266,6 +286,10 @@ TOOL_ENTRIES = [
                      "(ハイライト区間の自動選定→トリミング→字幕焼き込み→BGM合成)。"
                      "動画ファイルのパスが必須。テキスト/画像からの新規動画生成には使えない",
      "func": _tool_shorts_from_video_wrapper},
+    {"name": "tool_web_design",
+     "usage": "tool_web_design(action='scaffold_webgl', pattern='A', plugins='trail,bloom', image_url='', prompt='', title='', out='')",
+     "description": "AI駆動型ウェブデザインSOPの自動化パーツ(Phase2背景/UI画像生成、Phase4動画ループ生成、Option BのThree.js雛形生成)",
+     "func": _tool_web_design_wrapper},
 ]
 
 _CACHE = None

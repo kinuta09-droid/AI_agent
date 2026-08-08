@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__ — Option B</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Instrumental+Serif&family=Manrope:wght@400;500;700&display=swap');
+  :root {
+    --bg: #000000; --ink: #f2f0e8; --ink-soft: #a9a79c; --accent: #7fbfa0; --border: #2a2a26;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); }
+  body { font-family: 'Manrope', sans-serif; color: var(--ink); line-height: 1.7; }
+  .hero {
+    position: relative; min-height: 100svh; display: flex; flex-direction: column;
+    justify-content: center; padding: 0 8vw; background: #000; overflow: hidden;
+  }
+  .webgl-canvas { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; display: block; }
+  .hero-fallback-bg {
+    position: absolute; inset: 0; z-index: 0; display: none;
+    background: radial-gradient(circle at 70% 40%, rgba(127,191,160,0.18), rgba(0,0,0,0) 55%), #000;
+  }
+  /* フォールバック1: prefers-reduced-motionではWebGLシーンを起動せず静的背景 */
+  @media (prefers-reduced-motion: reduce) {
+    .webgl-canvas { display: none; }
+    .hero-fallback-bg { display: block; }
+  }
+  /* フォールバック2: WebGL非対応、または?reduce=1 / ?nowebgl=1 で強制トリガーした場合にJSが付与 */
+  .hero.no-webgl .webgl-canvas { display: none; }
+  .hero.no-webgl .hero-fallback-bg { display: block; }
+
+  .hero::before {
+    content: ""; position: absolute; inset: 0; z-index: 1;
+    background: linear-gradient(180deg, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0.15) 40%, rgba(0,0,0,0.78) 100%);
+  }
+  .hero-inner { position: relative; z-index: 2; max-width: 640px; }
+  .eyebrow { font-size: 0.78rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin: 0 0 18px; }
+  h1 {
+    font-family: 'Instrumental Serif', serif; font-weight: 400;
+    font-size: clamp(1.9rem, 5.6vw, 3.2rem); line-height: 1.05; margin: 0 0 20px; text-wrap: balance;
+  }
+  .tagline { font-size: 1.02rem; color: var(--ink-soft); max-width: 46ch; margin: 0 0 30px; }
+
+  .control-row { position: relative; z-index: 3; display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .control-row button, .control-row label {
+    font-family: 'Manrope', sans-serif; font-size: 0.8rem; padding: 8px 14px; border-radius: 999px;
+    border: 1px solid var(--border); background: rgba(0,0,0,0.35); color: var(--ink-soft);
+    cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: border-color .2s, color .2s;
+  }
+  .control-row button.active, .control-row label.active { border-color: var(--accent); color: var(--accent); }
+  .control-group { margin-top: 18px; }
+  .control-group .group-label { font-size: 0.7rem; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); opacity: .7; margin-bottom: 8px; }
+
+  .fps-badge {
+    position: absolute; z-index: 3; right: 8vw; bottom: 24px;
+    font-family: "Cascadia Code", "Consolas", monospace; font-size: 0.72rem; color: var(--ink-soft);
+    letter-spacing: 0.04em; opacity: 0.7; text-align: right;
+  }
+</style>
+</head>
+<body>
+  <section class="hero" id="hero">
+    <canvas class="webgl-canvas" id="webgl-canvas"></canvas>
+    <div class="hero-fallback-bg" aria-hidden="true"></div>
+    <div class="hero-inner">
+      <p class="eyebrow">__EYEBROW__</p>
+      <h1>__TITLE__</h1>
+      <p class="tagline">__TAGLINE__</p>
+
+      <div class="control-group">
+        <div class="group-label">Pattern(何を描くか)</div>
+        <div class="control-row">
+          <button data-pattern="0">A — ネオン管</button>
+          <button data-pattern="1">B — 星雲パーティクル</button>
+          <button data-pattern="2">C — ガラスの破片</button>
+        </div>
+      </div>
+      <div class="control-group">
+        <div class="group-label">PostFX Plugins(どう仕上げるか)</div>
+        <div class="control-row">
+          <label><input type="checkbox" data-plugin="trail" style="accent-color:var(--accent)"> 残像(Afterimage)</label>
+          <label><input type="checkbox" data-plugin="bloom" style="accent-color:var(--accent)"> ブルーム(発光)</label>
+          <label><input type="checkbox" data-plugin="grain" style="accent-color:var(--accent)"> グレイン(質感)</label>
+        </div>
+      </div>
+    </div>
+    <div class="fps-badge" id="fps-badge" aria-hidden="true"></div>
+  </section>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { AfterimagePass } from 'three/addons/postprocessing/AfterimagePass.js';
+import { FilmPass } from 'three/addons/postprocessing/FilmPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+const hero = document.getElementById('hero');
+const canvas = document.getElementById('webgl-canvas');
+const fpsBadge = document.getElementById('fps-badge');
+
+// ---- フォールバック判定(?reduce=1 / ?nowebgl=1 でOS設定なしに強制トリガーできる) ----
+const _qp = new URLSearchParams(location.search);
+const _reducedMotion = _qp.has('reduce')
+  || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+let renderer;
+if (_reducedMotion) {
+  hero.classList.add('no-webgl');
+} else {
+  try {
+    if (_qp.has('nowebgl')) throw new Error('nowebgl forced via query param');
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  } catch (e) {
+    hero.classList.add('no-webgl');
+  }
+}
+
+if (!hero.classList.contains('no-webgl')) {
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+  camera.position.set(0, 0, 6);
+
+  function sizeAll() {
+    const w = hero.clientWidth, h = hero.clientHeight;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    composer && composer.setSize(w, h);
+  }
+
+  const mouse = { x: 0, y: 0 };
+  window.addEventListener('mousemove', (e) => {
+    const rect = hero.getBoundingClientRect();
+    mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = ((e.clientY - rect.top) / rect.height) * 2 - 1;
+  });
+
+  // ================= パターン定義: シーン構築(何を描くか) =================
+  function buildPatternA() {
+    const scene = new THREE.Scene();
+    const knot = new THREE.Mesh(
+      new THREE.TorusKnotGeometry(1.3, 0.42, 180, 24),
+      new THREE.MeshPhysicalMaterial({ color: 0x0d1512, roughness: 0.18, metalness: 0.75, clearcoat: 1, clearcoatRoughness: 0.15 })
+    );
+    scene.add(knot);
+    scene.add(new THREE.AmbientLight(0x1a2420, 1.2));
+    const accentLight = new THREE.PointLight(0x7fbfa0, 22, 20); accentLight.position.set(3, 2, 4); scene.add(accentLight);
+    const rimLight = new THREE.PointLight(0x2a4a3c, 10, 20); rimLight.position.set(-4, -2, -3); scene.add(rimLight);
+    return { scene, damp: 0.84, update: (dt, t) => {
+      knot.rotation.y += dt * 0.25;
+      knot.rotation.x += (mouse.y * 0.4 - knot.rotation.x) * 0.03;
+      knot.rotation.z += (mouse.x * 0.25 - knot.rotation.z) * 0.03;
+      knot.position.y = Math.sin(t * 0.6) * 0.15;
+    }};
+  }
+  function buildPatternB() {
+    const scene = new THREE.Scene();
+    const N = 3200;
+    const positions = new Float32Array(N * 3), colors = new Float32Array(N * 3);
+    const cIn = new THREE.Color(0xdff5e8), cOut = new THREE.Color(0x2f6a58);
+    const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+    for (let i = 0; i < N; i++) {
+      const r = Math.sqrt(i / N) * 3.6, a = i * GOLDEN * 3.0;
+      const spread = (Math.random() - 0.5) * 0.5 * (r * 0.3 + 0.2);
+      positions[i*3] = Math.cos(a) * r; positions[i*3+1] = spread; positions[i*3+2] = Math.sin(a) * r;
+      const c = cIn.clone().lerp(cOut, Math.min(r / 3.6, 1));
+      colors[i*3] = c.r; colors[i*3+1] = c.g; colors[i*3+2] = c.b;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const points = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.035, vertexColors: true, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }));
+    scene.add(points);
+    return { scene, damp: 0.90, update: (dt) => {
+      points.rotation.y += dt * 0.06;
+      points.rotation.x += (mouse.y * 0.15 - points.rotation.x) * 0.02;
+      points.rotation.z += (mouse.x * 0.1 - points.rotation.z) * 0.02;
+    }};
+  }
+  function buildPatternC() {
+    const scene = new THREE.Scene();
+    scene.add(new THREE.AmbientLight(0x1a2420, 1.4));
+    const key = new THREE.PointLight(0x9fd8bd, 14, 20); key.position.set(2, 3, 4); scene.add(key);
+    const shards = [];
+    for (let i = 0; i < 11; i++) {
+      const geo = new THREE.IcosahedronGeometry(0.5 + Math.random() * 0.35, 0);
+      geo.scale(1 + Math.random() * 0.6, 0.4 + Math.random() * 0.5, 1 + Math.random() * 0.6);
+      const mesh = new THREE.Mesh(geo, new THREE.MeshPhysicalMaterial({ color: 0xdfeee8, transparent: true, opacity: 0.22, roughness: 0.08, metalness: 0, clearcoat: 1, side: THREE.DoubleSide }));
+      mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: 0x7fbfa0, transparent: true, opacity: 0.55 })));
+      const radius = 1.2 + Math.random() * 2.4, theta = Math.random() * Math.PI * 2, phi = Math.acos(2 * Math.random() - 1);
+      mesh.position.set(radius * Math.sin(phi) * Math.cos(theta), radius * Math.sin(phi) * Math.sin(theta) * 0.6, radius * Math.cos(phi));
+      mesh.userData.spin = new THREE.Vector3((Math.random()-.5)*.4, (Math.random()-.5)*.4, (Math.random()-.5)*.4);
+      mesh.userData.phase = Math.random() * Math.PI * 2;
+      mesh.userData.baseY = mesh.position.y;
+      scene.add(mesh); shards.push(mesh);
+    }
+    return { scene, damp: 0.93, update: (dt, t) => {
+      shards.forEach((s) => {
+        s.rotation.x += s.userData.spin.x * dt; s.rotation.y += s.userData.spin.y * dt;
+        s.position.y = s.userData.baseY + Math.sin(t * 0.5 + s.userData.phase) * 0.2;
+      });
+    }};
+  }
+
+  const patterns = [buildPatternA(), buildPatternB(), buildPatternC()];
+  let activePattern = __INITIAL_PATTERN_INDEX__;
+
+  // ================= PostFXプラグインレジストリ: 後処理(どう仕上げるか) =================
+  // 「何のシーンを描くか(pattern)」と「どう仕上げるか(plugin)」を分離する。
+  // プラグインは (composer, w, h, ctx) => Pass を返す関数として登録するだけで追加できる。
+  const POSTFX_REGISTRY = {
+    trail: (composer, w, h, ctx) => new AfterimagePass(ctx.pattern.damp ?? 0.9),
+    bloom: (composer, w, h) => new UnrealBloomPass(new THREE.Vector2(w, h), 0.9, 0.4, 0.15),
+    grain: (composer, w, h) => new FilmPass(0.35),
+  };
+  const pluginState = __INITIAL_PLUGINS_JS__;
+
+  let composer;
+  function rebuildComposer() {
+    const w = hero.clientWidth, h = hero.clientHeight;
+    composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(patterns[activePattern].scene, camera));
+    Object.keys(POSTFX_REGISTRY).forEach((name) => {
+      if (pluginState[name]) {
+        composer.addPass(POSTFX_REGISTRY[name](composer, w, h, { pattern: patterns[activePattern] }));
+      }
+    });
+    composer.addPass(new OutputPass()); // 色空間補正の最終パス。省略すると発色がずれる
+    composer.setSize(w, h);
+  }
+
+  function syncControlUI() {
+    document.querySelectorAll('[data-pattern]').forEach((btn) => {
+      btn.classList.toggle('active', parseInt(btn.dataset.pattern, 10) === activePattern);
+    });
+    document.querySelectorAll('[data-plugin]').forEach((cb) => {
+      const on = !!pluginState[cb.dataset.plugin];
+      cb.checked = on;
+      cb.closest('label').classList.toggle('active', on);
+    });
+  }
+
+  sizeAll();
+  rebuildComposer();
+  syncControlUI();
+  window.addEventListener('resize', () => { sizeAll(); });
+
+  document.querySelectorAll('[data-pattern]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      activePattern = parseInt(btn.dataset.pattern, 10);
+      syncControlUI();
+      rebuildComposer();
+    });
+  });
+  document.querySelectorAll('[data-plugin]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      pluginState[cb.dataset.plugin] = cb.checked;
+      cb.closest('label').classList.toggle('active', cb.checked);
+      rebuildComposer();
+    });
+  });
+
+  const clock = new THREE.Clock();
+  let frameCount = 0, fpsAccum = 0;
+  function animate() {
+    requestAnimationFrame(animate);
+    const dt = Math.min(clock.getDelta(), 0.1), t = clock.elapsedTime;
+    patterns[activePattern].update(dt, t);
+    composer.render();
+
+    frameCount++; fpsAccum += dt;
+    if (fpsAccum >= 0.5) {
+      const active = Object.keys(pluginState).filter((k) => pluginState[k]);
+      fpsBadge.textContent = Math.round(frameCount / fpsAccum) + ' fps · Pattern ' + ['A','B','C'][activePattern] + ' · FX: ' + (active.join('+') || 'none');
+      frameCount = 0; fpsAccum = 0;
+    }
+  }
+  animate();
+}
+</script>
+</body>
+</html>

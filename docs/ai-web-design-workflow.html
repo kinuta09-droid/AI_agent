@@ -1,0 +1,361 @@
+<title>AI駆動型ウェブデザイン・量産ワークフロー</title>
+<style>
+  :root {
+    --paper: #f1efe6;
+    --paper-raised: #fbfaf5;
+    --ink: #23241d;
+    --ink-soft: #57584c;
+    --border: #d9d5c4;
+    --moss: #4c5c3c;
+    --moss-soft: #e4e8da;
+    --amber: #9c6a2e;
+    --amber-soft: #f2e6d2;
+    --mono-tag: #6b6a5e;
+    --shadow: 0 1px 2px rgba(35,36,29,0.06), 0 8px 24px -12px rgba(35,36,29,0.18);
+  }
+  :root[data-theme="dark"] {
+    --paper: #17180f;
+    --paper-raised: #1f2015;
+    --ink: #e9e6d8;
+    --ink-soft: #a6a38f;
+    --border: #3a3c28;
+    --moss: #9fbb84;
+    --moss-soft: #262c1c;
+    --amber: #d9a35f;
+    --amber-soft: #2c2416;
+    --mono-tag: #8f8c78;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 8px 24px -12px rgba(0,0,0,0.6);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #17180f;
+      --paper-raised: #1f2015;
+      --ink: #e9e6d8;
+      --ink-soft: #a6a38f;
+      --border: #3a3c28;
+      --moss: #9fbb84;
+      --moss-soft: #262c1c;
+      --amber: #d9a35f;
+      --amber-soft: #2c2416;
+      --mono-tag: #8f8c78;
+      --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 8px 24px -12px rgba(0,0,0,0.6);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Yu Gothic UI", "Yu Gothic", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+    line-height: 1.8;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 64px 24px 120px;
+  }
+
+  h1, h2, h3 {
+    font-family: "Yu Mincho", "YuMincho", "Hiragino Mincho ProN", "MS PMincho", serif;
+    font-weight: 500;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .tag {
+    font-family: "Cascadia Code", "Consolas", "SFMono-Regular", monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    color: var(--mono-tag);
+  }
+
+  /* header */
+  header { margin-bottom: 56px; }
+  header .tag { display: block; margin-bottom: 14px; }
+  header h1 {
+    font-size: clamp(1.7rem, 4vw, 2.35rem);
+    letter-spacing: 0.02em;
+    margin-bottom: 18px;
+  }
+  header p {
+    color: var(--ink-soft);
+    font-size: 0.98rem;
+    max-width: 58ch;
+    margin: 0;
+  }
+  header .source {
+    margin-top: 20px;
+    font-size: 0.82rem;
+    color: var(--ink-soft);
+    border-left: 2px solid var(--border);
+    padding-left: 12px;
+  }
+
+  /* progress rail */
+  .rail {
+    display: flex;
+    gap: 6px;
+    margin: 32px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .rail li {
+    flex: 1;
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    position: relative;
+  }
+  .rail li.optional { background: repeating-linear-gradient(90deg, var(--border) 0 4px, transparent 4px 8px); }
+
+  /* phase */
+  .phase {
+    position: relative;
+    padding: 36px 0 36px 40px;
+    border-left: 1px solid var(--border);
+  }
+  .phase:last-of-type { border-left: 1px solid transparent; padding-bottom: 0; }
+  .phase::before {
+    content: "";
+    position: absolute;
+    left: -6px;
+    top: 40px;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: var(--paper);
+    border: 2px solid var(--moss);
+  }
+  .phase-head {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .phase-num {
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 0.8rem;
+    color: var(--moss);
+    letter-spacing: 0.04em;
+  }
+  .phase h2 { font-size: 1.3rem; letter-spacing: 0.01em; }
+  .phase-optional-badge {
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 0.68rem;
+    color: var(--amber);
+    border: 1px solid var(--amber);
+    border-radius: 3px;
+    padding: 1px 6px;
+    letter-spacing: 0.04em;
+  }
+  .phase-tool {
+    font-size: 0.85rem;
+    color: var(--ink-soft);
+    margin: 4px 0 18px;
+  }
+  .phase-tool b { color: var(--ink); font-weight: 600; }
+
+  /* checklist */
+  ul.checklist { list-style: none; margin: 0 0 18px; padding: 0; }
+  ul.checklist li {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 7px 0;
+    border-bottom: 1px dashed var(--border);
+    font-size: 0.94rem;
+    cursor: pointer;
+    user-select: none;
+  }
+  ul.checklist li:last-child { border-bottom: none; }
+  ul.checklist .box {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    margin-top: 3px;
+    border: 1.5px solid var(--ink-soft);
+    border-radius: 3px;
+    position: relative;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  ul.checklist li.done .box {
+    background: var(--moss);
+    border-color: var(--moss);
+  }
+  ul.checklist li.done .box::after {
+    content: "";
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 4px;
+    height: 8px;
+    border-right: 2px solid var(--paper-raised);
+    border-bottom: 2px solid var(--paper-raised);
+    transform: rotate(40deg);
+  }
+  ul.checklist li.done .label { color: var(--ink-soft); text-decoration: line-through; text-decoration-color: var(--border); }
+  ul.checklist .label b { font-weight: 600; color: inherit; }
+
+  /* callout */
+  .callout {
+    background: var(--paper-raised);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    box-shadow: var(--shadow);
+    font-size: 0.87rem;
+    color: var(--ink-soft);
+  }
+  .callout .k {
+    display: block;
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    color: var(--amber);
+    margin-bottom: 6px;
+  }
+  .callout strong { color: var(--ink); font-weight: 600; }
+
+  .gate {
+    margin-top: 16px;
+    font-size: 0.83rem;
+    color: var(--moss);
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+  }
+  .gate .k { font-family: "Cascadia Code", "Consolas", monospace; font-size: 0.68rem; letter-spacing: 0.06em; color: var(--ink-soft); flex: none; }
+
+  footer {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    font-size: 0.8rem;
+    color: var(--ink-soft);
+  }
+
+  @media (max-width: 560px) {
+    .wrap { padding: 40px 18px 90px; }
+    .phase { padding-left: 26px; }
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="tag">SOP · AI-DRIVEN WEB DESIGN PRODUCTION</span>
+    <h1>AI駆動型ウェブデザイン・量産ワークフロー</h1>
+    <p>200サイト以上の構築実績に基づくSOP。成否はプロンプトを打つ前の「リファレンス収集」と、生成アセットを「構造的に分離・制御する設計力」で決まる。チェック項目はクリックで進捗を記録できる(このページを開き直すとリセットされる、一案件用のワーキングコピーとして使う想定)。</p>
+    <div class="source">出典: 「AI駆動型ウェブデザイン・量産プロセス標準化マニュアル」</div>
+    <ul class="rail" aria-hidden="true">
+      <li></li><li></li><li></li><li class="optional"></li><li></li>
+    </ul>
+  </header>
+
+  <section class="phase">
+    <div class="phase-head">
+      <span class="phase-num">PHASE 1 / 5</span>
+      <h2>リファレンス収集(高認知フェーズ)</h2>
+    </div>
+    <div class="phase-tool">主軸ツール: <b>Pinterest / Motion Sites</b> ・ 所要時間: <b>20〜30分厳守</b></div>
+    <ul class="checklist">
+      <li><span class="box"></span><span class="label">レコメンド機能を辿って深掘りしながら20〜30分探索する</span></li>
+      <li><span class="box"></span><span class="label"><b>レイアウト</b>(テキスト配置・ナビゲーション構造・情報の重なり)を集める</span></li>
+      <li><span class="box"></span><span class="label"><b>グラフィックス</b>(蝶・枝・ふわふわ3D物体など核となるオブジェクト)を集める</span></li>
+      <li><span class="box"></span><span class="label"><b>カラー/質感</b>(ダークグラデーション・モステクスチャ・光の当たり方)を集める</span></li>
+      <li><span class="box"></span><span class="label">Figmaに解像度不問でスクリーンショットを並べ、AI指示用の構成案にする</span></li>
+    </ul>
+    <div class="callout">
+      <span class="k">狙い</span>
+      「一つの完成サイト」ではなく3要素に分解して合成することで、デッドコピーを回避し独自のブランドアイデンティティを作る。<strong>質感はA社、レイアウトはB社</strong>、という分離がAIへの学習指示になる。
+    </div>
+    <div class="gate"><span class="k">GATE →</span> 3カテゴリそれぞれに最低数枚が揃うまで次へ進まない</div>
+  </section>
+
+  <section class="phase">
+    <div class="phase-head">
+      <span class="phase-num">PHASE 2 / 5</span>
+      <h2>AIスタイル統合とアセットの構造的分離</h2>
+    </div>
+    <div class="phase-tool">ツール: <b>Hickfield等の画像生成AI</b></div>
+    <ul class="checklist">
+      <li><span class="box"></span><span class="label">属性を厳格指定する:「画像1のレイアウトを維持し、画像2のテクスチャを適用せよ」</span></li>
+      <li><span class="box"></span><span class="label">不要要素は具体的に指定して排除する:「黄色の円を削除」「ナビゲーションバーを除去」</span></li>
+      <li><span class="box"></span><span class="label"><b>背景アセット</b>を生成: 4K/8K、テキスト・ボタン・アイコン・ロゴを完全排除</span></li>
+      <li><span class="box"></span><span class="label"><b>UI構造イメージ</b>を生成: Pure Black背景の上に配置位置のみ示す</span></li>
+    </ul>
+    <div class="callout">
+      <span class="k">狙い</span>
+      背景=画像、UI=DOM(コード)として分離管理することで、レスポンシブ崩れとテキストの「焼き込み」歪みを防ぐ。SEOフレンドリーな構造と没入感のあるデザインを両立させる必須条件。
+    </div>
+    <div class="gate"><span class="k">GATE →</span> 背景アセットとUI構造イメージが<b>別ファイル</b>として揃うまで次へ進まない</div>
+  </section>
+
+  <section class="phase">
+    <div class="phase-head">
+      <span class="phase-num">PHASE 3 / 5</span>
+      <h2>Claudeによるフロントエンド実装とタイポグラフィ</h2>
+    </div>
+    <div class="phase-tool">プレビュー環境: <b>Fable 5 を強制使用</b></div>
+    <ul class="checklist">
+      <li><span class="box"></span><span class="label">スクショを「Top Popular Google Fonts」と照合し、フォントを<b>人間が</b>同定する</span></li>
+      <li><span class="box"></span><span class="label">具体的なフォント名をプロンプトに明記(例: Instrumental Serif → Google Fontsからインポート)</span></li>
+      <li><span class="box"></span><span class="label">環境指定に <b>Pure Black Background (#000000)</b> を必須で含める</span></li>
+      <li><span class="box"></span><span class="label"><b>Make sure everything is mobile responsive</b> のフレーズを必ず含める</span></li>
+      <li><span class="box"></span><span class="label">アイコンライブラリをimportし、ホバーエフェクト等の動的要素を付与する</span></li>
+    </ul>
+    <div class="callout">
+      <span class="k">狙い</span>
+      デザインカンプを画像として貼り付けず、テキスト・ボタンをCSS/HTMLで再構築することで検索エンジンのインデックス対象(SEO)になり、読み込み速度(LCP)が大幅に改善する。
+    </div>
+    <div class="gate"><span class="k">GATE →</span> レスポンシブ崩れなし・フォント名が具体的に固定済みになるまで次へ進まない</div>
+  </section>
+
+  <section class="phase">
+    <div class="phase-head">
+      <span class="phase-num">PHASE 4 / 5</span>
+      <h2>動画生成AIによるダイナミック・バックグラウンド</h2>
+      <span class="phase-optional-badge">任意 · 静的サイトはスキップ可</span>
+    </div>
+    <div class="phase-tool">ツール: <b>Luma / Kling</b></div>
+    <ul class="checklist">
+      <li><span class="box"></span><span class="label">CleanShot等で参考サイトのモーション部分だけを数秒間録画する</span></li>
+      <li><span class="box"></span><span class="label">「色や要素は無視し、動き(Effect)の質感のみを抽出して静止画に適用せよ」と指示する</span></li>
+      <li><span class="box"></span><span class="label">10秒程度・<b>No zoom / No zoom out</b> でシームレスループを生成する</span></li>
+      <li><span class="box"></span><span class="label">ヘッドラインを30%程度縮小し、背景の動きを邪魔しないバランスに整える</span></li>
+      <li><span class="box"></span><span class="label">既存のディバイダー線を削除する(動画自体が区切りになるため)</span></li>
+    </ul>
+  </section>
+
+  <section class="phase">
+    <div class="phase-head">
+      <span class="phase-num">PHASE 5 / 5</span>
+      <h2>商用クオリティへのブラッシュアップ(魂の吹き込み)</h2>
+    </div>
+    <div class="phase-tool">このフェーズは<b>省略不可</b> — AI生成物と職人仕事の分かれ目</div>
+    <ul class="checklist">
+      <li><span class="box"></span><span class="label">AIアーティファクト(不要なストローク/外枠・不要な塗り)をコード上で手動監査して削除</span></li>
+      <li><span class="box"></span><span class="label">背景透過させたAI生成オブジェクトを<b>absolute position</b>でセクション境界に重ねる(有機的ディバイダー)</span></li>
+      <li><span class="box"></span><span class="label">セクション間パディングを<b>200〜300px</b>確保し、視覚的な呼吸スペースを作る</span></li>
+      <li><span class="box"></span><span class="label">デスクトップ横並び要素は、モバイルでも<b>あえて1行に小さく</b>並べるよう個別指示する</span></li>
+    </ul>
+    <div class="callout">
+      <span class="k">狙い</span>
+      余白の制御と不要な装飾の排除により、ユーザーは短期間でAIが構築したものと気づかず、熟練デザイナーが数週間かけたようなプロフェッショナルな印象を抱く。
+    </div>
+  </section>
+
+  <footer>
+    リード・ウェブディレクター注記: AIモデルは日々進化するが、「リファレンスの分解」「構造の分離」「人間の審美眼による統合」という原則は普遍。常に「AIの上位に立つディレクター」としての矜持を持って制作に臨むこと。
+  </footer>
+</div>
+
+<script>
+  document.querySelectorAll('ul.checklist li').forEach(function (li) {
+    li.addEventListener('click', function () {
+      li.classList.toggle('done');
+    });
+  });
+</script>
