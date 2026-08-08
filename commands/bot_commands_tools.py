@@ -364,6 +364,36 @@ async def cmd_paper_digest(interaction: discord.Interaction, index: int = 1,
         await interaction.followup.send(result[:2000])
 
 
+def _import_skill_digest():
+    from tools.tool_skill_digest import run_skill_digest
+    return run_skill_digest
+
+
+async def cmd_skill_digest(interaction: discord.Interaction, index: int = 1,
+                           repo: str = "", mode: str = "sns"):
+    """Skill Radar 候補を選んで SNS/note の下書きまで生成する"""
+    # 候補が無ければその場で Skill Radar (GitHub検索+Gemini適合度判定) を回すため
+    # 数十秒かかりうる。defer を先に返さないと interaction token が3秒で切れる
+    # (skill discord-bot-patterns)。
+    await interaction.response.defer()
+    try:
+        run_skill_digest = _import_skill_digest()
+        result = await asyncio.to_thread(run_skill_digest, index, repo, mode)
+    except Exception as e:
+        result = log_command_error("/skill-digest", e, "❌ Skill Digest Error")
+
+    if _log_to_daily_note:
+        await asyncio.to_thread(_log_to_daily_note, "command", "/skill-digest", result)
+
+    if _send_with_fallback:
+        file = _make_discord_file(
+            result, f"skill_digest_{datetime.date.today().isoformat()}.md"
+        ) if len(result) > 1800 else None
+        await _send_with_fallback(interaction, result, title="Skill Digest", emoji="🛰️", file=file)
+    else:
+        await interaction.followup.send(result[:2000])
+
+
 def _import_document():
     from tools.tool_document import MAX_DOCUMENT_SIZE_BYTES, tool_import_document
     return tool_import_document, MAX_DOCUMENT_SIZE_BYTES

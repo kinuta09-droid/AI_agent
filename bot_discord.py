@@ -1048,6 +1048,23 @@ async def cmd_paper_digest(interaction: discord.Interaction, index: int = 1,
     await bot_commands_tools.cmd_paper_digest(interaction, index, arxiv_id, mode)
 
 
+@tree.command(name="skill-digest", description="Skill Radar候補を選んでSNS/note下書きを生成 (候補が無ければその場でSkill Radarも実行)")
+@app_commands.describe(
+    index="Skill Radar 候補の番号 1始まり (デフォルト: 1)",
+    repo="候補一覧内のリポジトリを owner/name で直接指定する場合",
+    mode="出力: sns / note / both / none",
+)
+@app_commands.choices(mode=[
+    app_commands.Choice(name="Xティザー投稿下書き", value="sns"),
+    app_commands.Choice(name="note記事下書き", value="note"),
+    app_commands.Choice(name="両方", value="both"),
+    app_commands.Choice(name="候補の中身を確認のみ (何も保存しない)", value="none"),
+])
+async def cmd_skill_digest(interaction: discord.Interaction, index: int = 1,
+                           repo: str = "", mode: str = "sns"):
+    await bot_commands_tools.cmd_skill_digest(interaction, index, repo, mode)
+
+
 @tree.command(name="doc", description="PDF/Office文書を添付してdoclingで変換→Gemini要約→Vault保存 (SNS/note下書きも生成可)")
 @app_commands.describe(
     attachment="変換したい文書 (PDF/DOCX/PPTX)",
