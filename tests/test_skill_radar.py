@@ -379,11 +379,12 @@ def test_run_skill_radar_applies_ai_fit_to_ranking():
     """AI適合度評価が rank_repos より前で走り、stars優位を逆転させてランキングに反映されること。"""
     import lib.lib_shared as lib_shared
     with tempfile.TemporaryDirectory() as tmp:
-        orig_seen, orig_logs = radar.SEEN_PATH, radar.LOGS_DIR
+        orig_seen, orig_logs, orig_latest = radar.SEEN_PATH, radar.LOGS_DIR, radar.LATEST_JSON
         orig_collect = radar.collect_candidates
         original_fn = lib_shared.client.models.generate_content
         radar.SEEN_PATH = os.path.join(tmp, "skill_seen_ids.json")
         radar.LOGS_DIR = tmp
+        radar.LATEST_JSON = os.path.join(tmp, "skill_radar_latest.json")
         radar.collect_candidates = lambda *a, **k: (
             [_repo("big/product", stars=80000), _repo("small/plan-helper", stars=10)], 1)
         lib_shared.client.models.generate_content = (
@@ -397,7 +398,7 @@ def test_run_skill_radar_applies_ai_fit_to_ranking():
         finally:
             radar.collect_candidates = orig_collect
             lib_shared.client.models.generate_content = original_fn
-            radar.SEEN_PATH, radar.LOGS_DIR = orig_seen, orig_logs
+            radar.SEEN_PATH, radar.LOGS_DIR, radar.LATEST_JSON = orig_seen, orig_logs, orig_latest
 
     assert "small/plan-helper" in msg and "big/product" in msg, msg
     assert msg.index("small/plan-helper") < msg.index("big/product"), \
@@ -410,16 +411,21 @@ def test_run_skill_radar_no_comment_skips_ai_fit_call():
 
     「Gemini呼び出しゼロ」はCLIヘルプ文言・CLAUDE.mdのコスト分離方針で明言している契約。
     /grill で指摘: この契約自体を検証するテストが無かった。
-    run_skill_radar は mark_seen() で本番の SEEN_PATH に書き込むため、テスト[9]と同様に
-    一時ディレクトリへ退避する (退避漏れで実際に "a/x" が本番キャッシュへ混入した事故の再発防止)。
+    run_skill_radar は mark_seen() で本番の SEEN_PATH に、save_latest_candidates() で
+    本番の LATEST_JSON に書き込むため (どちらも save 引数と無関係に無条件で呼ばれる)、
+    テスト[9]と同様に一時ディレクトリへ退避する。LATEST_JSON は SEEN_PATH と別の定数
+    なので、SEEN_PATH/LOGS_DIR だけ退避すると見落とす — 実際に save_latest_candidates
+    追加時にこの退避が漏れ、"a/x" が本番の logs/skill_radar_latest.json と
+    Obsidian Vault (下書き) へ混入した事故の再発防止。
     """
     with tempfile.TemporaryDirectory() as tmp:
-        orig_seen, orig_logs = radar.SEEN_PATH, radar.LOGS_DIR
+        orig_seen, orig_logs, orig_latest = radar.SEEN_PATH, radar.LOGS_DIR, radar.LATEST_JSON
         orig_evaluate = radar.evaluate_fit_ja
         orig_collect = radar.collect_candidates
         called = []
         radar.SEEN_PATH = os.path.join(tmp, "skill_seen_ids.json")
         radar.LOGS_DIR = tmp
+        radar.LATEST_JSON = os.path.join(tmp, "skill_radar_latest.json")
         radar.evaluate_fit_ja = lambda *a, **k: (called.append(1), {})[1]
         radar.collect_candidates = lambda *a, **k: ([_repo("a/x", stars=1)], 1)
         try:
@@ -427,7 +433,7 @@ def test_run_skill_radar_no_comment_skips_ai_fit_call():
         finally:
             radar.evaluate_fit_ja = orig_evaluate
             radar.collect_candidates = orig_collect
-            radar.SEEN_PATH, radar.LOGS_DIR = orig_seen, orig_logs
+            radar.SEEN_PATH, radar.LOGS_DIR, radar.LATEST_JSON = orig_seen, orig_logs, orig_latest
 
     assert called == [], "comment=False なのに evaluate_fit_ja が呼ばれている (課金ゼロ契約違反)"
     print("✅ [9b] run_skill_radar: comment=False は evaluate_fit_ja を呼ばない")

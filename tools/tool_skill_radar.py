@@ -66,6 +66,7 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
 
 SKILLS_REPORT_DIR = os.path.join(VAULT_ROOT, "40_Report", "Skills")
 SEEN_PATH = os.path.join(LOGS_DIR, "skill_radar_seen_ids.json")
+LATEST_JSON = os.path.join(LOGS_DIR, "skill_radar_latest.json")
 
 HTTP_TIMEOUT = 30
 
@@ -510,6 +511,35 @@ def mark_seen(full_names) -> None:
         print(f"[SkillRadar] ⚠️ seen キャッシュ書き込み失敗 ({e}) — 重複提案の可能性あり")
 
 
+def save_latest_candidates(ranked: list) -> str:
+    """digest 側 (tool_skill_digest.py) が番号で参照できるよう候補を JSON に残す。
+
+    tool_paper_radar.save_latest_candidates と同じパターン。Skill候補は
+    published_dt のような非JSON値を持たないため、paper版のフィールド除外は不要。
+    """
+    payload = {
+        "generated_at": datetime.datetime.now().isoformat(),
+        "repos": ranked,
+    }
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    with open(LATEST_JSON, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return LATEST_JSON
+
+
+def load_latest_candidates() -> list:
+    """logs/skill_radar_latest.json の候補一覧 (無ければ/壊れていれば空リスト)。"""
+    if not os.path.exists(LATEST_JSON):
+        return []
+    try:
+        with open(LATEST_JSON, encoding="utf-8") as f:
+            data = json.load(f)
+        return list(data.get("repos", [])) if isinstance(data, dict) else []
+    except Exception as e:
+        print(f"[SkillRadar] ⚠️ 候補JSON読み込み失敗: {e}")
+        return []
+
+
 # ---------------------------------------------------------
 # エントリポイント
 # ---------------------------------------------------------
@@ -560,6 +590,11 @@ def run_skill_radar(top_k: int = 5, save: bool = True, include_seen: bool = Fals
                 r["comment_ja"] = fr["comment_ja"]
 
     mark_seen([r["full_name"] for r in ranked])
+
+    try:
+        save_latest_candidates(ranked)
+    except Exception as e:
+        print(f"[SkillRadar] ⚠️ 候補JSON保存に失敗 ({e}) — digest の番号指定が使えません")
 
     body = render_radar_markdown(ranked, now)
 

@@ -31,6 +31,7 @@ scripts\arms.bat               # ワンクリック制御 (引数なし=メニ�
 py main.py                     # Universal launcher
 py tools/tool_paper_radar.py --field ai_agent --top 5   # 注目論文レーダー (課金ゼロ)
 py tools/tool_paper_digest.py --index 1 --mode both     # 本文キャプチャ→要約→SNS/note下書き
+py tools/tool_skill_digest.py --index 1 --mode both      # Skill Radar候補のSNS/note下書き生成
 py -m pip install -r requirements-docling.txt           # docling (任意・未導入ならHTML抽出に劣化)
 py bot_discord.py              # Start Discord bot
 py agent_scheduler.py          # Start scheduler
