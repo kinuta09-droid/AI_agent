@@ -49,6 +49,7 @@ if _PROJECT_ROOT not in sys.path:
 import feedparser
 import requests
 
+from lib.bot_errors import PARTIAL_PREFIX
 from lib.paths import ENV_PATH, LOGS_DIR, VAULT_ROOT
 
 from dotenv import load_dotenv
@@ -532,8 +533,8 @@ def load_latest_candidates() -> list:
 # エントリポイント
 # ---------------------------------------------------------
 
-def collect_candidates(fields: list, days: int = 7, max_per_field: int = MAX_FETCH_PER_QUERY) -> list:
-    """分野ごとに arXiv を引き、指標を付けて1つのリストにまとめる。"""
+def _search_fields(fields: list, days: int = 7, max_per_field: int = MAX_FETCH_PER_QUERY) -> list:
+    """分野ごとに arXiv を引いて重複除去する (HF/S2 の指標付けはしない)。"""
     seen_ids = set()
     papers = []
     for field in fields:
@@ -546,10 +547,18 @@ def collect_candidates(fields: list, days: int = 7, max_per_field: int = MAX_FET
             seen_ids.add(p["arxiv_id"])
             p["field"] = field
             papers.append(p)
+    return papers
 
+
+def _enrich_with_metrics(papers: list, days: int = 7) -> list:
+    """HF upvote / Semantic Scholar 被引用を付ける (in-place)。
+
+    HF/S2 は候補プール全体で1回だけ叩く。呼び出しごとに叩くと (grouped 実行で
+    分野グループ数だけ繰り返すと) 未認証 S2 のレート制限に余計に当たるだけで
+    指標の中身は変わらない (実測: 4グループ個別収集で429警告が1回→3回に増加)。
+    """
     if not papers:
         return []
-
     upvotes = fetch_hf_upvotes(days=days)
     metrics = fetch_citation_metrics([p["arxiv_id"] for p in papers])
     for p in papers:
@@ -558,6 +567,11 @@ def collect_candidates(fields: list, days: int = 7, max_per_field: int = MAX_FET
         p["citations"] = m.get("citations", 0)
         p["influential_citations"] = m.get("influential_citations", 0)
     return papers
+
+
+def collect_candidates(fields: list, days: int = 7, max_per_field: int = MAX_FETCH_PER_QUERY) -> list:
+    """分野ごとに arXiv を引き、指標を付けて1つのリストにまとめる。"""
+    return _enrich_with_metrics(_search_fields(fields, days=days, max_per_field=max_per_field), days=days)
 
 
 def _finalize_report(ranked: list, fields: list, now: datetime.datetime,
@@ -639,25 +653,45 @@ def run_paper_radar_grouped(groups: list, days: int = 7, save: bool = True,
     interests = read_interest_keywords()
     exclude = set(normalize_arxiv_id(x) for x in ([] if include_seen else load_seen_ids()))
 
-    all_fields, ranked_all, total_count = [], [], 0
+    # 検索はグループ単位 (top_k をグループごとに確保するため)。HF/S2 指標付けは
+    # プール全体で1回だけにまとめる (_enrich_with_metrics の docstring参照)。
+    all_fields, failed_groups, group_pool, combined_raw = [], [], [], []
     for field_str, top_k in groups:
         fields = [f.strip() for f in field_str.split(",") if f.strip()]
         all_fields.extend(fields)
         try:
-            papers = collect_candidates(fields, days=days)
+            papers = _search_fields(fields, days=days)
         except Exception as e:
             print(f"[PaperRadar] ❌ 候補収集に失敗 ({field_str}): {e}")
+            failed_groups.append(f"{field_str} ({e})")
+            group_pool.append((top_k, []))
             continue
-        total_count += len(papers)
+        group_pool.append((top_k, papers))
+        combined_raw.extend(papers)
+
+    _enrich_with_metrics(combined_raw, days=days)
+    total_count = len(combined_raw)
+
+    ranked_all = []
+    for top_k, papers in group_pool:
         ranked = rank_papers(papers, now, top_k=top_k, interests=interests, exclude_ids=exclude)
         exclude.update(normalize_arxiv_id(p["arxiv_id"]) for p in ranked)
         ranked_all.extend(ranked)
+
+    # 「該当なし」と「収集失敗」を混同しない (Known Bug Patterns A)。
+    # 全グループ失敗は無言の0件ではなく明確な Error として返す。
+    if failed_groups and not ranked_all:
+        return f"Error: 全グループの論文候補収集に失敗しました ({'; '.join(failed_groups)})"
 
     if not ranked_all:
         return (f"Paper Radar: 過去{days}日間に該当する論文はありませんでした "
                 f"(fields={all_fields})。days を伸ばすか分野指定を見直してください")
 
-    return _finalize_report(ranked_all, all_fields, now, total_count, save, translate)
+    report = _finalize_report(ranked_all, all_fields, now, total_count, save, translate)
+    # 部分失敗は成功メッセージに埋もれさせない (PARTIAL_PREFIX は lib.bot_errors と共通の印)。
+    if failed_groups and not report.startswith("Error:"):
+        report = f"{PARTIAL_PREFIX}収集失敗: {'; '.join(failed_groups)}\n\n{report}"
+    return report
 
 
 def main():

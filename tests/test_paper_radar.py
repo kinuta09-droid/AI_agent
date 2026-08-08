@@ -23,7 +23,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 import tools.tool_paper_radar as radar
-from lib.bot_errors import is_failure_result
+from lib.bot_errors import is_failure_result, is_partial_result
 
 NOW = datetime.datetime(2026, 7, 30, 9, 0, 0)
 
@@ -367,6 +367,65 @@ def test_registry_wrapper_failure_prefix_is_detected():
 # [13] run_paper_digest の既出フラグ・LLMスタブまわりのテストは
 # tests/test_paper_digest.py へ移設した (build_sns_post のスタブ化が
 # 必須になったため、Paper Digest 固有のテストとまとめて管理する)。
+
+# ---------------------------------------------------------
+# [15] run_paper_radar_grouped: グループ単位の収集失敗を握りつぶさない
+# ---------------------------------------------------------
+
+def test_grouped_all_groups_fail_is_error():
+    """全グループの候補収集が失敗したら "該当なし" と区別できる Error: を返すこと。
+
+    グループ単位で収集失敗を無言で continue すると、arXiv障害の日も
+    「たまたま0件でした」に見えてしまう (Known Bug Patterns A と同型の事故)。
+    """
+    def _boom(*a, **k):
+        raise RuntimeError("arXiv down")
+    orig = radar._search_fields
+    radar._search_fields = _boom
+    try:
+        msg = radar.run_paper_radar_grouped(
+            groups=[("ai_agent", 3), ("llm", 2)], days=3, save=False, translate=False,
+        )
+    finally:
+        radar._search_fields = orig
+    assert is_failure_result(msg), f"全滅が失敗として判定されない: {msg!r}"
+    print("✅ [15a] run_paper_radar_grouped: 全グループ収集失敗はErrorとして返る")
+
+
+def test_grouped_partial_failure_keeps_success_group_and_is_marked():
+    """一部グループだけ収集失敗しても、成功分の結果は残しつつ部分失敗の印を付けること。
+
+    無印のまま返すと定時ジョブの通知が ✅ に見え、失敗したグループがあった事実が
+    どこにも残らない。lib.bot_errors.PARTIAL_PREFIX を使い、他の部分失敗表示と
+    同じ判定器 (is_partial_result) で拾えるようにする。
+    """
+    orig_search = radar._search_fields
+    orig_enrich = radar._enrich_with_metrics
+    orig_latest = radar.LATEST_JSON
+
+    def _fake_search(fields, days=7, max_per_field=radar.MAX_FETCH_PER_QUERY):
+        if fields == ["broken"]:
+            raise RuntimeError("field down")
+        return [_paper("2607.00099", title="Survivor Paper")]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        radar._search_fields = _fake_search
+        radar._enrich_with_metrics = lambda papers, days=7: papers
+        radar.LATEST_JSON = os.path.join(tmp, "paper_radar_latest.json")
+        try:
+            msg = radar.run_paper_radar_grouped(
+                groups=[("broken", 3), ("ai_agent", 2)], days=3, save=False, translate=False,
+            )
+        finally:
+            radar._search_fields = orig_search
+            radar._enrich_with_metrics = orig_enrich
+            radar.LATEST_JSON = orig_latest
+
+    assert not is_failure_result(msg), f"部分失敗をErrorにしてはいけない: {msg!r}"
+    assert is_partial_result(msg), f"部分失敗の印が付いていない: {msg!r}"
+    assert "Survivor Paper" in msg, msg
+    print("✅ [15b] run_paper_radar_grouped: 部分失敗は成功分を残しつつPARTIAL_PREFIXで示す")
+
 
 def test_registry_entries_registered():
     from lib.tool_registry import TOOL_ENTRIES
