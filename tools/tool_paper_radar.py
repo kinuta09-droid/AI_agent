@@ -86,11 +86,16 @@ FIELD_PRESETS = {
     "rl": 'cat:cs.LG AND (abs:"reinforcement learning" OR abs:"RLHF")',
     "efficiency": 'cat:cs.LG AND (abs:"quantization" OR abs:"distillation" OR abs:"efficient inference")',
     "quant": '(cat:q-fin.TR OR cat:q-fin.CP) AND (abs:"machine learning" OR abs:"deep learning")',
+    "gui_agent": 'cat:cs.AI AND (abs:"GUI agent" OR abs:"computer use" OR abs:"web agent")',
+    "ai_jobs": 'cat:econ.GN AND (abs:"labor market" OR abs:"automation") AND abs:"AI"',
+    "astro_jwst": 'cat:astro-ph.GA AND (abs:"JWST" OR abs:"black hole" OR abs:"dark matter")',
 }
 
 # .env で既定の監視分野を変えられる (カンマ区切り。プリセット名か生クエリ)
 DEFAULT_FIELDS = [
-    f.strip() for f in os.getenv("PAPER_RADAR_FIELDS", "ai_agent,llm").split(",") if f.strip()
+    f.strip() for f in os.getenv(
+        "PAPER_RADAR_FIELDS", "ai_agent,llm,gui_agent,ai_jobs,astro_jwst"
+    ).split(",") if f.strip()
 ]
 
 # スコアの重み。合議で決める値ではないので定数で持ち、根拠は docstring に書く。
@@ -555,33 +560,9 @@ def collect_candidates(fields: list, days: int = 7, max_per_field: int = MAX_FET
     return papers
 
 
-def run_paper_radar(field: str = "", top_k: int = 5, days: int = 7,
-                    save: bool = True, include_seen: bool = False, translate: bool = True) -> str:
-    """分野の注目論文を判別してレポートを返す (ツール層の戻り値契約: 失敗は "Error: ...")。"""
-    print("[Tool] 📡 Paper Radar 起動中...")
-    fields = [f.strip() for f in field.split(",") if f.strip()] or DEFAULT_FIELDS
-    now = datetime.datetime.now()
-
-    try:
-        papers = collect_candidates(fields, days=days)
-    except Exception as e:
-        print(f"[PaperRadar] ❌ 候補収集に失敗: {e}")
-        return f"Error: 論文候補の収集に失敗しました ({e})"
-
-    # 「該当なし」は失敗ではない (収集は成功していて、結果が0件なだけ)。
-    # ここで "Error:" を返すと定時ジョブが ❌ 通知を出し、
-    # 本当に壊れた日と区別できなくなる。
-    if not papers:
-        return (f"Paper Radar: 過去{days}日間に該当する論文はありませんでした "
-                f"(fields={fields})。days を伸ばすか分野指定を見直してください")
-
-    interests = read_interest_keywords()
-    exclude = [] if include_seen else load_seen_ids()
-    ranked = rank_papers(papers, now, top_k=top_k, interests=interests, exclude_ids=exclude)
-    if not ranked:
-        return (f"Paper Radar: 候補{len(papers)}件はすべて記事化済みでした "
-                f"(include_seen=True で既出も出せます)")
-
+def _finalize_report(ranked: list, fields: list, now: datetime.datetime,
+                      total_count: int, save: bool, translate: bool) -> str:
+    """翻訳・保存・サマリ整形の共通テール (単一分野プールでもグループ合算でも同じ)。"""
     if translate:
         translate_papers_ja(ranked)
 
@@ -610,8 +591,73 @@ def run_paper_radar(field: str = "", top_k: int = 5, days: int = 7,
         for i, p in enumerate(ranked, 1)
     )
     location = f"[[40_Report/Papers/{os.path.basename(saved_path)}]]" if saved_path else "(未保存)"
-    return (f"Paper Radar: {len(papers)}件から上位{len(ranked)}件を選定しました。\n"
+    return (f"Paper Radar: {total_count}件から上位{len(ranked)}件を選定しました。\n"
             f"{head}\n\n保存先: {location}")
+
+
+def run_paper_radar(field: str = "", top_k: int = 5, days: int = 7,
+                    save: bool = True, include_seen: bool = False, translate: bool = True) -> str:
+    """分野の注目論文を判別してレポートを返す (ツール層の戻り値契約: 失敗は "Error: ...")。"""
+    print("[Tool] 📡 Paper Radar 起動中...")
+    fields = [f.strip() for f in field.split(",") if f.strip()] or DEFAULT_FIELDS
+    now = datetime.datetime.now()
+
+    try:
+        papers = collect_candidates(fields, days=days)
+    except Exception as e:
+        print(f"[PaperRadar] ❌ 候補収集に失敗: {e}")
+        return f"Error: 論文候補の収集に失敗しました ({e})"
+
+    # 「該当なし」は失敗ではない (収集は成功していて、結果が0件なだけ)。
+    # ここで "Error:" を返すと定時ジョブが ❌ 通知を出し、
+    # 本当に壊れた日と区別できなくなる。
+    if not papers:
+        return (f"Paper Radar: 過去{days}日間に該当する論文はありませんでした "
+                f"(fields={fields})。days を伸ばすか分野指定を見直してください")
+
+    interests = read_interest_keywords()
+    exclude = [] if include_seen else load_seen_ids()
+    ranked = rank_papers(papers, now, top_k=top_k, interests=interests, exclude_ids=exclude)
+    if not ranked:
+        return (f"Paper Radar: 候補{len(papers)}件はすべて記事化済みでした "
+                f"(include_seen=True で既出も出せます)")
+
+    return _finalize_report(ranked, fields, now, len(papers), save, translate)
+
+
+def run_paper_radar_grouped(groups: list, days: int = 7, save: bool = True,
+                            include_seen: bool = False, translate: bool = True) -> str:
+    """(分野, 件数) の組ごとに上位件数を確保してから1本のレポートに合算する。
+
+    単純に全分野をまとめて上位N件を選ぶと、HF注目度・被引用の実績が厚い定番分野
+    (ai_agent/llm等) が新設分野を候補プールごと押し出してしまう (実測: 6分野
+    139件の合算では新設4分野が上位5件に1件も残らなかった)。グループ単位で
+    top_k を確保することで、実績の薄い新分野にも露出枠を保証する。
+    """
+    print("[Tool] 📡 Paper Radar (grouped) 起動中...")
+    now = datetime.datetime.now()
+    interests = read_interest_keywords()
+    exclude = set(normalize_arxiv_id(x) for x in ([] if include_seen else load_seen_ids()))
+
+    all_fields, ranked_all, total_count = [], [], 0
+    for field_str, top_k in groups:
+        fields = [f.strip() for f in field_str.split(",") if f.strip()]
+        all_fields.extend(fields)
+        try:
+            papers = collect_candidates(fields, days=days)
+        except Exception as e:
+            print(f"[PaperRadar] ❌ 候補収集に失敗 ({field_str}): {e}")
+            continue
+        total_count += len(papers)
+        ranked = rank_papers(papers, now, top_k=top_k, interests=interests, exclude_ids=exclude)
+        exclude.update(normalize_arxiv_id(p["arxiv_id"]) for p in ranked)
+        ranked_all.extend(ranked)
+
+    if not ranked_all:
+        return (f"Paper Radar: 過去{days}日間に該当する論文はありませんでした "
+                f"(fields={all_fields})。days を伸ばすか分野指定を見直してください")
+
+    return _finalize_report(ranked_all, all_fields, now, total_count, save, translate)
 
 
 def main():

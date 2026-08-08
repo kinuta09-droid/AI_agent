@@ -184,18 +184,29 @@ except ImportError:
 
 # Paper Radar / Digest (optional — import失敗でスケジューラ全体を壊さない)
 try:
-    from tools.tool_paper_radar import run_paper_radar as _paper_radar
+    from tools.tool_paper_radar import run_paper_radar_grouped as _paper_radar_grouped
     _HAS_PAPER_RADAR = True
 except ImportError as _e:
     _paper_radar_err = str(_e)
     _HAS_PAPER_RADAR = False
 
 def _run_paper_radar() -> str:
-    """注目論文レーダー (スコアリング自体は課金ゼロ。上位5件のタイトル・要旨の
-    日本語訳のみ Gemini LIGHT を呼ぶ — tools/tool_paper_radar.py の docstring参照)。"""
+    """注目論文レーダー (スコアリング自体は課金ゼロ。上位件数分のタイトル・要旨の
+    日本語訳のみ Gemini LIGHT を呼ぶ — tools/tool_paper_radar.py の docstring参照)。
+    定番分野(ai_agent/llm)の実績に新設分野(gui_agent/ai_jobs/astro_jwst)が
+    埋もれないよう、グループ単位で上位件数を確保する。既存分野は合算top5、
+    新設分野は互いに競合させず分野ごとに個別でtop3ずつ確保する。"""
     if not _HAS_PAPER_RADAR:
         return f"Paper Radar: tool_paper_radar not available ({_paper_radar_err})"
-    return _paper_radar(top_k=5, days=7)
+    return _paper_radar_grouped(
+        groups=[
+            ("ai_agent,llm", 5),
+            ("gui_agent", 3),
+            ("ai_jobs", 3),
+            ("astro_jwst", 3),
+        ],
+        days=7,
+    )
 
 
 # Skill Radar (optional — import失敗でスケジューラ全体を壊さない)
