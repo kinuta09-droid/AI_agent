@@ -447,6 +447,79 @@ async def cmd_doc(interaction: discord.Interaction, attachment: discord.Attachme
         await interaction.followup.send(result[:2000])
 
 
+DISCORD_ATTACHMENT_LIMIT_BYTES = 25 * 1024 * 1024
+MAX_SHORTS_INPUT_SIZE_BYTES = 500 * 1024 * 1024
+
+_SHORTS_VIDEO_PATH_RE = re.compile(r"ショート動画を生成しました: (.+)$", re.MULTILINE)
+
+
+def _import_shorts_editor():
+    from tools.tool_shorts_editor import tool_shorts_from_video
+    return tool_shorts_from_video
+
+
+async def cmd_shorts(interaction: discord.Interaction, attachment: discord.Attachment,
+                     target_seconds: int = 30, topic_hint: str = "",
+                     bgm: discord.Attachment = None, vertical_mode: str = "pad"):
+    """添付動画からSNSショート動画(縦型9:16+字幕+BGM)を自動編集する"""
+    # ffmpeg+Whisper+Geminiで数十秒〜数分かかりうる。3秒で切れるinteraction tokenより先にdefer
+    await interaction.response.defer()
+
+    if attachment.size > MAX_SHORTS_INPUT_SIZE_BYTES:
+        size_mb, cap_mb = attachment.size / 1_048_576, MAX_SHORTS_INPUT_SIZE_BYTES / 1_048_576
+        result = f"Error: 添付動画が上限を超えています ({size_mb:.1f}MB > {cap_mb:.0f}MB)"
+        await _send_with_fallback(interaction, result, title="Shorts Editor", emoji="🎬")
+        return
+
+    tool_shorts_from_video = _import_shorts_editor()
+
+    tmp_dir = tempfile.mkdtemp(prefix="arms_shorts_")
+    safe_name = re.sub(r'[\\/:*?"<>|]', '_', attachment.filename) or "video.mp4"
+    video_path = os.path.join(tmp_dir, safe_name)
+    bgm_path = None
+    try:
+        await attachment.save(video_path)
+        if bgm is not None:
+            bgm_safe_name = re.sub(r'[\\/:*?"<>|]', '_', bgm.filename) or "bgm.mp3"
+            bgm_path = os.path.join(tmp_dir, bgm_safe_name)
+            await bgm.save(bgm_path)
+
+        result = await asyncio.to_thread(
+            tool_shorts_from_video, video_path, target_seconds, topic_hint or None, bgm_path, vertical_mode
+        )
+    except Exception as e:
+        result = log_command_error("/shorts", e, "❌ Shorts Editor Error")
+    finally:
+        for p in (video_path, bgm_path):
+            if p:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+        try:
+            os.rmdir(tmp_dir)
+        except OSError:
+            pass
+
+    if _log_to_daily_note:
+        await asyncio.to_thread(_log_to_daily_note, "command", f"/shorts {attachment.filename}", result)
+
+    # 成功時のみ本文に生成済み動画パスが含まれる。25MB超ならVaultパス案内のみで添付は諦める。
+    file = None
+    m = _SHORTS_VIDEO_PATH_RE.search(result)
+    if m:
+        out_video_path = m.group(1).strip()
+        if os.path.exists(out_video_path) and os.path.getsize(out_video_path) <= DISCORD_ATTACHMENT_LIMIT_BYTES:
+            file = discord.File(out_video_path, filename=os.path.basename(out_video_path))
+        else:
+            result += "\n\n⚠️ 動画がDiscordの添付上限(25MB)を超えているため添付できません。上記Vaultパスを直接開いてください。"
+
+    if _send_with_fallback:
+        await _send_with_fallback(interaction, result, title="Shorts Editor", emoji="🎬", file=file)
+    else:
+        await interaction.followup.send(result[:2000])
+
+
 async def cmd_browse(interaction: discord.Interaction, url: str, task: str = "このページの主要な情報を要約して"):
     """URLを開いてAIで情報抽出（JS動的ページ対応）"""
     await interaction.response.defer()

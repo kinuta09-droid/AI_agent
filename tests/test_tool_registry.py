@@ -102,6 +102,8 @@ MUST_NOT_BE_PARALLEL_SAFE = {
     "tool_read_document", "tool_import_document",
     # GROUNDING_COUNTER (grounding_daily_calls.json) への書き込みを伴う
     "tool_web_search_grounded",
+    # 動画ファイルをVault (30_Main/Assets/Shorts) に書き込む
+    "tool_shorts_from_video",
 }
 
 

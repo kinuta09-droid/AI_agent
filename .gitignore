@@ -59,6 +59,9 @@ scripts/note_draft.md
 tmp_audio/
 gemini_result.md
 
+# Shorts editor runtime artifacts
+tmp_shorts/
+
 # Claude Code のローカル承認済み権限 (セッション固有の絶対パスが焼き込まれるため共有しない)
 .claude/settings.local.json
 # Added by code-review-graph

@@ -119,6 +119,27 @@ def _tool_import_document_wrapper(path_or_url: str, folder: str = "30_Main", mod
         return f"[import_document error] {e}"
 
 
+def _tool_shorts_from_video_wrapper(
+    video_path: str,
+    target_seconds: int = 30,
+    topic_hint: str = "",
+    bgm_path: str = "",
+    vertical_mode: str = "pad",
+) -> str:
+    """既存の長尺動画ファイルからSNSショート動画を自動生成する。"""
+    try:
+        from tools.tool_shorts_editor import tool_shorts_from_video
+        return tool_shorts_from_video(
+            video_path,
+            target_seconds=int(target_seconds),
+            topic_hint=topic_hint or None,
+            bgm_path=bgm_path or None,
+            vertical_mode=vertical_mode,
+        )
+    except Exception as e:
+        return f"[shorts error] {e}"
+
+
 def _tool_curate_wrapper() -> str:
     """The Curator のトピック提案をReActツールとして公開する。"""
     try:
@@ -239,6 +260,12 @@ TOOL_ENTRIES = [
     {"name": "tool_sync_to_daily_note", "usage": "tool_sync_to_daily_note()",
      "description": "Google Calendarの予定とTodoistのタスクをデイリーノートの所定欄へ流し込む専用ツール。任意の文章の追記には使えない（それはtool_update_note）",
      "module": "tools.tool_calendar", "optional": True},
+    # 動画ファイルをVault (30_Main/Assets/Shorts) に書き込むため parallel_safe は付けない。
+    {"name": "tool_shorts_from_video", "usage": "tool_shorts_from_video(video_path, target_seconds=30, topic_hint='', bgm_path='', vertical_mode='pad')",
+     "description": "既存の長尺動画ファイルから縦型9:16のSNSショート動画を自動編集する"
+                     "(ハイライト区間の自動選定→トリミング→字幕焼き込み→BGM合成)。"
+                     "動画ファイルのパスが必須。テキスト/画像からの新規動画生成には使えない",
+     "func": _tool_shorts_from_video_wrapper},
 ]
 
 _CACHE = None

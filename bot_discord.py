@@ -1082,6 +1082,24 @@ async def cmd_doc(interaction: discord.Interaction, attachment: discord.Attachme
     await bot_commands_tools.cmd_doc(interaction, attachment, folder, mode)
 
 
+@tree.command(name="shorts", description="長尺動画を添付してSNS用ショート動画(縦型9:16+字幕+BGM)を自動編集")
+@app_commands.describe(
+    attachment="編集元の長尺動画ファイル (mp4等)",
+    target_seconds="ショート動画の目標尺(秒、デフォルト30)",
+    topic_hint="ハイライト選定のヒント(空欄可、例: 'このプロダクトの一番の強みが伝わる部分')",
+    bgm="BGM/効果音ファイル (添付、任意。無指定ならBGMなしで進行)",
+    vertical_mode="縦型変換方式",
+)
+@app_commands.choices(vertical_mode=[
+    app_commands.Choice(name="ぼかし背景パディング(コンテンツ非破壊)", value="pad"),
+    app_commands.Choice(name="中央クロップ", value="crop"),
+])
+async def cmd_shorts(interaction: discord.Interaction, attachment: discord.Attachment,
+                     target_seconds: int = 30, topic_hint: str = "",
+                     bgm: discord.Attachment = None, vertical_mode: str = "pad"):
+    await bot_commands_tools.cmd_shorts(interaction, attachment, target_seconds, topic_hint, bgm, vertical_mode)
+
+
 @tree.command(name="browse", description="URLを開いてAIで情報抽出（JS動的ページ・SPAに対応）")
 @app_commands.describe(
     url="取得するURL",
