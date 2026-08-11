@@ -507,12 +507,12 @@ def test_render_progress_shared_by_both_entrypoints():
         check(f"未知の status '{unknown}' は None (単独)",
               render_progress(dict(single, status=unknown)) is None, "")
 
-    # bot_discord.py が自前で描いていないこと (入口ごとの写経の再発防止)
-    with open(os.path.join(_PROJECT_ROOT, "bot_discord.py"), encoding="utf-8") as f:
+    # commands/bot_commands_chat.py が自前で描いていないこと (入口ごとの写経の再発防止)
+    with open(os.path.join(_PROJECT_ROOT, "commands", "bot_commands_chat.py"), encoding="utf-8") as f:
         src = f.read()
-    check("bot_discord.py は render_progress を呼ぶ",
+    check("bot_commands_chat.py は render_progress を呼ぶ",
           "render_progress(step_data)" in src, "")
-    check("bot_discord.py に進捗文言のコピーが残っていない",
+    check("bot_commands_chat.py に進捗文言のコピーが残っていない",
           "**実行中:** Step" not in src, "")
 
 

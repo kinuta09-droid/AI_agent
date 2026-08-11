@@ -531,7 +531,7 @@ def test_both_agent_entry_points_call_send_feedback_prompt():
     """
     targets = {
         os.path.join(_PROJECT_ROOT, "commands", "bot_commands_agent.py"): "cmd_agent",
-        os.path.join(_PROJECT_ROOT, "bot_discord.py"): "_dispatch_agent",
+        os.path.join(_PROJECT_ROOT, "commands", "bot_commands_chat.py"): "_dispatch_agent",
     }
 
     missing = []

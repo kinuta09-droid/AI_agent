@@ -260,6 +260,7 @@ def test_no_hardcoded_success_headers():
         os.path.join(_PROJECT_ROOT, "agent_scheduler.py"),
         os.path.join(_PROJECT_ROOT, "commands", "bot_commands_agent.py"),
         os.path.join(_PROJECT_ROOT, "commands", "bot_views.py"),
+        os.path.join(_PROJECT_ROOT, "commands", "bot_commands_chat.py"),
     ]
 
     findings = []
