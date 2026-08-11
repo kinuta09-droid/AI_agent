@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import discord
-from discord import app_commands
 import asyncio
 
 # tools.tool_calendar からツールをインポート
@@ -9,7 +8,6 @@ from tools.tool_calendar import (
     tool_add_event,
     tool_create_task,
     tool_get_tasks,
-    tool_sync_to_daily_note,
 )
 
 from lib.bot_errors import log_command_error

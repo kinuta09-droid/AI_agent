@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 import discord
-from discord import app_commands
 import os
 import asyncio
 from lib.lib_persona import add_client_persona, get_all_personas
 from tools.tool_client_review import evaluate_deliverable, revise_deliverable, _save_improvement_log
 from engine_self_improve import analyze_weak_tools
-from lib.lib_shared import WORK_DIR, VAULT_ROOT
+from lib.lib_shared import VAULT_ROOT
 from lib.cost_guard import GeminiBudgetExceeded
 from commands.bot_views import AllowedUserView
 from lib.bot_errors import log_command_error

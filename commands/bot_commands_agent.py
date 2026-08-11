@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import discord
-from discord import app_commands
 import asyncio
 import io
 import re
@@ -16,10 +15,7 @@ from engine_plan_execute import (
 from lib.bot_errors import (
     log_command_error, is_failure_result, is_partial_result, FAILURE_PREFIXES,
 )
-from lib.discord_response import (
-    send_long_message as _send_long_message,
-    send_with_fallback as _send_with_fallback,
-)
+from lib.discord_response import send_with_fallback as _send_with_fallback
 
 # bot_discord から注入されるヘルパー (Discord 応答系は lib.discord_response を直接 import 済み)
 _log_to_daily_note = None

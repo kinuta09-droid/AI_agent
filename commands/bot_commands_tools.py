@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import discord
-from discord import app_commands
 import asyncio
 import datetime
 import os

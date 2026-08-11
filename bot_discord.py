@@ -48,39 +48,6 @@ HEARTBEAT_FILE = os.path.join(
 
 from lib.lib_shared import (
     VAULT_ROOT,
-    DAILY_NOTE_DIR_NAME,
-)
-
-from tools.tool_crypto import (
-    tool_audit_predictions,
-)
-
-from tools.tool_curator import (
-    search_and_save_topic,
-    update_user_profile,
-)
-
-from tools.tool_obsidian import (
-    tool_vault_search,
-    tool_create_note,
-    tool_read_note,
-    tool_update_note,
-    tool_merge_weekly_reports,
-)
-
-from tools.tool_briefing_manager import (
-    tool_generate_briefing,
-    add_provider,
-)
-
-from tools.tool_gmail_manager import (
-    get_gmail_summary as tool_gmail_check,
-)
-
-from tools.tool_calendar import (
-    tool_add_event,
-    tool_create_task,
-    tool_sync_to_daily_note,
 )
 
 # 新機能: 記事生成 UI

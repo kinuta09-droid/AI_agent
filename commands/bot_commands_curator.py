@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 import discord
-from discord import app_commands
 import asyncio
-import datetime
 
 # tools.tool_curator からツールをインポート
 from tools.tool_curator import (
@@ -19,8 +17,6 @@ from lib.bot_errors import log_command_error, is_failure_result
 from lib.discord_response import (
     create_obsidian_view as _create_obsidian_view,
     format_discord_content as _format_discord_content,
-    send_long_message as _send_long_message,
-    send_with_fallback as _send_with_fallback,
 )
 
 # ---------------------------------------------------------

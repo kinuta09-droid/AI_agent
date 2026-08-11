@@ -1,9 +1,6 @@
 # -*- coding: utf-8 -*-
 import discord
-from discord import app_commands
 import asyncio
-import os
-import json
 from scripts.generate_experiential_article import extract_points_and_questions, generate_final_article
 
 # ---------------------------------------------------------
