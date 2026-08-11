@@ -16,6 +16,12 @@ from tools.tool_curator import (
 # エンゲージメント計測 (Phase 1: 収集のみ)。提案ロジックには一切影響しない。
 from lib.engagement_log import log_event, log_impressions
 from lib.bot_errors import log_command_error, is_failure_result
+from lib.discord_response import (
+    create_obsidian_view as _create_obsidian_view,
+    format_discord_content as _format_discord_content,
+    send_long_message as _send_long_message,
+    send_with_fallback as _send_with_fallback,
+)
 
 # ---------------------------------------------------------
 # Constants & Helpers (Originally from bot_discord.py)
@@ -30,13 +36,8 @@ _BRANCH_ICON = {
     "consistent": "🔬", "bridge": "🌐", "entropy": "🚀",
 }
 
-# bot_discord から利用するヘルパー（後ほど bot_utils 等に整理検討）
-# 実行時に循環参照を避けるため、各関数内で動的に参照するか、引数で渡す形にする
+# bot_discord から注入されるヘルパー (Discord 応答系は lib.discord_response を直接 import 済み)
 _log_to_daily_note = None
-_create_obsidian_view = None
-_format_discord_content = None
-_send_long_message = None
-_send_with_fallback = None
 
 def _result_icon(result: str) -> str:
     """search_and_save_topic の戻り値から表示アイコンを決める。
@@ -57,13 +58,9 @@ def _result_icon(result: str) -> str:
     return "⚠️"  # 「既にノートが存在します」など、失敗ではないが作成もしていない
 
 
-def init_helpers(log_func, view_func, format_func, send_long_func, send_fallback_func):
-    global _log_to_daily_note, _create_obsidian_view, _format_discord_content, _send_long_message, _send_with_fallback
+def init_helpers(log_func):
+    global _log_to_daily_note
     _log_to_daily_note = log_func
-    _create_obsidian_view = view_func
-    _format_discord_content = format_func
-    _send_long_message = send_long_func
-    _send_with_fallback = send_fallback_func
 
 def _build_curate_embed(suggestions: dict, reject_count: int = 0) -> discord.Embed:
     """トピック提案の Embed を生成する。"""

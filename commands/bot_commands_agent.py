@@ -16,17 +16,17 @@ from engine_plan_execute import (
 from lib.bot_errors import (
     log_command_error, is_failure_result, is_partial_result, FAILURE_PREFIXES,
 )
+from lib.discord_response import (
+    send_long_message as _send_long_message,
+    send_with_fallback as _send_with_fallback,
+)
 
-# bot_discord から注入されるヘルパー
+# bot_discord から注入されるヘルパー (Discord 応答系は lib.discord_response を直接 import 済み)
 _log_to_daily_note = None
-_send_long_message = None
-_send_with_fallback = None
 
-def init_helpers(log_func, send_long_func, send_fallback_func):
-    global _log_to_daily_note, _send_long_message, _send_with_fallback
+def init_helpers(log_func):
+    global _log_to_daily_note
     _log_to_daily_note = log_func
-    _send_long_message = send_long_func
-    _send_with_fallback = send_fallback_func
 
 # ---------------------------------------------------------
 # 短期セッション記憶 (Phase ③)

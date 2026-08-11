@@ -164,8 +164,12 @@ def test_scheduler_log_tail_multibyte_safe():
 
 
 def _iter_bot_layer_sources():
-    """bot 層 (root の bot_discord.py + commands/) の .py を (相対パス, ソース) で返す。"""
-    targets = [os.path.join(_PROJECT_ROOT, "bot_discord.py")]
+    """bot 層 (root の bot_discord.py + commands/ + lib/discord_response.py) の
+    .py を (相対パス, ソース) で返す。"""
+    targets = [
+        os.path.join(_PROJECT_ROOT, "bot_discord.py"),
+        os.path.join(_PROJECT_ROOT, "lib", "discord_response.py"),
+    ]
     commands_dir = os.path.join(_PROJECT_ROOT, "commands")
     for name in sorted(os.listdir(commands_dir)):
         if name.endswith(".py"):
@@ -200,8 +204,8 @@ def test_persistent_views_are_registered():
     既知の限界:
       - 登録側は `bot.add_view(SomeView())` の形しか読めない。変数に入れてから
         渡す書き方に変えると未登録として落ちる (安全側の誤検知なので許容)。
-      - 走査対象は bot_discord.py と commands/ のみ。View を他の階層に置くなら
-        _iter_bot_layer_sources() に足すこと。
+      - 走査対象は bot_discord.py と commands/ と lib/discord_response.py のみ。
+        View をさらに他の階層に置くなら _iter_bot_layer_sources() に足すこと。
     """
     import ast
     import re

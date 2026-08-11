@@ -3,7 +3,6 @@ import discord
 from discord import app_commands
 import asyncio
 import datetime
-import io
 import os
 import re
 import tempfile
@@ -16,11 +15,11 @@ from tools.tool_gmail_manager import get_gmail_summary as tool_gmail_check
 from tools.tool_vault_watcher import check_vault_insights
 
 from lib.bot_errors import log_command_error
-
-
-def _make_discord_file(content: str, filename: str) -> "discord.File":
-    """bot_discord._make_discord_file と同一実装。循環インポート回避のためローカル定義。"""
-    return discord.File(io.BytesIO(content.encode('utf-8')), filename=filename)
+from lib.discord_response import (
+    format_discord_content as _format_discord_content,
+    make_discord_file as _make_discord_file,
+    send_with_fallback as _send_with_fallback,
+)
 
 # 新機能ツール (lazy import で依存関係エラーを bot 起動時に波及させない)
 def _import_xtrend():
@@ -35,16 +34,12 @@ def _import_future_search():
     from tools.tool_future_search import run_future_search
     return run_future_search
 
-# bot_discord から注入されるヘルパー
+# bot_discord から注入されるヘルパー (Discord 応答系は lib.discord_response を直接 import 済み)
 _log_to_daily_note = None
-_format_discord_content = None
-_send_with_fallback = None
 
-def init_helpers(log_func, format_func, send_fallback_func):
-    global _log_to_daily_note, _format_discord_content, _send_with_fallback
+def init_helpers(log_func):
+    global _log_to_daily_note
     _log_to_daily_note = log_func
-    _format_discord_content = format_func
-    _send_with_fallback = send_fallback_func
 
 async def cmd_news(interaction: discord.Interaction):
     """今日のニュースを収集・保存"""

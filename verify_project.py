@@ -893,23 +893,27 @@ def run_discord_checks(errors):
     discord_files = [
         ROOT_DIR / 'bot_discord.py',
         ROOT_DIR / 'commands' / 'bot_commands_tools.py',
+        ROOT_DIR / 'lib' / 'discord_response.py',
     ]
     for df in discord_files:
         if not df.exists():
             continue
         src = df.read_text(encoding='utf-8')
         rel = df.relative_to(ROOT_DIR)
-        # io.StringIO を discord.File に渡すパターン（_make_discord_file の定義行は除外）
+        # io.StringIO を discord.File に渡すパターン（make_discord_file の定義行は除外）
         for i, line in enumerate(src.splitlines(), 1):
-            if 'discord.File' in line and 'io.StringIO' in line and 'def _make_discord_file' not in line:
-                msg = f"Discord anti-pattern: {rel}:{i} — use _make_discord_file() instead of discord.File(io.StringIO())"
+            if 'discord.File' in line and 'io.StringIO' in line and 'def make_discord_file' not in line:
+                msg = f"Discord anti-pattern: {rel}:{i} — use make_discord_file() instead of discord.File(io.StringIO())"
                 errors.append(msg)
                 print(f"  ❌ {rel}:{i}")
         print(f"  ✅ {rel} (no StringIO pattern)")
 
     # 例外の握りつぶし (ログを残さず Discord に出すだけ) — bot 層のみが対象。
     # tools/ の `return f"Error: {e}"` は呼び出し元への戻り値契約なので対象外。
-    bot_layer = [ROOT_DIR / 'bot_discord.py'] + sorted((ROOT_DIR / 'commands').glob('*.py'))
+    bot_layer = (
+        [ROOT_DIR / 'bot_discord.py', ROOT_DIR / 'lib' / 'discord_response.py']
+        + sorted((ROOT_DIR / 'commands').glob('*.py'))
+    )
     swallowed = 0
     for bf in bot_layer:
         if not bf.exists():

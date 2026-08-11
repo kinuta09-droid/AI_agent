@@ -15,6 +15,11 @@ import discord
 from engine_plan_execute import run_plan_and_execute
 from lib.bot_errors import log_command_error
 from lib.lib_shared import client as gemini_client, MODEL_NAME
+from lib.discord_response import (
+    send_long_message as _send_long_message,
+    make_discord_file as _make_discord_file,
+    create_obsidian_view as _create_obsidian_view,
+)
 from tools.tool_calendar import tool_get_tasks, tool_get_calendar
 from tools.tool_web import tool_fetch_daily_news
 from tools.tool_crypto import tool_analyze_crypto, tool_scan_crypto_market
@@ -47,22 +52,15 @@ except ImportError:
 from commands import bot_commands_curator
 from commands import bot_commands_agent
 
-# bot_discord から注入されるヘルパー (bot_discord.py 内で閉じた
-# state/closure のため直接 import できない)
+# bot_discord から注入されるヘルパー (Discord 応答系は lib.discord_response を直接 import 済み。
+# _openai_client は bot_discord.py 側で閉じた state のため引き続き注入で受け取る)
 _log_to_daily_note = None
-_send_long_message = None
-_make_discord_file = None
-_create_obsidian_view = None
 _openai_client = None
 
 
-def init_helpers(log_func, send_long_func, make_file_func, create_obsidian_view_func, openai_client):
-    global _log_to_daily_note, _send_long_message, _make_discord_file
-    global _create_obsidian_view, _openai_client
+def init_helpers(log_func, openai_client):
+    global _log_to_daily_note, _openai_client
     _log_to_daily_note = log_func
-    _send_long_message = send_long_func
-    _make_discord_file = make_file_func
-    _create_obsidian_view = create_obsidian_view_func
     _openai_client = openai_client
 
 
