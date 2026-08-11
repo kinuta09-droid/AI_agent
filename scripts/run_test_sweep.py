@@ -181,6 +181,7 @@ PARALLEL_TESTS = frozenset({
     "test_vault_watcher.py",
     "test_verifier.py",
     "test_watchdog.py",
+    "test_web_design.py",
     "test_yt.py",
 })
 
