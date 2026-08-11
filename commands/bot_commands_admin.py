@@ -13,7 +13,7 @@ commands/bot_commands_admin.py — 常駐スタックの状態確認と再起動
   Discord には無くなる。main.py を書き換えたときだけ scripts/arms.bat を使う。
 
 認可:
-  ここでは何もしない。bot_discord.GatedCommandTree.interaction_check が
+  ここでは何もしない。lib.bot_access_control.GatedCommandTree.interaction_check が
   ALLOWED_USER_IDS で全スラッシュコマンドを一括ガードしており、自動的に乗る。
 """
 import asyncio
