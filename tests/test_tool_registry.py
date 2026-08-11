@@ -104,6 +104,9 @@ MUST_NOT_BE_PARALLEL_SAFE = {
     "tool_web_search_grounded",
     # 動画ファイルをVault (30_Main/Assets/Shorts) に書き込む
     "tool_shorts_from_video",
+    # scaffold_webgl は out へファイル書き込み、phase2/phase4_video は
+    # out_dir へ画像/動画をダウンロード書き込みする
+    "tool_web_design",
 }
 
 
