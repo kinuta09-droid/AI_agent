@@ -155,6 +155,7 @@ PARALLEL_TESTS = frozenset({
     "test_result_icons.py",
     "test_retriever_loop.py",
     "test_scan_crypto.py",
+    "test_scheduler_catch_up.py",
     "test_scheduler_setup.py",
     "test_search.py",
     "test_security_fixes.py",

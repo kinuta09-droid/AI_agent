@@ -265,15 +265,22 @@ LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scheduler.l
 logger = logging.getLogger("Scheduler")
 logger.setLevel(logging.INFO)
 
-# File Handler (Rotating)
-file_handler = RotatingFileHandler(LOG_FILE, maxBytes=1024*1024, backupCount=5, encoding='utf-8')
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-logger.addHandler(file_handler)
+# ハンドラの二重登録ガード。
+# 実プロセスはこのファイルを __main__ として動かすので、tools 側が実行時に
+# `from agent_scheduler import ...` すると Python は同じファイルを別名モジュール
+# として **もう一度実行する**。logging.getLogger("Scheduler") は同一シングルトンを
+# 返すため、ガードが無いとハンドラが2組になり以降の全ログが2重に出る
+# (実際 2026-08-11 03:20 の tool_vault_watcher 初回実行を境に発生していた)。
+if not logger.handlers:
+    # File Handler (Rotating)
+    file_handler = RotatingFileHandler(LOG_FILE, maxBytes=1024*1024, backupCount=5, encoding='utf-8')
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
 
-# Console Handler
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(logging.Formatter('[Scheduler] %(message)s'))
-logger.addHandler(console_handler)
+    # Console Handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter('[Scheduler] %(message)s'))
+    logger.addHandler(console_handler)
 
 def _button_row(buttons: list[tuple[str, str]]) -> list:
     """[(label, custom_id), ...] から Discord REST の components JSON を組み立てる。
@@ -358,6 +365,12 @@ def _run_morning_briefing() -> str:
 # Schedule Configuration
 # ---------------------------------------------------------
 # 新しいスケジュールを追加する場合は、ここに辞書を追加するだけでOKです。
+# 朝の生成系ジョブ (06:00〜08:00) には catch_up=True を付ける。理由:
+#   Windows Update の無人再起動などで朝にプロセスが居ないと、これらは予定の分に
+#   完全一致しないと発火しない仕様上、無言でその日の分を落とす (2026-08-12 に発生:
+#   05:00 に TrustedInstaller が再起動 → ログオンまで7時間 ARMS 不在 → 全滅)。
+# 相場系 (BTC Analysis / Crypto Market Scan / Crypto Sweep) には付けない:
+#   遅れて実行しても古い値動きを「今の分析」として出すだけで、無いより有害。
 SCHEDULE = [
     # Daily Note Generation (template-based with Calendar/Tasks/News)
     *(
@@ -365,11 +378,13 @@ SCHEDULE = [
             "time": "07:00",
             "name": "Daily Note Generation",
             "func": lambda: generate_daily_note(include_news=False),
+            "catch_up": True,
         }] if _HAS_DAILY_NOTE else (
             [{
                 "time": "07:30",
                 "name": "Daily Sync (Calendar/Tasks)",
                 "func": tool_sync_to_daily_note,
+                "catch_up": True,
             }] if _HAS_CALENDAR else []
         )
     ),
@@ -377,6 +392,7 @@ SCHEDULE = [
         "time": "06:00",
         "name": "X Trend Update",
         "func": _run_xtrend,
+        "catch_up": True,
     },
     # Inbox Clip Auto-Tagging: Obsidian Web Clipperが00_inboxに保存したノート(source:持ち)へ
     # BitNet(無料)でトピックタグ、Gemini(_determine_parent_moc)でMOC候補タグを付与する。
@@ -387,17 +403,20 @@ SCHEDULE = [
         "name": "Inbox Clip Auto-Tagging",
         "func": tag_untagged_clips,
         "silent": True,  # "0件でした" の定型通知はスパムになるため
+        "catch_up": True,
     },
     {
         "time": "07:30",
         "name": "Morning Briefing",
         "func": _run_morning_briefing,
         "silent": True,  # 自前でボタン付き Discord 通知を送るため定型通知は抑止
+        "catch_up": True,
     },
     {
         "time": "06:30",
         "name": "Auto Deep-Dive (XTrend TOP1)",
         "func": _run_auto_deep_dive,
+        "catch_up": True,
     },
     # 論文レーダー: arXiv/HuggingFace/Semantic Scholar の公開APIのみ (課金ゼロ)。
     # 06:45 は XTrend(06:00)/Deep-Dive(06:30) の後、朝ブリーフィング(07:30) の前。
@@ -405,6 +424,7 @@ SCHEDULE = [
         "time": "06:45",
         "name": "Paper Radar",
         "func": _run_paper_radar,
+        "catch_up": True,
     },
     # 週次ダイジェスト: docling キャプチャ + Gemini 2回。土曜の朝に1本だけ。
     # catch_up=True なので PC が落ちていた週も起動時に1回だけ追いかける。
@@ -427,7 +447,8 @@ SCHEDULE = [
     {
         "time": "08:00",
         "name": "Daily News",
-        "func": tool_fetch_daily_news
+        "func": tool_fetch_daily_news,
+        "catch_up": True,
     },
     {
         "time": "08:30",
@@ -592,13 +613,19 @@ def _record_job_run(name: str, dt: datetime.datetime) -> None:
 
 
 def _last_scheduled_occurrence(
-    now: datetime.datetime, weekday: int, hh: int, mm: int
+    now: datetime.datetime, weekday: int | None, hh: int, mm: int
 ) -> datetime.datetime:
-    """now 以前で最も近い「その曜日・その時刻」の日時を返す純関数。
+    """now 以前で最も近い「(その曜日の) その時刻」の日時を返す純関数。
+
+    weekday=None は曜日指定なしの日次ジョブを指し、直近の HH:MM を返す。
 
     例: now=月10:00, weekday=6(日), 23:30 -> 直前の日曜 23:30
+    例: now=火12:05, weekday=None,  07:00 -> 同じ火曜 07:00
+    例: now=火06:00, weekday=None,  07:00 -> 前日(月) 07:00
     """
     target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if weekday is None:
+        return target if target <= now else target - datetime.timedelta(days=1)
     candidate = target - datetime.timedelta(days=(now.weekday() - weekday) % 7)
     if candidate > now:
         candidate -= datetime.timedelta(days=7)
@@ -685,20 +712,32 @@ def _run_catch_up():
     """
     now = datetime.datetime.now()
     state = _load_job_state()
+    due: list[tuple[datetime.datetime, dict]] = []
 
     for task in SCHEDULE:
         if not task.get("catch_up"):
             continue
-        # catch_up は日次 HH:MM + weekday の週次ジョブを対象にする
+        # catch_up は HH:MM 発火のジョブが対象。weekday 有り=週次 / 無し=日次。
+        # every_minutes のジョブは「取りこぼし」の概念が無いので対象外。
         when = task.get("time")
         weekday = task.get("weekday")
-        if when is None or weekday is None:
+        if when is None:
             logger.warning(
-                f"catch_up 指定だが time/weekday が無い: {task['name']} — スキップ")
+                f"catch_up 指定だが time が無い: {task['name']} — スキップ")
             continue
         name = task["name"]
         hh, mm = (int(x) for x in when.split(":"))
         occurrence = _last_scheduled_occurrence(now, weekday, hh, mm)
+
+        # 「今の分」に予定されているものは catch-up の対象にしない。
+        # run_scheduler は last_run_minute="" で始まるのでメインループの1周目が
+        # 直後に同じジョブを発火させる。catch-up は逐次実行で数分遅れて到達しうるため、
+        # そのときには相手のロックが解放済みで **同じジョブが2回走る**
+        # (Gemini の二重課金 + tool_create_note の重複名フォールバックでノートが増える)。
+        # 定時発火に任せれば取りこぼしは起きない。
+        if occurrence >= now.replace(second=0, microsecond=0):
+            logger.info(f"⏭️ catch-up 対象外: {name} (この分の定時発火に任せる)")
+            continue
 
         last_run_iso = state.get(name)
         if not last_run_iso:
@@ -718,10 +757,32 @@ def _run_catch_up():
             logger.info(
                 f"⏰ catch-up 発火: {name} "
                 f"(予定 {occurrence:%Y-%m-%d %H:%M} > 前回 {last_run:%Y-%m-%d %H:%M})")
-            threading.Thread(
-                target=_execute_task, args=(task,), daemon=True).start()
+            due.append((occurrence, task))
         else:
             logger.info(f"✔️ catch-up 不要: {name} (前回 {last_run:%Y-%m-%d %H:%M} は最新)")
+
+    if not due:
+        return
+
+    # 予定時刻の早い順に「1本のスレッドで逐次」実行する。
+    # 並列に投げてはいけない: 朝の連鎖 (X Trend 06:00 → Auto Deep-Dive 06:30 →
+    # Morning Briefing 07:30) は前段が書いた結果を後段が読むため、順序が崩れると
+    # 後段が前日のデータを掴む。逐次なら通常発火と同じ順序になる。
+    due.sort(key=lambda item: item[0])
+
+    def _run_sequentially():
+        # 1本のスレッドで回すので、1ジョブの例外で残り全部が無言で消えないよう
+        # ここで隔離する。_execute_task は task["func"] の例外は自分で捕まえるが、
+        # その外側 (開始通知の送信・_lock 未初期化など) には except が無い。
+        for _, task in due:
+            try:
+                _execute_task(task)
+            except Exception as e:
+                logger.error(
+                    f"❌ catch-up 実行中に例外 ({task['name']}) — 残りは継続: {e}\n"
+                    f"{traceback.format_exc()}")
+
+    threading.Thread(target=_run_sequentially, daemon=True).start()
 
 
 def run_scheduler():

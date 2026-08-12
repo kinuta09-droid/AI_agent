@@ -192,6 +192,11 @@ def _default_search(query: str, top_k: int = 5) -> str:
 
 
 def _default_notify(message: str) -> None:
+    # ponytail: agent_scheduler は実行時 __main__ なので、この import は同ファイルを
+    # 別名モジュールとして再実行する (重い tools 群も再 import される)。実害だった
+    # ログの二重出力は agent_scheduler 側のハンドラ二重登録ガードで塞いだので据え置く。
+    # 通知経路を lib へ切り出すのは send_discord_notification の呼び出し側を
+    # まとめて移す時に。
     from agent_scheduler import send_discord_notification
     send_discord_notification(message)
 
