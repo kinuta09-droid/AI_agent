@@ -100,6 +100,20 @@ Phase1 リファレンス収集 → Phase2 アセット分離 → Phase3 コー�
       シーン構築関数(オブジェクト・色・光源・動きの数式)だけを差し替えれば、**再生成コストゼロで複数パターンを
       即座に切り替え比較**できる(Option Aの動画ループは1案ごとに生成コストと待ち時間が発生するため不利)。
       クライアントに複数方向を見せたい場合は、動画を作り分けるより先にOption Bでのパターン出しを検討する
+- [ ] **Phase1で集めた「核となるオブジェクト」を3Dで出すなら skill `img2threejs` を使う**(2026-08-14 導入・スモークテスト済)。
+      参照画像1枚 → 手続き的な `createXxxModel.ts`(`THREE.Group` を返す factory)を生成する。
+      呼び出しは `/img2threejs <画像> Rebuild this object as a Three.js model, keep proportions, angles, colours.`
+  - **接続点はパターン登録関数の中だけ**: 生成された factory を import して `scene.add(createXxxModel())` するだけで、
+    下記のPostFXプラグイン(残像/ブルーム/FilmPass)もパターン切り替え機構もそのまま乗る。配線コードは要らない
+  - **使ってよいのは「主役オブジェクト1個」に限る**。8パス×決定論ゲート×vision review を回すのでトークンと時間を食う。
+    背景のパーティクル・グラデーション・光の帯のような**形が曖昧なもの**は従来どおり直接書いたほうが速い
+  - 得意なのは**ハードサーフェス**(工業製品・機械・器物)。有機物やキャラクターは本人が「様式化された再構成」と明言しており、
+    Phase1で「蝶」「枝」のような有機物を核に選んだ場合は期待値を下げるか、Option Aの動画側に回す
+  - **仕様が浅いとTS生成そのものが拒否される (fail-closed)**。`generate_threejs_factory.py` は strict-quality を通らないと
+    `status: BLOCKED` を返して1行もコードを出さない。これは不具合ではなく仕様 — 出力が無いときは `cause` 配列に
+    「何が足りないか」が列挙されているので、コードではなく **spec を直す**(`refine-spec`)
+  - 実行は `python3`(README準拠)。本プロジェクトの `py` 規約はリポジトリ内コードの話で、この skill は
+    `~/.claude/skills/img2threejs` にある外部リポジトリなので適用外
 - [ ] **モーションブラーはEffectComposer等の追加ライブラリなしで疑似実装できる**: `renderer.autoClear = false`
       にした上で、毎フレーム (a) `renderer.clearDepth()` でdepthだけクリア → (b) 低不透明度(例: `opacity: 0.16`)の
       黒い全画面Plane(`OrthographicCamera`)を先に描画 → (c) 本シーンを重ねて描画、の順にすると前フレームが
