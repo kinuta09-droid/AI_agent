@@ -13,6 +13,7 @@ from lib.lib_shared import (
     find_file_in_vault, client, MODEL_NAME, MODEL_NAME_HEAVY, retry
 )
 from lib.lib_obsidian_cli import run_obsidian_cli
+from lib.lib_obsidian_utils import read_frontmatter_field
 
 # 週次アーカイブ対象フォルダ設定（Vault相対パス -> 挙動）。
 # 30_Main は既存アーカイブ資産と後方互換のため「フラット + 無印サマリー名」を維持する。
@@ -313,13 +314,8 @@ def tool_list_open_ideas(limit: int = 25) -> list[dict]:
         path = os.path.join(inbox_dir, f)
         if not os.path.isfile(path):
             continue
-        try:
-            with open(path, 'r', encoding='utf-8') as fh:
-                head = fh.read(500)
-        except Exception:
-            continue
-        m = re.search(r'^status:\s*(\S+)', head, re.MULTILINE)
-        if m and m.group(1) != 'open':
+        status = read_frontmatter_field(path, 'status')
+        if status is not None and status != 'open':
             continue
         items.append({"title": os.path.splitext(f)[0], "mtime": os.path.getmtime(path)})
     items.sort(key=lambda x: -x["mtime"])
