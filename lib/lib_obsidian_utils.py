@@ -100,6 +100,30 @@ def format_source_ref(source, filename: str, heading=None) -> str:
     return f"`{label}: {name.replace('`', '')}`"
 
 
+# ---------------------------------------------------------
+# Frontmatter の軽量読み取り (YAML全体はパースしない)
+# ---------------------------------------------------------
+# tool_list_open_ideas (status判定) と tool_vault_health (status欠落率メトリクス) が
+# 同じ「frontmatter先頭を正規表現で読む」処理を別々に実装しないよう、ここに集約する。
+# 全文パースしない理由: head_bytesで打ち切って良く、壊れたYAMLでも例外を出さず
+# None を返せる方が、健全性メトリクスのような走査系の用途では安全 (1件の壊れたノートで
+# 集計全体を止めてはいけない)。
+
+def read_frontmatter_field(path: str, key: str, head_bytes: int = 500) -> str | None:
+    """ノート先頭の frontmatter から `key: value` (単一行スカラー値) を1つ読む。
+
+    ファイル未存在・読み取り失敗・キー未設定はすべて None (例外を投げない)。
+    `tags:` のようなブロック値には非対応 (最初の空白区切りトークンのみを返す)。
+    """
+    try:
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            head = f.read(head_bytes)
+    except OSError:
+        return None
+    m = re.search(rf'^{re.escape(key)}:\s*(\S+)', head, re.MULTILINE)
+    return m.group(1) if m else None
+
+
 def get_obsidian_uri(file_path: str) -> str:
     """
     絶対パスを受け取り、ObsidianのURIスキーム（obsidian://open...）を返す。

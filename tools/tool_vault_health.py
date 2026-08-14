@@ -22,17 +22,30 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from lib.paths import VAULT_ROOT
-from lib.lib_obsidian_utils import format_wikilink
+from lib.lib_obsidian_utils import format_wikilink, read_frontmatter_field
 from tools.tool_vault_index import DB_PATH, SOURCE_VAULT, _connect
 
 STALE_DAYS = 14
 HEALTH_NOTE_PATH = os.path.join(VAULT_ROOT, "00_System", "Vault_Health.md")
 
+# plans/obsidian-agent-native-notes.md: status frontmatter欠落率の集計対象。
+# 30_Main のみが対象 (記事の言う「決定/知見」に一番近いノート種別)。
+# 01_Daily/02_News/03_Crypto/40_Report は生成物でありstatus概念が無いので対象外、
+# 00_inbox の Fleeting Note は既に status を持つ (tool_list_open_ideas) ので対象外。
+STATUS_GAP_TARGET_SUBDIR = "30_Main"
+
+# 30_Main配下でも Briefing/youtube_Source は人間が書く「決定/知見」ノートではなく
+# 01_Daily等と同じ生成物・クリップ (実測: 30_Main全72件中、status欠落62件は全てこの2種で
+# 手書きノート10件は既に全件status保持済み)。含めると欠落率が生成物側の量で決まってしまい
+# 実態と乖離するため、集計対象から除外する。
+STATUS_GAP_EXCLUDED_DIRS = {"Briefing", "youtube_Source"}
+
 _HEADER = (
     "# Vault Health\n\n"
-    f"週次で自動追記される、未使用ノート率 ({STALE_DAYS}日以上更新が無く被リンクも無いノートの割合) の推移。\n\n"
-    "| 日付 | 未使用率 | 未使用件数/総ノート数 |\n"
-    "|---|---|---|\n"
+    f"週次で自動追記される、未使用ノート率 ({STALE_DAYS}日以上更新が無く被リンクも無いノートの割合) と"
+    f"{STATUS_GAP_TARGET_SUBDIR}のstatus欠落率の推移。\n\n"
+    "| 日付 | 未使用率 | 未使用件数/総ノート数 | status欠落率 | 欠落件数/総ノート数 |\n"
+    "|---|---|---|---|---|\n"
 )
 
 
@@ -75,30 +88,67 @@ def _compute_unused_stats(db_path: str = DB_PATH, now: float = None) -> dict:
             "stale_days": STALE_DAYS, "cutoff": cutoff}
 
 
-def _format_health_entry(stats: dict, today: str = None) -> str:
-    """追記する1行 (純関数)。"""
+def _compute_frontmatter_gap_stats(vault_root: str = VAULT_ROOT,
+                                    target_subdir: str = STATUS_GAP_TARGET_SUBDIR) -> dict:
+    """target_subdir 配下のノートで status: frontmatter が欠落している率を集計する。
+
+    vault_index.db の files テーブルは filepath/mtime/chunk_count/source のみで
+    frontmatter内容を保持しないため、tools/tool_obsidian.py:_keyword_hits と同じ
+    os.walk 方式でファイルを直接読む (LLM不使用)。対象ディレクトリが無ければ
+    total=0 として返す (空Vault/未作成フォルダは正常系)。
+    """
+    target_dir = os.path.join(vault_root, target_subdir)
+    total = 0
+    missing = 0
+    if os.path.isdir(target_dir):
+        for root, dirs, files in os.walk(target_dir):
+            dirs[:] = [d for d in dirs if d not in STATUS_GAP_EXCLUDED_DIRS]
+            for file in files:
+                if not file.endswith(".md"):
+                    continue
+                total += 1
+                path = os.path.join(root, file)
+                if read_frontmatter_field(path, "status") is None:
+                    missing += 1
+    pct = round(100.0 * missing / total, 1) if total else 0.0
+    return {"total": total, "missing_status": missing, "pct": pct,
+            "target_subdir": target_subdir}
+
+
+def _format_health_entry(stats: dict, today: str = None, gap_stats: dict = None) -> str:
+    """追記する1行 (純関数)。gap_stats が無ければ従来どおり3列 (後方互換用)。"""
     today = today or datetime.date.today().isoformat()
-    return f"| {today} | {stats['pct']}% | {stats['unused']}/{stats['total']}件 |\n"
+    base = f"| {today} | {stats['pct']}% | {stats['unused']}/{stats['total']}件 |"
+    if gap_stats is None:
+        return base + "\n"
+    return (base + f" {gap_stats['pct']}% |"
+            f" {gap_stats['missing_status']}/{gap_stats['total']}件 |\n")
 
 
 def check_vault_health(db_path: str = DB_PATH, note_path: str = HEALTH_NOTE_PATH,
-                        now: float = None, today: str = None) -> str:
+                        now: float = None, today: str = None,
+                        vault_root: str = VAULT_ROOT) -> str:
     """スケジューラ/手動エントリポイント。例外は握りつぶさず f"Error: {e}" を返す。"""
     try:
         stats = _compute_unused_stats(db_path=db_path, now=now)
         if stats["total"] == 0:
             return "Vault Health: インデックス未構築または空のため計測をスキップしました。"
 
+        gap_stats = _compute_frontmatter_gap_stats(vault_root=vault_root)
+
         os.makedirs(os.path.dirname(note_path), exist_ok=True)
         if not os.path.exists(note_path):
             with open(note_path, "w", encoding="utf-8") as f:
                 f.write(_HEADER)
         with open(note_path, "a", encoding="utf-8") as f:
-            f.write(_format_health_entry(stats, today=today))
+            f.write(_format_health_entry(stats, today=today, gap_stats=gap_stats))
 
+        gap_note = (f", {gap_stats['target_subdir']}のstatus欠落率 {gap_stats['pct']}% "
+                    f"({gap_stats['missing_status']}/{gap_stats['total']}件)"
+                    if gap_stats["total"] else "")
         return (f"Vault Health: 未使用率 {stats['pct']}% "
-                f"({stats['unused']}/{stats['total']}件, {STALE_DAYS}日以上更新なし＆被リンク0) "
-                f"→ {format_wikilink('Vault_Health')}")
+                f"({stats['unused']}/{stats['total']}件, {STALE_DAYS}日以上更新なし＆被リンク0)"
+                f"{gap_note} → {format_wikilink('Vault_Health')}")
     except Exception as e:
         return f"Error: {e}"
 
