@@ -139,6 +139,7 @@ PARALLEL_TESTS = frozenset({
     "test_inbox_clip_tagging.py",
     "test_keyword_hits.py",
     "test_learning_db_rotation.py",
+    "test_lib_obsidian_utils.py",
     "test_mcp_create.py",
     "test_moc_auto_link.py",
     "test_multiquery_rerank.py",
