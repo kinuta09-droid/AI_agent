@@ -12,6 +12,7 @@ plans/obsidian-agent-native-notes.md status欠落率メトリクス)
   [7] status欠落率: frontmatterにstatus:が無いノートを正しく数える
   [8] status欠落率: 対象ディレクトリ不在は total==0 (空Vault相当、例外を出さない)
   [9] check_vault_health の追記行にstatus欠落率の列が含まれる
+  [10] status欠落率: Briefing/youtube_Source配下は生成物として集計から除外される
 
 本番Vault・logs/vault_index.db には一切触れない (tempfile の DB/note path のみ使う)。
 """
@@ -210,6 +211,34 @@ def test_check_vault_health_includes_frontmatter_gap_column():
             content = f.read()
         assert "100.0%" in content, content  # A.md 1件が丸ごと欠落 -> 100.0%
     print("✅ [9] check_vault_healthの追記行にstatus欠落率が含まれる")
+
+
+# ---------------------------------------------------------
+# [10] Briefing/youtube_Source の除外
+# ---------------------------------------------------------
+
+def test_compute_frontmatter_gap_stats_excludes_generated_subdirs():
+    with tempfile.TemporaryDirectory() as tmp:
+        main_dir = os.path.join(tmp, "30_Main")
+        os.makedirs(main_dir)
+        with open(os.path.join(main_dir, "A.md"), "w", encoding="utf-8") as f:
+            f.write("---\nstatus: wip\n---\n\nBody\n")  # 手書きノート・status有り
+
+        briefing_dir = os.path.join(main_dir, "Briefing")
+        os.makedirs(briefing_dir)
+        with open(os.path.join(briefing_dir, "Briefing_2026-01-01.md"), "w", encoding="utf-8") as f:
+            f.write("---\ntype: briefing\n---\n\nBody\n")  # status無し・生成物
+
+        yt_dir = os.path.join(main_dir, "youtube_Source")
+        os.makedirs(yt_dir)
+        with open(os.path.join(yt_dir, "clip.md"), "w", encoding="utf-8") as f:
+            f.write("---\ntags:\n  - type/youtube\n---\n\nBody\n")  # status無し・クリップ
+
+        stats = health._compute_frontmatter_gap_stats(vault_root=tmp)
+        assert stats["total"] == 1, stats  # Briefing/youtube_Source の2件は数えない
+        assert stats["missing_status"] == 0, stats
+        assert stats["pct"] == 0.0, stats
+    print("✅ [10] Briefing/youtube_Source配下は生成物として集計から除外される")
 
 
 if __name__ == "__main__":
