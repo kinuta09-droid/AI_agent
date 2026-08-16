@@ -13,6 +13,7 @@ NotebookLM ツール — ユニットテスト
 """
 import os
 import sys
+import tempfile
 
 sys.stdout.reconfigure(encoding='utf-8')
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +48,8 @@ class _FakeClient:
         self.create_calls = 0
         self.url_source_calls = []
         self.text_source_calls = []
+        self.file_source_calls = []
+        self.deleted_source_ids = []
         self._sources_by_notebook = {}
 
     def list_notebooks(self):
@@ -82,6 +85,19 @@ class _FakeClient:
             "references": [{"cited_text": "根拠テキスト"}],
         }
 
+    def add_file(self, notebook_id, file_path, wait=True, wait_timeout=180.0):
+        self.file_source_calls.append(file_path)
+        src = {"id": f"src-file-{len(self.file_source_calls)}",
+               "title": os.path.basename(file_path), "url": None}
+        self._sources_by_notebook.setdefault(notebook_id, []).append(src)
+        return src
+
+    def delete_source(self, source_id):
+        self.deleted_source_ids.append(source_id)
+        for nb_id, srcs in self._sources_by_notebook.items():
+            self._sources_by_notebook[nb_id] = [s for s in srcs if s.get("id") != source_id]
+        return True
+
 
 def _patch_client(fake_client):
     """tools.tool_notebooklm._get_client を差し替え、finally で元に戻す関数を返す。"""
@@ -105,6 +121,24 @@ def _always_existing(genre):
 def _always_new(genre):
     """常に『新規ジャンル提案』を返す _classify_genre の差し替え関数を作る。"""
     return lambda content_hint, existing_genres: {"genre": genre, "is_new": True}
+
+
+def _patch_export_vault(fn):
+    """tools.tool_notebooklm._export_vault を差し替え、finally で元に戻す関数を返す。"""
+    original = nlm._export_vault
+    nlm._export_vault = fn
+    return original
+
+
+def _write_files(tmpdir, contents: dict) -> list:
+    """{同期キー: 内容} から export_vault() 相当の戻り値 [(path, group, count, chars), ...] を作る。"""
+    results = []
+    for name, content in contents.items():
+        path = os.path.join(tmpdir, f"{name}.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        results.append((path, name, 1, len(content)))
+    return results
 
 
 # ---------------------------------------------------------
@@ -363,6 +397,139 @@ def test_run_notebooklm_research_error_result_is_detected_as_failure():
         assert result.startswith("Error:"), result
     finally:
         nlm._get_client = original
+
+
+# ---------------------------------------------------------
+# sync_vault_export — Vault再エクスポート→差分アップロード
+# ---------------------------------------------------------
+
+def test_sync_vault_export_reports_export_failure():
+    def _boom():
+        raise RuntimeError("disk full")
+
+    original = _patch_export_vault(_boom)
+    try:
+        result = nlm.sync_vault_export("お試し")
+        assert is_failure_result(result), result
+    finally:
+        nlm._export_vault = original
+
+
+def test_sync_vault_export_first_run_adds_all_files():
+    fake = _FakeClient()
+    ocl = _patch_client(fake)
+    try:
+        oc = _patch_export_vault(lambda: _write_files(tempfile.mkdtemp(), {"01_Daily": "content A", "30_Main": "content B"}))
+        try:
+            result = nlm.sync_vault_export("お試し")
+            assert len(fake.file_source_calls) == 2, fake.file_source_calls
+            assert "追加: 2件" in result, result
+            assert "更新: 0件" in result, result
+            assert "変更無しでスキップ: 0件" in result, result
+        finally:
+            nlm._export_vault = oc
+    finally:
+        nlm._get_client = ocl
+
+
+def test_sync_vault_export_second_run_skips_unchanged_files():
+    fake = _FakeClient()
+    ocl = _patch_client(fake)
+    try:
+        contents = {"01_Daily": "content A", "30_Main": "content B"}
+        oc = _patch_export_vault(lambda: _write_files(tempfile.mkdtemp(), contents))
+        try:
+            nlm.sync_vault_export("お試し")
+            r2 = nlm.sync_vault_export("お試し")
+            assert "変更無しでスキップ: 2件" in r2, r2
+            assert len(fake.file_source_calls) == 2, "2回目でアップロードが再実行された"
+            assert fake.deleted_source_ids == [], "変更が無いのに削除された"
+        finally:
+            nlm._export_vault = oc
+    finally:
+        nlm._get_client = ocl
+
+
+def test_sync_vault_export_replaces_only_changed_files():
+    fake = _FakeClient()
+    ocl = _patch_client(fake)
+    try:
+        state = {"01_Daily": "content A", "30_Main": "content B"}
+        oc = _patch_export_vault(lambda: _write_files(tempfile.mkdtemp(), state))
+        try:
+            nlm.sync_vault_export("お試し")
+            nb_id = fake.notebooks[0].id
+            before = {s["title"].split("__")[0]: s["id"] for s in fake._sources_by_notebook[nb_id]}
+
+            state["01_Daily"] = "content A CHANGED"
+            r2 = nlm.sync_vault_export("お試し")
+
+            assert "更新: 1件" in r2, r2
+            assert "変更無しでスキップ: 1件" in r2, r2
+            assert fake.deleted_source_ids == [before["01_Daily"]], fake.deleted_source_ids
+
+            after = {s["title"].split("__")[0]: s["id"] for s in fake._sources_by_notebook[nb_id]}
+            assert after["30_Main"] == before["30_Main"], "変更していないファイルのソースIDが変わった"
+            assert after["01_Daily"] != before["01_Daily"], "変更したファイルのソースIDが変わっていない"
+        finally:
+            nlm._export_vault = oc
+    finally:
+        nlm._get_client = ocl
+
+
+def test_sync_vault_export_upload_failure_keeps_existing_source():
+    class _FailingFileClient(_FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.fail_next = False
+
+        def add_file(self, notebook_id, file_path, wait=True, wait_timeout=180.0):
+            if self.fail_next:
+                return None
+            return super().add_file(notebook_id, file_path, wait, wait_timeout)
+
+    fake = _FailingFileClient()
+    ocl = _patch_client(fake)
+    try:
+        state = {"01_Daily": "content A"}
+        oc = _patch_export_vault(lambda: _write_files(tempfile.mkdtemp(), state))
+        try:
+            nlm.sync_vault_export("お試し")
+            nb_id = fake.notebooks[0].id
+            prior_id = fake._sources_by_notebook[nb_id][0]["id"]
+
+            state["01_Daily"] = "content A CHANGED"
+            fake.fail_next = True
+            r2 = nlm.sync_vault_export("お試し")
+
+            assert "失敗" in r2, r2
+            assert fake.deleted_source_ids == [], "アップロード失敗時に既存ソースを削除してしまった"
+            assert fake._sources_by_notebook[nb_id][0]["id"] == prior_id, "既存ソースが無傷で残っていない"
+        finally:
+            nlm._export_vault = oc
+    finally:
+        nlm._get_client = ocl
+
+
+def test_sync_vault_export_removes_temp_export_dir():
+    fake = _FakeClient()
+    ocl = _patch_client(fake)
+    try:
+        tmp_holder = {}
+
+        def _make_export():
+            tmp = tempfile.mkdtemp()
+            tmp_holder["dir"] = tmp
+            return _write_files(tmp, {"01_Daily": "content A"})
+
+        oc = _patch_export_vault(_make_export)
+        try:
+            nlm.sync_vault_export("お試し")
+            assert not os.path.isdir(tmp_holder["dir"]), "一時エクスポートディレクトリが残っている"
+        finally:
+            nlm._export_vault = oc
+    finally:
+        nlm._get_client = ocl
 
 
 # ---------------------------------------------------------

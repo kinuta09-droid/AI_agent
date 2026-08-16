@@ -33,6 +33,12 @@ references (引用元の実テキスト) が付くため、そのまま出典と
   ユーザーが選んだジャンル名を genre_override に入れて再度呼び出すと、
   分類をスキップしてそのまま進む(新規作成/既存流用のどちらでも動く)。
 
+Vault同期 (sync_vault_export):
+  tool_vault_export.export_vault() でVaultをMarkdown化し、指定ジャンルのノートブックへ
+  差分だけ反映する (add_file でファイルをそのままアップロード、内容ハッシュをファイル名に
+  埋め込んで前回との差分を判定)。ReActツールとしては登録しない (日次/週次バッチ想定)。
+  Vaultエクスポート自体の責務は tool_vault_export.py 側に残し、NotebookLM操作だけをここに集約する。
+
 依存: notebooklm-mcp-cli (システムPython側にも導入済みである前提。
 未導入/認証切れの場合は Error 文字列を返す — 他の tools/* と同じ規約)。
 
@@ -42,6 +48,7 @@ Usage:
 """
 import hashlib
 import os
+import shutil
 import sys
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -228,6 +235,87 @@ def _format_genre_confirmation(proposed_genre: str, existing_genres: list) -> st
         "回答が得られたら選ばれたジャンル名を genre_override に指定して "
         "tool_notebooklm をもう一度呼び出してください。"
     )
+    return "\n".join(lines)
+
+
+def _export_vault():
+    """tool_vault_export.export_vault をテストで差し替え可能にするための薄いラッパー。"""
+    from tools.tool_vault_export import export_vault
+    return export_vault()
+
+
+def _file_content_hash(path: str) -> str:
+    with open(path, "rb") as f:
+        return hashlib.sha1(f.read()).hexdigest()[:10]
+
+
+def _parse_synced_sources(existing: list) -> dict:
+    """既存ソース一覧から {同期キー: (source_id, hash)} を復元する。
+
+    sync_vault_export がアップロード時に付けた `{同期キー}__{hash}.md` という
+    ファイル名がそのままソースのタイトルになる (add_file はタイトル指定不可のため)。
+    """
+    parsed = {}
+    for s in existing:
+        title = os.path.splitext(s.get("title") or "")[0]
+        if "__" in title:
+            key, _, h = title.rpartition("__")
+            parsed[key] = (s.get("id"), h)
+    return parsed
+
+
+def sync_vault_export(genre: str) -> str:
+    """Vaultを再エクスポートし、指定ジャンルのノートブックへ差分だけ反映する。
+
+    変更が無いファイルはスキップ、変更があったファイルは新規アップロードが成功して
+    から古いソースを削除する(先に削除すると、アップロード失敗時にソースが
+    一時的にゼロになる空白期間が生まれるため)。エクスポートに使った一時ファイルは
+    処理後に削除する(永続化はNotebookLM側に任せる)。
+    """
+    try:
+        results = _export_vault()
+    except Exception as e:
+        return f"Error: Vaultエクスポートに失敗しました: {e}"
+
+    output_dir = os.path.dirname(results[0][0]) if results else None
+    added, replaced, skipped, failed = [], [], [], []
+    try:
+        client = _get_client()
+        notebook_id = find_or_create_notebook(genre)
+        existing = _parse_synced_sources(client.get_notebook_sources_with_types(notebook_id))
+
+        for path, _group_name, _file_count, _char_count in results:
+            sync_key = os.path.splitext(os.path.basename(path))[0]
+            content_hash = _file_content_hash(path)
+            prior = existing.get(sync_key)
+
+            if prior and prior[1] == content_hash:
+                skipped.append(sync_key)
+                continue
+
+            hashed_path = os.path.join(os.path.dirname(path), f"{sync_key}__{content_hash}.md")
+            os.replace(path, hashed_path)
+            try:
+                result = client.add_file(notebook_id, hashed_path, wait=True, wait_timeout=180.0)
+                if not result or not result.get("id"):
+                    raise RuntimeError("アップロードに失敗しました")
+                if prior:
+                    client.delete_source(prior[0])
+                    replaced.append(sync_key)
+                else:
+                    added.append(sync_key)
+            except Exception as e:
+                failed.append(f"{sync_key}: {e}")
+    finally:
+        if output_dir and os.path.isdir(output_dir):
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+    lines = [
+        f"[NotebookLM Vault同期: {genre}]",
+        f"追加: {len(added)}件 / 更新: {len(replaced)}件 / 変更無しでスキップ: {len(skipped)}件",
+    ]
+    if failed:
+        lines.append("失敗: " + "; ".join(failed))
     return "\n".join(lines)
 
 
