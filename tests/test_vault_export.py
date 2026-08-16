@@ -101,7 +101,31 @@ def test_export_splits_large_folder_into_parts_without_breaking_notes():
         shutil.rmtree(out_dir, ignore_errors=True)
 
 
+def test_export_skips_unreadable_file_instead_of_crashing():
+    vault = tempfile.mkdtemp(prefix="vault_export_src_")
+    out_dir = tempfile.mkdtemp(prefix="vault_export_out_")
+    try:
+        _write(vault, "01_Daily/good.md", "読める本文")
+        # 非UTF-8バイト列 (cp932の「日」など) を .md として直接書き込み、
+        # errors="replace" で壊れずに読み進むことを確認する。
+        bad_path = os.path.join(vault, "01_Daily", "bad.md")
+        with open(bad_path, "wb") as f:
+            f.write("見出し\n".encode("utf-8") + b"\x93\xfa" + "本文".encode("utf-8"))
+
+        results = tool_vault_export.export_vault(vault_root=vault, output_dir=out_dir)
+
+        _check("不正エンコーディングのファイルがあっても例外を投げず完走する", len(results) == 1)
+        with open(results[0][0], "r", encoding="utf-8") as f:
+            content = f.read()
+        _check("読めるノートの本文は含まれる", "読める本文" in content)
+        _check("壊れたファイルも(文字化けしつつ)スキップされずに含まれる", "## 01_Daily/bad.md" in content)
+    finally:
+        shutil.rmtree(vault, ignore_errors=True)
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_export_excludes_strips_frontmatter_and_groups_by_folder()
     test_export_splits_large_folder_into_parts_without_breaking_notes()
+    test_export_skips_unreadable_file_instead_of_crashing()
     sys.exit(1 if _FAIL else 0)

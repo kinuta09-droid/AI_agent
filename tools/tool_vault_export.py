@@ -47,9 +47,17 @@ def _walk_vault_md(vault_root):
 
 
 def _read_body(abs_path):
-    """ファイルを読み frontmatter を除去した本文を返す。"""
-    with open(abs_path, "r", encoding="utf-8") as f:
-        text = f.read()
+    """ファイルを読み frontmatter を除去した本文を返す。読めなければ None。
+
+    tool_vault_index._embed_updated_files() と同じ方針 (errors="replace" +
+    OSError握りつぶし)。929件規模の一括走査で1件の破損/非UTF-8ファイルが
+    全体を止めないようにする。
+    """
+    try:
+        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return None
     return _FRONTMATTER_RE.sub("", text, count=1).strip()
 
 
@@ -74,7 +82,7 @@ def _split_into_parts(notes, max_chars):
     chunks, length, count = [], 0, 0
     for abs_path, rel_path in notes:
         body = _read_body(abs_path)
-        if not body:
+        if not body:  # 空ノート or 読み込み失敗 (None) のどちらもスキップ
             continue
         chunk = f"## {rel_path}\n\n{body}\n"
         if chunks and length + len(chunk) > max_chars:
