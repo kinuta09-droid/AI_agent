@@ -1,6 +1,6 @@
 ---
 name: retrieval-tuning
-description: Vault ハイブリッド検索・リランク (Gemini/Ollama)・ツール説明文によるPlanner選択・検索評価 (eval_retrieval/eval_agent) の既知バグパターンと計測方法論。tools/tool_vault_hybrid.py, lib/tool_registry.py, scripts/eval_retrieval.py, scripts/eval_agent.py を触るとき、またはローカルLLM (Ollama) のレイテンシ/VRAM問題を調査するときに読む。
+description: Vault ハイブリッド検索・リランク (Gemini/Ollama)・ツール説明文によるPlanner選択・検索評価 (eval_retrieval/eval_agent)・Vault全体を一括走査する系のツール実装 の既知バグパターンと計測方法論。tools/tool_vault_hybrid.py, tools/tool_vault_index.py, tools/tool_vault_export.py, lib/tool_registry.py, scripts/eval_retrieval.py, scripts/eval_agent.py を触るとき、またはローカルLLM (Ollama) のレイテンシ/VRAM問題を調査するときに読む。
 ---
 
 # Retrieval, Reranking & Tool-Selection Tuning
@@ -29,6 +29,10 @@ description: Vault ハイブリッド検索・リランク (Gemini/Ollama)・ツ
 
 - **`_keyword_hits` は空白区切りの短いキーワード列専用で、日本語の長文をそのまま渡すと事実上無力化する**。`tool_find_related_notes` (アイデアノートの要約文をqueryにする新機能) 実装時に判明: `tools/tool_obsidian.py:_keyword_hits` は `keywords.split()` でトークン化するが、日本語の1〜3文にはスペースが無いため**文全体が1トークン**になり、キーワード側マッチングは「その一文全体と完全一致する行があるか」相当に潰れて実質0件しか拾えない。`_hybrid_hits` はこの状態でも例外を出さず**意味検索(embedding)側だけが実質的な検索エンジンになって**動いてしまうので気付きにくい。長い自然文をqueryにする新機能を作るときは、事前に主要な名詞句を抽出してキーワード側にも渡すか、キーワード側の寄与が実質ゼロであることを前提に設計する
 - **「関連ノートが見つからない」調査は、まず `vault_index.db` の files テーブルに対象が存在するかを見てから、ランキングかしきい値の問題かを切り分ける**。`vault_index.db` は `agent_scheduler.py` の "Vault Semantic Index" ジョブ (毎日03:15、`tools/tool_vault_index.update_vault_index`) でのみ更新され、保存時にリアルタイム反映されない。実機で「同日作成した類似ノート同士が関連候補に出ない」報告があったが、`sqlite3` で `SELECT filepath, mtime FROM files WHERE filepath LIKE '%...%'` を引くと両方ともインデックス済みで、真因は索引未反映ではなく **5位にヒットしていたが `top_k=3` の枠から漏れていただけ**だった。理論上は「当日03:15より後に作成したノートはその日一日ヒットしない」ケースもあり得るので、原因を決め打ちせず filesテーブル確認→順位/しきい値の順で切り分ける
+
+## Vault一括走査ツールの実装パターン
+
+- **Vault内の全 `.md` を一括走査するツールは、1件のファイル読み込み失敗で全体を止めてはいけない**。新規実装した `tools/tool_vault_export.py` の `_read_body()` は単純な `open(..., encoding="utf-8")` で、非UTF-8保存や破損ファイルが1件混じるだけで `UnicodeDecodeError` 等が飛び、実測929件の走査全体が停止する欠陥があった。`/grill` で指摘して気付いたのは、**同じ「Vault全体を舐める」処理である `tools/tool_vault_index.py` (505-513行目・623-626行目) には既に `errors="replace"` (デコード不能バイトは置換文字で読み進める) + `try/except OSError: continue` (該当ファイルだけ諦めて次へ) という確立パターンがあった**にもかかわらず、新規実装時にこれを見落として素朴に再実装してしまったこと。**Vault全走査系の新規ツールを書くときは、まず `tool_vault_index.py` のファイル読み込み部分を先に見て、このパターンをそのまま踏襲する** (車輪の再発明をしない)。修正は `errors="replace"` + `except OSError` で該当ファイルをスキップする形に書き直して対処 (`3650a32`)。回帰テストは未追加 (929件中1件の破損ファイルを人工的に用意するコストが高いため、当面は本節の明文化のみ)。2026-08-16
 
 ## ツール説明文とPlanner選択
 
