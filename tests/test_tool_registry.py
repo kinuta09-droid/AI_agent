@@ -107,6 +107,8 @@ MUST_NOT_BE_PARALLEL_SAFE = {
     # scaffold_webgl は out へファイル書き込み、phase2/phase4_video は
     # out_dir へ画像/動画をダウンロード書き込みする
     "tool_web_design",
+    # NotebookLM 上にノートブック/ソースを作成し、処理完了まで待つ (外部状態の書き込み)
+    "tool_notebooklm",
 }
 
 

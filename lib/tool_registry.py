@@ -101,6 +101,16 @@ def _tool_paper_digest_wrapper(index: int = 1, arxiv_id: str = "", mode: str = "
         return f"[paper_digest error] {e}"
 
 
+def _tool_notebooklm_wrapper(topic: str, sources: str, question: str) -> str:
+    """NotebookLMにソース(URL/テキスト)を読み込ませ、根拠(引用元)付きで質問に回答させる。"""
+    try:
+        from tools.tool_notebooklm import run_notebooklm_research
+        source_list = [s.strip() for s in sources.split("\n") if s.strip()]
+        return run_notebooklm_research(topic, source_list, question)
+    except Exception as e:
+        return f"[notebooklm error] {e}"
+
+
 def _tool_read_document_wrapper(path_or_url: str, ocr: bool = False) -> str:
     """任意のPDF/Office文書 (URL/ローカルパス) をdoclingでMarkdown化して返す (ノートは保存しない)。"""
     try:
@@ -247,6 +257,12 @@ TOOL_ENTRIES = [
     {"name": "tool_paper_radar", "usage": "tool_paper_radar(field='ai_agent', top_k=5, days=7)",
      "description": "指定分野の注目論文を自動判別: arXiv新着 × HuggingFace upvote × 被引用速度 × 新しさでスコアリングしてObsidianに保存",
      "func": _tool_paper_radar_wrapper},
+    {"name": "tool_notebooklm", "usage": "tool_notebooklm(topic, sources, question)",
+     "description": "NotebookLMにソース(URL改行区切り複数可/生テキスト)を読み込ませ、"
+                     "根拠(引用元)付きで質問に回答させる。捏造しない設計のため、"
+                     "『このソースに書かれている内容だけ』を厳密に知りたいときに使う。"
+                     "処理に数十秒〜数分かかる",
+     "func": _tool_notebooklm_wrapper},
     {"name": "tool_paper_digest", "usage": "tool_paper_digest(index=1, arxiv_id='', mode='sns')",
      "description": "注目論文の本文をdoclingでキャプチャし要約→Obsidian保存→X投稿スレッド/note記事の下書きを生成 (mode: sns/note/both/none)",
      "func": _tool_paper_digest_wrapper},
