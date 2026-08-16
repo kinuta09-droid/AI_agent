@@ -5,6 +5,9 @@
 4. Execute changes and run verification
 5. If Claude makes a mistake -> fix it, then update `.claude/rules/known-bug-patterns.md`
    (or the relevant skill) with the lesson — see `bug-pattern-archivist`
+   **記録前に検証を緑にする**: `py verify_project.py` / 該当 `test_*.py` が通ってから教訓を書く。
+   赤いまま書くと「直したつもり」を恒久ルール化してしまう (Agent-Knowledge-Memory-Wiki の
+   verifier-gate 発想を採用、2026-08-16)
 
 ## AI Instruction Principles (Vibe Coding 2.0)
 - **1 session, 1 feature**: 1つの会話に複数の修正/機能を混ぜない。新しい機能・バグ修正は新しいチャットで
