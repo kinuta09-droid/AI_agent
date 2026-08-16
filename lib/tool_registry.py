@@ -101,12 +101,12 @@ def _tool_paper_digest_wrapper(index: int = 1, arxiv_id: str = "", mode: str = "
         return f"[paper_digest error] {e}"
 
 
-def _tool_notebooklm_wrapper(topic: str, sources: str, question: str) -> str:
+def _tool_notebooklm_wrapper(topic: str, sources: str, question: str, genre_override: str = "") -> str:
     """NotebookLMにソース(URL/テキスト)を読み込ませ、根拠(引用元)付きで質問に回答させる。"""
     try:
         from tools.tool_notebooklm import run_notebooklm_research
         source_list = [s.strip() for s in sources.split("\n") if s.strip()]
-        return run_notebooklm_research(topic, source_list, question)
+        return run_notebooklm_research(topic, source_list, question, genre_override=genre_override)
     except Exception as e:
         return f"[notebooklm error] {e}"
 
@@ -257,10 +257,14 @@ TOOL_ENTRIES = [
     {"name": "tool_paper_radar", "usage": "tool_paper_radar(field='ai_agent', top_k=5, days=7)",
      "description": "指定分野の注目論文を自動判別: arXiv新着 × HuggingFace upvote × 被引用速度 × 新しさでスコアリングしてObsidianに保存",
      "func": _tool_paper_radar_wrapper},
-    {"name": "tool_notebooklm", "usage": "tool_notebooklm(topic, sources, question)",
+    {"name": "tool_notebooklm", "usage": "tool_notebooklm(topic, sources, question, genre_override='')",
      "description": "NotebookLMにソース(URL改行区切り複数可/生テキスト)を読み込ませ、"
                      "根拠(引用元)付きで質問に回答させる。捏造しない設計のため、"
                      "『このソースに書かれている内容だけ』を厳密に知りたいときに使う。"
+                     "topicは正確なジャンル名でなくてよい(ざっくりした内容の説明でよく、"
+                     "既存のノートブックと自動でジャンル分けされる)。新しいジャンルが必要と"
+                     "判定された場合は何も作成せず確認メッセージを返すので、その内容をユーザーに"
+                     "伝えて選んでもらい、選ばれたジャンル名を genre_override に入れて再度呼び出すこと。"
                      "処理に数十秒〜数分かかる",
      "func": _tool_notebooklm_wrapper},
     {"name": "tool_paper_digest", "usage": "tool_paper_digest(index=1, arxiv_id='', mode='sns')",
