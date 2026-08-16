@@ -177,6 +177,7 @@ PARALLEL_TESTS = frozenset({
     "test_user_memory.py",
     "test_vault_chunking.py",
     "test_vault_cosine_search.py",
+    "test_vault_export.py",
     "test_vault_health.py",
     "test_vault_index_mtime.py",
     "test_vault_links.py",
