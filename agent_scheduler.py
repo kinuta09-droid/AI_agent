@@ -226,6 +226,29 @@ def _run_skill_radar() -> str:
     return _skill_radar(top_k=5)
 
 
+# Vault NotebookLM Sync (optional — import失敗でスケジューラ全体を壊さない)
+try:
+    from tools.tool_notebooklm import sync_vault_export
+    _HAS_NOTEBOOKLM = True
+except ImportError as _e:
+    _notebooklm_err = str(_e)
+    _HAS_NOTEBOOKLM = False
+
+# sync_vault_export の対象ジャンル。NotebookLM側の実ノートブックタイトルは
+# "[ARMS] Vault" (find_or_create_notebookがNOTEBOOK_TITLE_PREFIXを自動で
+# 前置するため、ここでは "Vault" のみ指定する)。NotebookLM側でこのノートブックを
+# 手動リネームした場合は同じコミットでこの定数も書き換えること
+# (find_or_create_notebookはタイトル完全一致でしか探さないため)。
+_VAULT_SYNC_GENRE = "Vault"
+
+
+def _run_vault_notebooklm_sync() -> str:
+    """Vaultを再エクスポートしてNotebookLMへ差分同期する (変更が無いファイルはスキップ)。"""
+    if not _HAS_NOTEBOOKLM:
+        return f"Vault NotebookLM Sync: tool_notebooklm not available ({_notebooklm_err})"
+    return sync_vault_export(_VAULT_SYNC_GENRE)
+
+
 def _run_paper_digest() -> str:
     """レーダー1位を docling でキャプチャして要約 + 投稿下書きを生成する。
 
@@ -569,6 +592,16 @@ SCHEDULE = [
         "func": check_vault_health,
         "weekday": 6,  # 日曜
         "catch_up": True,
+    },
+    # Vault NotebookLM Sync: 03:25 Activity Index 等と同じ夜間メンテナンス帯の末尾。
+    # 内容ハッシュで前回との差分だけ判定するため、変更が無い日はほぼ即座に終わる
+    # (tools/tool_notebooklm.py の sync_vault_export docstring参照)。同じ帯の日次ジョブ
+    # (Document Conversion/Vault Semantic Index/Activity Index) はどれもcatch_upを
+    # 付けていない慣習に合わせ、こちらも付けない (1晩逃しても翌晩に自然に追いつく)。
+    {
+        "time": "03:35",
+        "name": "Vault NotebookLM Sync",
+        "func": _run_vault_notebooklm_sync,
     },
     {
         "time": "23:30",
