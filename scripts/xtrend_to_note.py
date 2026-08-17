@@ -30,6 +30,7 @@ from lib.paths import ENV_PATH
 
 load_dotenv(ENV_PATH)
 
+from lib.ja_style_guard import enforce_style
 from lib.lib_shared import client, MODEL_NAME_HEAVY, WORK_DIR
 
 XTREND_DIR = os.path.join(WORK_DIR, "40_Report", "XTrend")
@@ -172,7 +173,7 @@ def generate_article(features: list[dict]) -> str:
         model=MODEL_NAME_HEAVY,
         contents=prompt,
     )
-    return resp.text
+    return enforce_style(resp.text or "", prompt, MODEL_NAME_HEAVY)
 
 
 # ---------------------------------------------------------

@@ -59,3 +59,9 @@ BITNET_DIR = os.getenv("BITNET_DIR", "").strip() or DEFAULT_BITNET_DIR
 # (plans/docling-integration.md Phase 1-3)。設定する場合は .env に1行:
 #   DOCLING_ARTIFACTS_PATH=C:\AI_agent\models\docling
 DOCLING_ARTIFACTS_PATH = os.getenv("DOCLING_ARTIFACTS_PATH", "").strip() or None
+
+# AI生成日本語の文体チェック辞書 (グローバル ~/.claude/hooks/ 配下、A系統hookと共有)。
+# ホームディレクトリ配下の軽い参照なので expanduser で解決する
+# (VAULT_ROOT/BITNET_DIR と違いリポジトリ外の "実体" ではなく単なる設定ファイル)。
+DEFAULT_JA_STYLE_DICT_PATH = os.path.join(os.path.expanduser("~"), ".claude", "hooks", "data", "ja_style_ng_words.json")
+JA_STYLE_DICT_PATH = os.getenv("JA_STYLE_DICT_PATH", "").strip() or DEFAULT_JA_STYLE_DICT_PATH

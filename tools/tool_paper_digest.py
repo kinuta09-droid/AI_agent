@@ -48,6 +48,7 @@ from lib.paths import ENV_PATH
 load_dotenv(ENV_PATH)
 
 from lib.docling_client import CaptureError, capture_document, docling_import_error, is_available
+from lib.ja_style_guard import enforce_style
 from lib.lib_shared import (
     EDITORIAL_STYLE_RULES,
     MODEL_NAME_HEAVY,
@@ -216,7 +217,8 @@ Xプレミアム (Basic以上) に加入しており、140字制限なく長文�
 
 {EDITORIAL_STYLE_RULES}"""
     resp = client.models.generate_content(model=MODEL_NAME_HEAVY, contents=prompt)
-    parsed = safe_json_loads(resp.text or "")
+    text = enforce_style(resp.text or "", prompt, MODEL_NAME_HEAVY)
+    parsed = safe_json_loads(text)
     post = parsed.get("post") if isinstance(parsed, dict) else None
     if not isinstance(post, str) or not post.strip():
         print("[PaperDigest] ⚠️ SNS下書き生成が期待した形式になりませんでした")
@@ -415,7 +417,8 @@ arXiv: {paper.get('abs_url', '')}
 
 {EDITORIAL_STYLE_RULES}"""
     resp = client.models.generate_content(model=MODEL_NAME_HEAVY, contents=prompt)
-    digest = safe_json_loads(resp.text or "")
+    text = enforce_style(resp.text or "", prompt, MODEL_NAME_HEAVY)
+    digest = safe_json_loads(text)
     if not isinstance(digest, dict) or not digest.get("one_liner"):
         print("[PaperDigest] ❌ 要約が期待した JSON になりませんでした")
         return {}
@@ -490,7 +493,7 @@ def build_note_article(digest: dict, paper: dict, capture: dict) -> dict:
 
 {EDITORIAL_STYLE_RULES}"""
     resp = client.models.generate_content(model=MODEL_NAME_HEAVY, contents=prompt)
-    text = (resp.text or "").strip()
+    text = enforce_style((resp.text or "").strip(), prompt, MODEL_NAME_HEAVY)
     match = re.match(r'^#\s+(.+?)\s*\n', text)
     if not match:
         print(f"[PaperDigest] ⚠️ note記事にタイトル行が無かったため{subject}タイトルで代替")
