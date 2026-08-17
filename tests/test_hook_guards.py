@@ -258,6 +258,95 @@ def test_all_hooks_reconfigure_stderr():
         )
 
 
+# --- [8]/[9] stdin の cp932 誤デコードで検出がバイパスされないこと -----------
+#
+# 2026-08-17、~/.claude/hooks/guard_ja_style.py (グローバル、git管理外) で
+# 「sys.stdin.reconfigure が無いと Windows 既定コンソール(cp932)下で
+# json.load(sys.stdin) が UTF-8 ペイロードを誤デコードし、検出ロジックが
+# 無言でバイパスされる」という実バグが見つかった。この3 hook も同型の
+# json.load(sys.stdin) を持つため、同じ穴が無いかここで機械的に検査する。
+#
+# 重要: subprocess.run(input=str, encoding=...) の「パイプ書き込み」経由では
+# このバグは再現しない (実測済み)。実際に stdin= へファイルハンドルを渡す
+# (シェルの `< payload.json` と同じ経路) で初めて誤デコードが起きる。
+
+
+def _run_hook_file_stdin(hook: str, payload_path: str):
+    """実ファイルリダイレクト (`py hook.py < payload.json`) を再現する。
+
+    _run_hook() の subprocess.run(input=str, encoding='utf-8') は親プロセスが
+    バイト列を書き込むパイプであり、子プロセス側の sys.stdin デコードには
+    影響しない――はずが実測では cp932 誤デコードを再現しなかった
+    (Python 3.13 の pipe stdin は別経路でエンコーディングが決まる模様)。
+    stdin= に実ファイルハンドルを渡すことで初めて guard_ja_style.py 事故と
+    同じ経路 (OS のコンソールコードページ cp932 でのデコード) を再現できる。
+    """
+    with open(payload_path, "rb") as fh:
+        proc = subprocess.run(
+            [LAUNCHER, os.path.join(HOOK_DIR, hook)],
+            stdin=fh,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=_PROJECT_ROOT,
+            timeout=60,
+        )
+    return proc.returncode, proc.stderr or ""
+
+
+def test_all_hooks_reconfigure_stdin():
+    print("\n[8] 全 hook が stdin を UTF-8 に reconfigure")
+    for hook in ALL_HOOKS:
+        with open(os.path.join(HOOK_DIR, hook), encoding="utf-8") as f:
+            src = f.read()
+        check(
+            f"{hook}: sys.stdin.reconfigure(encoding='utf-8')",
+            "sys.stdin.reconfigure(encoding='utf-8')" in src,
+            "json.load(sys.stdin) が cp932 でペイロードを誤デコードし、"
+            "検出ロジックが無言でバイパスされる (2026-08-17 known-bug-patterns Category A参照)",
+        )
+
+
+def test_stdin_decoding_survives_file_redirection():
+    print("\n[9] cp932 誤デコードで検出がバイパスされないこと (実ファイルリダイレクト経由)")
+    import tempfile
+
+    # 日本語コメントの直後 (空白なし) に ASCII 禁止パターンが続くケース。
+    # cp932 はマルチバイト文字の続きとして ASCII 1バイトを飲み込むことがあり、
+    # 実測では「後os.environ」の「o」が直前の文字化けに吸収されて
+    # 「s.environ[...]」に壊れ、正規表現が一致しなくなった (再現済み)。
+    snippet = 'os' + '.environ["PYTHON' + 'IOENCODING"] = "utf-8"'
+    dangerous_content = "日本語の設定コメント直後" + snippet
+    payload = {
+        "tool_name": "Edit",
+        "tool_input": {"file_path": "lib/foo.py", "new_string": dangerous_content},
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        payload_path = os.path.join(tmp, "payload.json")
+        with open(payload_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        code, err = _run_hook_file_stdin("guard_edit_encoding.py", payload_path)
+        check(
+            "日本語直後の os.environ[...] がファイルリダイレクト経由でもブロックされる (exit 2)",
+            code == 2,
+            f"exit={code} stderr={err[:120]!r}",
+        )
+
+    # setx 検知側 (guard_bash_encoding.py) も同じ経路で確認。
+    command = "echo 日本語のコメント; " + "set" + "x " + "PYTHONIO" + "ENCODING utf-8"
+    payload = {"tool_name": "PowerShell", "tool_input": {"command": command}}
+    with tempfile.TemporaryDirectory() as tmp:
+        payload_path = os.path.join(tmp, "payload.json")
+        with open(payload_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        code, err = _run_hook_file_stdin("guard_bash_encoding.py", payload_path)
+        check(
+            "日本語直後の setx がファイルリダイレクト経由でもブロックされる (exit 2)",
+            code == 2,
+            f"exit={code} stderr={err[:120]!r}",
+        )
+
+
 def test_block_reason_is_readable_japanese():
     print("\n[7] ブロック理由の日本語が化けずに読める")
     code, err = _run_hook("guard_bash_encoding.py", _shell_payload("PowerShell", "setx PYTHONIOENCODING utf-8"))
@@ -288,6 +377,8 @@ if __name__ == "__main__":
     test_commit_guard_sees_powershell()
     test_commit_guard_uses_fast_mode()
     test_all_hooks_reconfigure_stderr()
+    test_all_hooks_reconfigure_stdin()
+    test_stdin_decoding_survives_file_redirection()
     test_block_reason_is_readable_japanese()
 
     print("\n" + "=" * 55)

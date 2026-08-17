@@ -23,6 +23,7 @@ import json
 import re
 import sys
 
+sys.stdin.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
 
 # このフックが対象とするシェル系ツール。settings.json の matcher と同期させること
