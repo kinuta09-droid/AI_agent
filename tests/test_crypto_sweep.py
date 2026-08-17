@@ -241,14 +241,29 @@ def test_resolve_levels():
 
 
 def test_scheduler_registration():
-    print("[Test] スケジューラ登録 (4h足クローズ直後・silent)")
-    src = open(os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "agent_scheduler.py"), encoding="utf-8").read()
-    check("tool_crypto_sweep を import", "tool_crypto_sweep" in src)
-    # UTC 0/4/8/12/16/20 の確定直後 = JST 09/13/17/21/01/05 の6枠すべて。
-    # 09:00 の Market Scan は読み物で記録しないため 09:05 も必要
+    """暗号資産系ジョブが自動実行に登録されていないこと (2026-08-17 稼働停止)。
+
+    停止の根拠は agent_scheduler.py の SCHEDULE 内コメントを参照。
+    **判定は実際の SCHEDULE を見る** — 以前はソース文字列に '"01:05"' が
+    含まれるかで判定していたが、その方式ではジョブをコメントアウトしても
+    文字列が残って緑のままになる (CLAUDE.md「表示と実態の食い違い」)。
+    停止を解除して再開するときは、このテストを「登録されていること」側へ
+    書き戻すこと。
+    """
+    print("[Test] 暗号資産ジョブがスケジューラに登録されていない (稼働停止中)")
+    import agent_scheduler
+
+    names = {job.get("name") for job in agent_scheduler.SCHEDULE}
+    for stopped in ("BTC Analysis", "Crypto Market Scan", "Crypto Sweep",
+                    "Crypto Prediction Audit", "Weekly Crypto Report",
+                    "Crypto Event Watcher"):
+        check(f"{stopped} は未登録", stopped not in names)
+
+    # 停止したジョブの時間枠が他ジョブに流用されていないことも確認する
+    # (流用されると「止めたはず」の枠で別処理が動いていても気付けない)
+    times = {job.get("time") for job in agent_scheduler.SCHEDULE}
     for t in ("01:05", "05:05", "09:05", "13:05", "17:05", "21:05"):
-        check(f"{t} に登録", f'"{t}"' in src)
+        check(f"{t} の枠が空いている", t not in times)
 
 
 def test_scan_has_no_side_effects():

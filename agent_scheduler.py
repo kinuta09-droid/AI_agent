@@ -53,12 +53,8 @@ _JOB_STATE_LOCK = threading.Lock()
 # agent_hello.py と同じディレクトリなので直接 import
 # ツールを直接インポート
 from tools.tool_web import tool_fetch_daily_news
-from tools.tool_crypto import (
-    tool_scan_crypto_market, tool_analyze_crypto, tool_audit_predictions,
-    tool_crypto_sweep,
-)
-from tools.tool_crypto_watcher import tool_crypto_watch
-from tools.tool_crypto_stats import tool_weekly_crypto_report
+# 暗号資産系ツールの import は意図的に外してある (2026-08-17 稼働停止)。
+# 理由と再開条件は下の SCHEDULE 内のコメントを参照。
 from engine_plan_execute import generate_performance_dashboard
 from tools.tool_obsidian import tool_merge_all_weekly_reports, tag_untagged_clips
 
@@ -392,8 +388,8 @@ def _run_morning_briefing() -> str:
 #   Windows Update の無人再起動などで朝にプロセスが居ないと、これらは予定の分に
 #   完全一致しないと発火しない仕様上、無言でその日の分を落とす (2026-08-12 に発生:
 #   05:00 に TrustedInstaller が再起動 → ログオンまで7時間 ARMS 不在 → 全滅)。
-# 相場系 (BTC Analysis / Crypto Market Scan / Crypto Sweep) には付けない:
-#   遅れて実行しても古い値動きを「今の分析」として出すだけで、無いより有害。
+# 相場系のジョブには付けない: 遅れて実行しても古い値動きを「今の分析」として
+#   出すだけで、無いより有害 (現在は暗号資産系ジョブ自体を停止中。下記参照)。
 SCHEDULE = [
     # Daily Note Generation (template-based with Calendar/Tasks/News)
     *(
@@ -473,56 +469,32 @@ SCHEDULE = [
         "func": tool_fetch_daily_news,
         "catch_up": True,
     },
-    {
-        "time": "08:30",
-        "name": "BTC Analysis",
-        "func": lambda: tool_analyze_crypto("BTC/USDT")
-    },
-    {
-        "time": "09:00",
-        "name": "Crypto Market Scan",
-        "func": tool_scan_crypto_market
-    },
-    # Crypto Sweep (Phase 3): 4h足クローズ直後に全20銘柄を評価して記録する。
-    # 本戦略は4h足なのに、ライブは長らく 08:30 の BTC 1本/日 しか評価しておらず
-    # trade_log が5ヶ月ゼロ件だった。UTC 0/4/8/12/16/20 の確定直後 = JST の
-    # 09/13/17/21/01/05。09:00 の Market Scan は「読み物」であり記録はしない
-    # (手動 /scan の副作用で Gemini/Tavily が走ると応答が数分に伸びるため)。
-    # trade_log への記録経路は sweep 1本に寄せているので 09:05 も必要。
-    # 評価自体は Binance 公開APIのみで課金ゼロ、Gemini/Tavily を使うのは
-    # BUY系候補のフル分析だけ (SWEEP_COUNTER で日次上限)。
-    # 定型通知はスパムになるため silent。
-    *[
-        {
-            "time": t,
-            "name": "Crypto Sweep",
-            "func": tool_crypto_sweep,
-            "silent": True,
-        }
-        for t in ("01:05", "05:05", "09:05", "13:05", "17:05", "21:05")
-    ],
-    {
-        "time": "22:30",
-        "name": "Crypto Prediction Audit",
-        "func": tool_audit_predictions
-    },
-    # Weekly Crypto Report (Phase 4): 日曜22:30監査の直後・23:30アーカイブ前。
-    # 判定済みデータが最新の状態で週次集計 → Obsidian保存 + 定型通知
-    {
-        "time": "22:50",
-        "name": "Weekly Crypto Report",
-        "func": tool_weekly_crypto_report,
-        "weekday": 6,  # 日曜のみ
-        "catch_up": True,  # 起動時に取りこぼしを追いかけ実行
-    },
-    # Crypto Event Watcher (Phase 2): 15分毎の無料監視。閾値超過時のみ
-    # フル分析+Discord通知を自前で行うため silent (15分毎の定型通知はスパム)
-    {
-        "every_minutes": 15,
-        "name": "Crypto Event Watcher",
-        "func": tool_crypto_watch,
-        "silent": True,
-    },
+    # ------------------------------------------------------------------
+    # 暗号資産系ジョブ (11件) は 2026-08-17 に稼働停止。戦略を白紙から
+    # 作り直す方針のため、旧ロジックの自動実行を止めてある。
+    #   停止したもの: BTC Analysis(08:30) / Crypto Market Scan(09:00) /
+    #   Crypto Sweep(01:05,05:05,09:05,13:05,17:05,21:05) /
+    #   Crypto Prediction Audit(22:30) / Weekly Crypto Report(日曜22:50) /
+    #   Crypto Event Watcher(15分毎)
+    #
+    # 停止の根拠 (20銘柄×4年のバックテスト + ランダムエントリー対照実験):
+    #   - 4年通算の期待値は -0.00R。勝率33.3%はSL2.5ATR/TP5ATRの幾何が
+    #     定めるランダムウォークの値そのもので、判定ロジックの寄与ではない
+    #   - 同一条件のランダムエントリーとの差は ±2pt で符号が反転する
+    #     (2022H2-2023 +2.0pt / 2024 -2.2pt / 2025-2026 +1.7pt) = ノイズ水準
+    #   - 1R は価格の約6.8%。往復コスト0.3〜0.5% = 0.05〜0.07R を引くと、
+    #     手仕舞い7種すべてが2024年以降マイナス
+    #   - 収益が出ていたのは2022H2-2023のみで、その期間はランダムエントリー
+    #     でも勝率36.2% (損益分岐33.3%超) = 相場の上昇が配っていた分
+    #
+    # 再開の条件: 特徴量単体の予測力を先に測り、コストをモデルに織り込み、
+    #   ルールを決めてからアウトオブサンプルで一度だけ検証すること。
+    #   複数試して最良を選んだ時点でその数字は使えない (今回は11通り試して
+    #   最良を選ぶと偶然だけで +0.13R かさ上げされ、計測値 +0.042R を上回った)。
+    #
+    # Discord の手動コマンド (/crypto, /scan, /crypto-stats 等) と
+    # lib/tool_registry.py の登録は残してある — 自動実行ではないため。
+    # ------------------------------------------------------------------
     # Engagement Snapshot (Phase 1): .obsidian/workspace.json の lastOpenFiles は
     # 46件ローリングなので、間隔が長いと「開いた」を取りこぼす。ローカルJSONの
     # 読み取りのみで API 課金ゼロ。定型通知はスパムになるため silent。

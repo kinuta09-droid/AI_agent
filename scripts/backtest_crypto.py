@@ -317,17 +317,22 @@ def write_outputs(results: list, symbols: list, days: int) -> str:
                    f"{_summary_table(res['summary'])}\n"
                    f"Trades CSV: `{res['csv_path']}`\n\n")
 
-    if len(results) == 2:
-        a, b = results[0], results[1]
-        ta, tb = a["summary"]["total"], b["summary"]["total"]
-        report += (f"## ⚖️ 比較サマリ ({a['config'].label} vs {b['config'].label})\n\n"
-                   f"| 指標 | {a['config'].label} | {b['config'].label} |\n|---|---|---|\n"
-                   f"| Trades | {ta['trades']} | {tb['trades']} |\n"
-                   f"| 勝率 | {_fmt(ta['win_rate'], pct=True)} | {_fmt(tb['win_rate'], pct=True)} |\n"
-                   f"| 期待値R | {_fmt(ta['expectancy_r'])} | {_fmt(tb['expectancy_r'])} |\n"
-                   f"| 累積R | {ta['cum_r']:+.1f} | {tb['cum_r']:+.1f} |\n"
-                   f"| 最大DD (R) | {ta['max_drawdown_r']:.1f} | {tb['max_drawdown_r']:.1f} |\n"
-                   f"| EXPIRED | {ta['expired']} | {tb['expired']} |\n\n")
+    if len(results) >= 2:
+        labels = [r["config"].label for r in results]
+        totals = [r["summary"]["total"] for r in results]
+        header = " vs ".join(labels)
+        cols = " | ".join(labels)
+        sep = "|".join(["---"] * (len(labels) + 1))
+        cum_r_strs = [f"{t['cum_r']:+.1f}" for t in totals]
+        max_dd_strs = [f"{t['max_drawdown_r']:.1f}" for t in totals]
+        report += (f"## ⚖️ 比較サマリ ({header})\n\n"
+                   f"| 指標 | {cols} |\n|{sep}|\n"
+                   f"| Trades | {' | '.join(str(t['trades']) for t in totals)} |\n"
+                   f"| 勝率 | {' | '.join(_fmt(t['win_rate'], pct=True) for t in totals)} |\n"
+                   f"| 期待値R | {' | '.join(_fmt(t['expectancy_r']) for t in totals)} |\n"
+                   f"| 累積R | {' | '.join(cum_r_strs)} |\n"
+                   f"| 最大DD (R) | {' | '.join(max_dd_strs)} |\n"
+                   f"| EXPIRED | {' | '.join(str(t['expired']) for t in totals)} |\n\n")
 
     report += ("## ⚠️ 制約\n"
                "- news_risk=NEUTRAL固定 (SYSTEMIC_RISK遮断が効かない分やや楽観的)\n"

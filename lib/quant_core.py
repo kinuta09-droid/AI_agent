@@ -229,6 +229,12 @@ def _decide_signal(news_risk: str, is_falling_knife: bool, has_divergence: bool,
     Returns: (signal, confidence, signal_type, reasons)
     signal_type は最初に成立したブランチで確定する
     (優先順位: smc_sweep > panic_reversal > trend_pullback > rsi_oversold)。
+
+    2026-08-17: このロジックによる自動売買判定は稼働停止中
+    (agent_scheduler.py の SCHEDULE 内コメント参照)。20銘柄×4年の
+    バックテストとランダムエントリー対照実験で、判定ロジックの寄与が
+    ノイズ水準 (±2pt、符号反転) と確認されたため。手動コマンド経由では
+    引き続き呼ばれるので関数自体は残してある。
     """
     signal = "NEUTRAL"
     confidence = 0.0
