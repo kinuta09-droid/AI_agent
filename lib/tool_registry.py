@@ -101,14 +101,59 @@ def _tool_paper_digest_wrapper(index: int = 1, arxiv_id: str = "", mode: str = "
         return f"[paper_digest error] {e}"
 
 
-def _tool_notebooklm_wrapper(topic: str, sources: str, question: str, genre_override: str = "") -> str:
-    """NotebookLMにソース(URL/テキスト)を読み込ませ、根拠(引用元)付きで質問に回答させる。"""
+def _tool_notebooklm_wrapper(topic: str, sources, question: str, genre_override: str = "") -> str:
+    """NotebookLMにソース(URL/テキスト)を読み込ませ、根拠(引用元)付きで質問に回答させる。
+
+    sources は usage 上は改行区切り文字列だが、Plannerが args_json でJSON配列
+    (Python list) を渡してくることがある(2026-08-17実測: 'list' object has no
+    attribute 'split' で失敗)。「複数可」という説明文からLLMがJSON配列を自然に
+    連想するのは避けがたいため、文字列/リストどちらで来ても動くようにする。
+    """
     try:
         from tools.tool_notebooklm import run_notebooklm_research
-        source_list = [s.strip() for s in sources.split("\n") if s.strip()]
+        if isinstance(sources, list):
+            source_list = [str(s).strip() for s in sources if str(s).strip()]
+        else:
+            source_list = [s.strip() for s in str(sources).split("\n") if s.strip()]
         return run_notebooklm_research(topic, source_list, question, genre_override=genre_override)
     except Exception as e:
         return f"[notebooklm error] {e}"
+
+
+def _tool_notebooklm_research_wrapper(
+    topic: str, query: str, genre_override: str = "", source: str = "web", mode: str = "fast"
+) -> str:
+    """NotebookLMのDeepSearch相当: クエリからソースを自動発見しノートブックへ根拠付きでインポートする。"""
+    try:
+        from tools.tool_notebooklm import research_and_import
+        return research_and_import(topic, query, genre_override=genre_override, source=source, mode=mode)
+    except Exception as e:
+        return f"[notebooklm_research error] {e}"
+
+
+def _tool_notebooklm_studio_create_wrapper(
+    topic: str, artifact_type: str, genre_override: str = "", focus_prompt: str = "", description: str = ""
+) -> str:
+    """NotebookLMのStudio機能で音声/動画/マインドマップ/インフォグラフィック/クイズ/フラッシュカード等を生成開始する。"""
+    try:
+        from tools.tool_notebooklm import create_studio_artifact
+        return create_studio_artifact(
+            topic, artifact_type, genre_override=genre_override,
+            focus_prompt=focus_prompt, description=description,
+        )
+    except Exception as e:
+        return f"[notebooklm_studio_create error] {e}"
+
+
+def _tool_notebooklm_studio_status_wrapper(
+    topic: str, genre_override: str = "", artifact_id: str = ""
+) -> str:
+    """create_studio_artifactで開始したStudio成果物の生成状況/完成物URLを確認する。"""
+    try:
+        from tools.tool_notebooklm import check_studio_status
+        return check_studio_status(topic, genre_override=genre_override, artifact_id=artifact_id)
+    except Exception as e:
+        return f"[notebooklm_studio_status error] {e}"
 
 
 def _tool_read_document_wrapper(path_or_url: str, ocr: bool = False) -> str:
@@ -267,6 +312,29 @@ TOOL_ENTRIES = [
                      "伝えて選んでもらい、選ばれたジャンル名を genre_override に入れて再度呼び出すこと。"
                      "処理に数十秒〜数分かかる",
      "func": _tool_notebooklm_wrapper},
+    {"name": "tool_notebooklm_research",
+     "usage": "tool_notebooklm_research(topic, query, genre_override='', source='web', mode='fast')",
+     "description": "NotebookLMのDeepSearch相当: クエリからWeb(またはGoogle Drive)を自動検索し、"
+                     "見つかったソースをノートブックへ根拠付きで自動インポートする。ユーザーが"
+                     "「リサーチして」と依頼した場合はtool_web_searchより優先してこちらを使う"
+                     "(「調べて」だけの通常の依頼はtool_web_search)。"
+                     "mode='fast'は約30秒、'deep'は約5分かかりWeb限定。"
+                     "topic/genre_override は tool_notebooklm と同じジャンル確認ゲートに従う",
+     "func": _tool_notebooklm_research_wrapper},
+    {"name": "tool_notebooklm_studio_create",
+     "usage": "tool_notebooklm_studio_create(topic, artifact_type, genre_override='', focus_prompt='', description='')",
+     "description": "NotebookLMのノートブック内ソースから音声概要/動画概要/マインドマップ/"
+                     "インフォグラフィック/スライド/レポート/クイズ/フラッシュカード(Anki相当)/"
+                     "データテーブルを生成開始する (artifact_type: audio/video/mind_map/infographic/"
+                     "slide_deck/report/quiz/flashcards/data_table)。data_table指定時はdescription必須。"
+                     "生成に数分〜数十分かかるため起動のみ行い待機しない。戻り値のジャンル名とartifact_idを"
+                     "tool_notebooklm_studio_status に渡して進捗を確認すること",
+     "func": _tool_notebooklm_studio_create_wrapper},
+    {"name": "tool_notebooklm_studio_status",
+     "usage": "tool_notebooklm_studio_status(topic, genre_override='', artifact_id='')",
+     "description": "tool_notebooklm_studio_create で開始した生成物の進捗と完成物URLを確認する。"
+                     "genre_override には studio_create が返した確定ジャンル名をそのまま渡すこと",
+     "func": _tool_notebooklm_studio_status_wrapper},
     {"name": "tool_paper_digest", "usage": "tool_paper_digest(index=1, arxiv_id='', mode='sns')",
      "description": "注目論文の本文をdoclingでキャプチャし要約→Obsidian保存→X投稿スレッド/note記事の下書きを生成 (mode: sns/note/both/none)",
      "func": _tool_paper_digest_wrapper},

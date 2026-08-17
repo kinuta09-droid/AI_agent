@@ -8,6 +8,13 @@ NotebookLM ツール — ユニットテスト
     一周回すだけで課金や実副作用が起きてはいけない)。
   - notebooklm-mcp-cli 自体の内部実装(RPC形式等)には依存しない。
     _get_client() が返すオブジェクトの公開メソッド呼び出し・戻り値だけをテストする。
+  - notebooklm_tools.services.auth.credentials_are_usable もモジュール読み込み時点で
+    常に「認証OK」を返すスタブに差し替える (下記参照)。_check_auth() が
+    run_notebooklm_research 等の入口で呼ばれるようになったため、差し替えないと
+    このテストファイルを実行するだけで実際のGoogleへネットワークアクセスが発生し、
+    かつこのマシンの実際の認証状態(切れている場合がある)次第でテストの合否が
+    ぶれてしまう。認証切れそのものを検証するテストは、この既定値を個別に
+    上書きしてから実行する。
 
 実行: py tests/test_notebooklm.py
 """
@@ -23,6 +30,9 @@ if _PROJECT_ROOT not in sys.path:
 import lib.lib_shared as lib_shared
 import tools.tool_notebooklm as nlm
 from lib.bot_errors import is_failure_result
+
+import notebooklm_tools.services.auth as _nlm_auth
+_nlm_auth.credentials_are_usable = lambda force=False: (True, "configured", None)
 
 
 class _FakeGeminiResp:
@@ -51,6 +61,9 @@ class _FakeClient:
         self.file_source_calls = []
         self.deleted_source_ids = []
         self._sources_by_notebook = {}
+        self.research_start_calls = []
+        self.studio_create_calls = []
+        self.studio_artifacts = {}
 
     def list_notebooks(self):
         return self.notebooks
@@ -98,6 +111,39 @@ class _FakeClient:
             self._sources_by_notebook[nb_id] = [s for s in srcs if s.get("id") != source_id]
         return True
 
+    # --- research_and_import が使う notebooklm_tools.services.research 経由の呼び出し ---
+
+    def start_research(self, notebook_id, query, source, mode):
+        self.research_start_calls.append((notebook_id, query, source, mode))
+        return {"task_id": "task-1", "notebook_id": notebook_id}
+
+    def poll_research(self, notebook_id, target_task_id=None, target_query=None):
+        return {
+            "status": "completed",
+            "task_id": target_task_id or "task-1",
+            "sources": [{"url": "https://found.example/a", "title": "Found A", "result_type": 1}],
+            "report": "見つかった内容の要約レポート",
+        }
+
+    def import_research_sources(self, notebook_id, task_id, sources, timeout=300.0):
+        imported = [{"id": f"src-research-{i}", "title": s.get("title"), "url": s.get("url")}
+                    for i, s in enumerate(sources, start=1)]
+        self._sources_by_notebook.setdefault(notebook_id, []).extend(imported)
+        return imported
+
+    # --- create_studio_artifact/check_studio_status が使う
+    # notebooklm_tools.services.studio 経由の呼び出し ---
+
+    def create_audio_overview(self, notebook_id, source_ids, format_code, length_code, language, focus_prompt):
+        self.studio_create_calls.append(("audio", notebook_id, source_ids))
+        return {"artifact_id": "artifact-1", "status": "in_progress"}
+
+    def poll_studio_status(self, notebook_id):
+        return self.studio_artifacts.get(notebook_id, [])
+
+    def list_mind_maps(self, notebook_id):
+        return []
+
 
 def _patch_client(fake_client):
     """tools.tool_notebooklm._get_client を差し替え、finally で元に戻す関数を返す。"""
@@ -114,19 +160,31 @@ def _patch_classify(fn):
 
 
 def _always_existing(genre):
-    """常に『既存ジャンルとして確定』を返す _classify_genre の差し替え関数を作る。"""
-    return lambda content_hint, existing_genres: {"genre": genre, "is_new": False}
+    """常に『既存ジャンルに強く一致』を返す _classify_genre の差し替え関数を作る。"""
+    return lambda content_hint, existing_genres: {
+        "existing_match": genre, "match_is_strong": True, "new_genre_suggestion": genre,
+    }
 
 
 def _always_new(genre):
-    """常に『新規ジャンル提案』を返す _classify_genre の差し替え関数を作る。"""
-    return lambda content_hint, existing_genres: {"genre": genre, "is_new": True}
+    """常に『既存との一致が弱く、新規ジャンルを提案』を返す _classify_genre の差し替え関数を作る。"""
+    return lambda content_hint, existing_genres: {
+        "existing_match": "", "match_is_strong": False, "new_genre_suggestion": genre,
+    }
 
 
 def _patch_export_vault(fn):
     """tools.tool_notebooklm._export_vault を差し替え、finally で元に戻す関数を返す。"""
     original = nlm._export_vault
     nlm._export_vault = fn
+    return original
+
+
+def _patch_credentials_are_usable(fn):
+    """notebooklm_tools.services.auth.credentials_are_usable を差し替え、finally で元に戻す関数を返す。"""
+    import notebooklm_tools.services.auth as nlm_auth
+    original = nlm_auth.credentials_are_usable
+    nlm_auth.credentials_are_usable = fn
     return original
 
 
@@ -139,6 +197,106 @@ def _write_files(tmpdir, contents: dict) -> list:
             f.write(content)
         results.append((path, name, 1, len(content)))
     return results
+
+
+# ---------------------------------------------------------
+# _check_auth — 認証切れを早期に・正確に検出する (2026-08-17)
+#
+# 実測: Cookieの鮮度確認トークンが数時間の未使用で失効し、それを引数の問題と
+# 誤解したCriticが tool_web_search へのフォールバックや存在しないファイルへの
+# 追記を繰り返した。genre分類やリサーチを試みる前に認証を確認し、失敗時は
+# 即座に「nlm loginしてください」と分かりやすく返すことで、無駄な再試行の
+# 連鎖を防ぐ。
+# ---------------------------------------------------------
+
+def test_check_auth_returns_empty_when_usable():
+    import notebooklm_tools.services.auth as nlm_auth
+    original = _patch_credentials_are_usable(lambda: (True, "configured", None))
+    try:
+        assert nlm._check_auth() == ""
+    finally:
+        nlm_auth.credentials_are_usable = original
+
+
+def test_check_auth_returns_login_instruction_when_expired():
+    import notebooklm_tools.services.auth as nlm_auth
+    original = _patch_credentials_are_usable(lambda: (False, "expired", "cookies expired"))
+    try:
+        result = nlm._check_auth()
+        assert result.startswith("Error:"), result
+        assert "nlm login" in result, result
+        assert "cookies expired" in result, result
+    finally:
+        nlm_auth.credentials_are_usable = original
+
+
+def test_check_auth_fails_open_on_exception():
+    import notebooklm_tools.services.auth as nlm_auth
+
+    def _boom():
+        raise RuntimeError("network down")
+
+    original = _patch_credentials_are_usable(_boom)
+    try:
+        assert nlm._check_auth() == "", "認証チェック自体の失敗で実処理まで止めてはいけない"
+    finally:
+        nlm_auth.credentials_are_usable = original
+
+
+def test_run_notebooklm_research_fails_fast_when_auth_expired():
+    """認証切れのとき、ジャンル分類やソース投入を一切試みず即座にエラーを返すこと。"""
+    import notebooklm_tools.services.auth as nlm_auth
+    fake = _FakeClient()
+
+    def _boom_classify(content_hint, existing_genres):
+        raise AssertionError("認証切れのはずなのに分類が呼ばれた")
+
+    oa = _patch_credentials_are_usable(lambda: (False, "expired", "cookies expired"))
+    oc, ocl = _patch_classify(_boom_classify), _patch_client(fake)
+    try:
+        result = nlm.run_notebooklm_research("t", ["https://example.com"], "q")
+        assert is_failure_result(result), result
+        assert "nlm login" in result, result
+        assert fake.create_calls == 0, "認証切れなのにノートブックが作成された"
+    finally:
+        nlm_auth.credentials_are_usable = oa
+        nlm._classify_genre, nlm._get_client = oc, ocl
+
+
+def test_research_and_import_fails_fast_when_auth_expired():
+    import notebooklm_tools.services.auth as nlm_auth
+    fake = _FakeClient()
+    oa = _patch_credentials_are_usable(lambda: (False, "expired", "cookies expired"))
+    ocl = _patch_client(fake)
+    try:
+        result = nlm.research_and_import("t", "q", genre_override="ジャンルA")
+        assert is_failure_result(result), result
+        assert "nlm login" in result, result
+        assert fake.research_start_calls == [], "認証切れなのにリサーチを開始した"
+    finally:
+        nlm_auth.credentials_are_usable = oa
+        nlm._get_client = ocl
+
+
+def test_sync_vault_export_fails_fast_when_auth_expired():
+    """Vaultのエクスポート処理(ローカルファイルI/O)自体も無駄に走らせないこと。"""
+    import notebooklm_tools.services.auth as nlm_auth
+    calls = []
+
+    def _track_export():
+        calls.append(1)
+        return []
+
+    oa = _patch_credentials_are_usable(lambda: (False, "expired", "cookies expired"))
+    oe = _patch_export_vault(_track_export)
+    try:
+        result = nlm.sync_vault_export("ジャンルA")
+        assert is_failure_result(result), result
+        assert "nlm login" in result, result
+        assert calls == [], "認証切れなのにVaultエクスポートが実行された"
+    finally:
+        nlm_auth.credentials_are_usable = oa
+        nlm._export_vault = oe
 
 
 # ---------------------------------------------------------
@@ -211,6 +369,78 @@ def test_find_or_create_notebook_raises_when_create_fails():
         assert raised, "create_notebook が None を返したら RuntimeError になるべき"
     finally:
         nlm._get_client = original
+
+
+# ---------------------------------------------------------
+# Vault同期専用ジャンルの分類候補からの除外・直接指定の拒否
+#
+# 2026-08-17実測: agent_scheduler.py の日次Vault同期ジョブが使う "[ARMS] Vault" が、
+# 一般的なジャンル("料理"等)と同じ名前空間を共有しているため、無関係なリサーチ結果
+# (「Project AIRIについてリサーチして」等)が繰り返しVaultへ紛れ込んだ。
+# ---------------------------------------------------------
+
+def test_existing_genres_excludes_vault_sync_genre():
+    fake = _FakeClient()
+    fake.notebooks.append(_FakeNotebook("nb-vault", f"{nlm.NOTEBOOK_TITLE_PREFIX}{nlm.VAULT_SYNC_GENRE}"))
+    fake.notebooks.append(_FakeNotebook("nb-cooking", f"{nlm.NOTEBOOK_TITLE_PREFIX}料理"))
+    original = _patch_client(fake)
+    try:
+        genres = nlm._existing_genres()
+        assert nlm.VAULT_SYNC_GENRE not in genres, f"Vaultが分類候補に混ざっている: {genres}"
+        assert "料理" in genres
+    finally:
+        nlm._get_client = original
+
+
+def test_resolve_genre_notebook_rejects_vault_via_genre_override():
+    fake = _FakeClient()
+    fake.notebooks.append(_FakeNotebook("nb-vault", f"{nlm.NOTEBOOK_TITLE_PREFIX}{nlm.VAULT_SYNC_GENRE}"))
+    original = _patch_client(fake)
+    try:
+        genre, notebook_id, confirmation = nlm._resolve_genre_notebook(
+            "何かのリサーチ", nlm.VAULT_SYNC_GENRE
+        )
+        assert genre is None and notebook_id is None, "Vault指定なのに書き込み先が確定してしまった"
+        assert confirmation and "Vault" in confirmation and "同期専用" in confirmation, confirmation
+    finally:
+        nlm._get_client = original
+
+
+def test_resolve_genre_notebook_rejects_vault_when_classifier_proposes_it():
+    """分類器がVaultの存在を知らなくても、偶然同名の新規ジャンルを提案した場合の保険。"""
+    fake = _FakeClient()
+    fake.notebooks.append(_FakeNotebook("nb-vault", f"{nlm.NOTEBOOK_TITLE_PREFIX}{nlm.VAULT_SYNC_GENRE}"))
+    oc, ocl = _patch_classify(_always_new(nlm.VAULT_SYNC_GENRE)), _patch_client(fake)
+    try:
+        genre, notebook_id, confirmation = nlm._resolve_genre_notebook("何かのリサーチ", "")
+        assert genre is None and notebook_id is None
+        assert confirmation and "同期専用" in confirmation, confirmation
+    finally:
+        nlm._classify_genre, nlm._get_client = oc, ocl
+
+
+def test_resolve_genre_notebook_asks_when_match_is_weak_even_with_sparse_candidates():
+    """既存ジャンルが1つしか無くても、一致が弱ければ黙って押し込まず確認を挟むこと。
+
+    2026-08-17実測: 既存ジャンルが「ビジネス」しか無い状態で「最新のローカルLLM」が
+    「ビジネス」に分類され、無関係な話題が唯一の既存ジャンルへこじつけで押し込まれた。
+    """
+    fake = _FakeClient()
+    fake.notebooks.append(_FakeNotebook("nb-biz", f"{nlm.NOTEBOOK_TITLE_PREFIX}ビジネス"))
+
+    def _weak_match(content_hint, existing_genres):
+        return {"existing_match": "ビジネス", "match_is_strong": False, "new_genre_suggestion": "AI技術"}
+
+    oc, ocl = _patch_classify(_weak_match), _patch_client(fake)
+    try:
+        genre, notebook_id, confirmation = nlm._resolve_genre_notebook("最新のローカルLLMについて", "")
+        assert genre is None and notebook_id is None, "一致が弱いのに書き込み先が確定してしまった"
+        assert confirmation and "[要確認]" in confirmation, confirmation
+        assert "AI技術" in confirmation and "ビジネス" in confirmation, (
+            f"新規案と既存候補の両方が選択肢として出るべき: {confirmation}")
+        assert fake.create_calls == 0, "確認前にノートブックが作成された"
+    finally:
+        nlm._classify_genre, nlm._get_client = oc, ocl
 
 
 # ---------------------------------------------------------
@@ -400,6 +630,243 @@ def test_run_notebooklm_research_error_result_is_detected_as_failure():
 
 
 # ---------------------------------------------------------
+# research_and_import — DeepSearch相当 (自動ソース発見→インポート)
+# ---------------------------------------------------------
+
+def test_research_and_import_completes_and_imports():
+    fake = _FakeClient()
+    oc, ocl = _patch_classify(_always_existing("宇宙")), _patch_client(fake)
+    fake.notebooks.append(_FakeNotebook("nb-space", f"{nlm.NOTEBOOK_TITLE_PREFIX}宇宙"))
+    try:
+        result = nlm.research_and_import("火星の最新探査", "火星探査 最新")
+        assert not is_failure_result(result), result
+        assert fake.research_start_calls == [("nb-space", "火星探査 最新", "web", "fast")]
+        assert "見つかったソース: 1件" in result, result
+        assert "新規インポート: 1件" in result, result
+        assert "既存と重複でスキップ: 0件" in result, result
+        assert "見つかった内容の要約レポート" in result, result
+        assert "Found A" in result and "https://found.example/a" in result, (
+            f"ソース一覧(タイトル/出典)が出力に含まれていない: {result}")
+    finally:
+        nlm._classify_genre, nlm._get_client = oc, ocl
+
+
+def test_research_and_import_lists_sources_when_report_is_empty():
+    """mode="fast"はNotebookLM側がreportを生成しない(空文字)ため、報告文がsources一覧だけに
+    頼る実際のケース。sources自体は使わずに捨てると、後続のノート作成が中身の無い報告に
+    なってしまう(2026-08-17実測: 「Project AIRIについてリサーチして」でreportが空のまま
+    件数しか報告されず、後続のtool_create_noteが実在するソースを一切参照できなかった)。"""
+    class _FastModeClient(_FakeClient):
+        def poll_research(self, notebook_id, target_task_id=None, target_query=None):
+            return {
+                "status": "completed",
+                "task_id": "task-fast",
+                "sources": [
+                    {"url": "https://a.example/airi", "title": "AIRIの紹介記事",
+                     "description": "オープンソースのAI VTuberプラットフォーム"},
+                ],
+                "report": "",
+            }
+
+    fake = _FastModeClient()
+    original = _patch_client(fake)
+    try:
+        result = nlm.research_and_import("AIRI", "AIRI について", genre_override="ジャンルA")
+        assert not is_failure_result(result), result
+        assert "AIRIの紹介記事" in result, f"report空でもソースのタイトルが出るべき: {result}"
+        assert "https://a.example/airi" in result, result
+        assert "オープンソースのAI VTuberプラットフォーム" in result, result
+    finally:
+        nlm._get_client = original
+
+
+def test_research_and_import_skips_sources_already_in_notebook():
+    """既存ノートブックに同じURLのソースが既にある場合、重複インポートしないこと。
+
+    2026-08-17実測: SDKのauto_importは重複排除を行わず、同じ話題で「リサーチして」を
+    繰り返すたびに同一記事がノートブックへ何件も溜まっていった(実際に[ARMS] Vaultで
+    Project AIRI関連記事が2〜3重に重複していた)。add_source (手動ソース投入) が既に持つ
+    URL重複防止と同じ発想を、自動リサーチ側にも適用する。
+    """
+    class _MultiSourceClient(_FakeClient):
+        def poll_research(self, notebook_id, target_task_id=None, target_query=None):
+            return {
+                "status": "completed",
+                "task_id": "task-multi",
+                "sources": [
+                    {"url": "https://a.example/airi", "title": "既にあるソース"},
+                    {"url": "https://b.example/airi", "title": "新しいソース"},
+                ],
+                "report": "",
+            }
+
+    fake = _MultiSourceClient()
+    nb = fake.create_notebook(title=f"{nlm.NOTEBOOK_TITLE_PREFIX}ジャンルA")
+    fake._sources_by_notebook[nb.id] = [
+        {"id": "src-existing", "title": "既にあるソース", "url": "https://a.example/airi"},
+    ]
+    original = _patch_client(fake)
+    try:
+        result = nlm.research_and_import("AIRI", "AIRI について", genre_override="ジャンルA")
+        assert not is_failure_result(result), result
+        assert "見つかったソース: 2件" in result, result
+        assert "新規インポート: 1件" in result, result
+        assert "既存と重複でスキップ: 1件" in result, result
+        assert "新しいソース" in result, result
+        # 既存のURLと同じソースは再度importされていないこと
+        titles_after = [s.get("title") for s in fake._sources_by_notebook[nb.id]]
+        assert titles_after.count("既にあるソース") == 1, (
+            f"既存ソースが重複してインポートされた: {titles_after}")
+        assert "新しいソース" in titles_after
+    finally:
+        nlm._get_client = original
+
+
+def test_research_and_import_reports_found_sources_when_import_fails():
+    """リサーチ自体は成功したのに、インポート呼び出しだけ失敗した場合、
+    見つかったソース件数を握りつぶさず報告に残すこと (grillで検出)。
+
+    以前は import_research の例外がそのまま関数全体の except に落ち、
+    実際には資料が見つかっていたという情報が「Error: ...」の一言に
+    上書きされて消えていた。run_notebooklm_research の部分失敗時の
+    進捗表示と同じ発想をここにも適用する。
+    """
+    class _ImportFailsClient(_FakeClient):
+        def poll_research(self, notebook_id, target_task_id=None, target_query=None):
+            return {
+                "status": "completed",
+                "task_id": "task-fail",
+                "sources": [{"url": "https://a.example/x", "title": "見つかったソース"}],
+                "report": "",
+            }
+
+        def import_research_sources(self, notebook_id, task_id, sources, timeout=300.0):
+            raise RuntimeError("import RPC timeout")
+
+    fake = _ImportFailsClient()
+    original = _patch_client(fake)
+    try:
+        result = nlm.research_and_import("AIRI", "AIRI について", genre_override="ジャンルA")
+        assert "見つかったソース: 1件" in result, (
+            f"インポート失敗で発見件数まで失われた: {result}")
+        assert "インポート失敗" in result and "import RPC timeout" in result, result
+        assert "見つかったソース" in result and "新規インポート: 0件" in result, result
+    finally:
+        nlm._get_client = original
+
+
+def test_research_and_import_asks_for_confirmation_when_new_genre_needed():
+    fake = _FakeClient()
+    oc, ocl = _patch_classify(_always_new("宇宙")), _patch_client(fake)
+    try:
+        result = nlm.research_and_import("火星の最新探査", "火星探査 最新")
+        assert "[要確認]" in result, result
+        assert fake.research_start_calls == [], "確認前にリサーチを開始してしまった"
+    finally:
+        nlm._classify_genre, nlm._get_client = oc, ocl
+
+
+def test_research_and_import_reports_incomplete_status_with_task_id():
+    """タイムアウト時にtask_idを捨てないこと(捨てると、再試行が新規タスクを重複起動するだけになる)。"""
+    class _StillRunningClient(_FakeClient):
+        def poll_research(self, notebook_id, target_task_id=None, target_query=None):
+            return {"status": "in_progress", "task_id": target_task_id, "sources": [], "report": ""}
+
+    fake = _StillRunningClient()
+    original = _patch_client(fake)
+    try:
+        result = nlm.research_and_import("t", "q", genre_override="ジャンルA")
+        assert not is_failure_result(result), result
+        assert "まだ処理中です" in result, result
+        assert "task-1" in result, f"再開に必要なtask_idが失われている: {result}"
+    finally:
+        nlm._get_client = original
+
+
+# ---------------------------------------------------------
+# create_studio_artifact / check_studio_status — Studio成果物生成
+# ---------------------------------------------------------
+
+def test_create_studio_artifact_starts_generation():
+    fake = _FakeClient()
+    nb = fake.create_notebook(title=f"{nlm.NOTEBOOK_TITLE_PREFIX}宇宙")
+    fake._sources_by_notebook[nb.id] = [{"id": "src-1", "title": "既存ソース", "url": "https://x.example"}]
+    original = _patch_client(fake)
+    try:
+        result = nlm.create_studio_artifact("宇宙の話", "audio", genre_override="宇宙")
+        assert not is_failure_result(result), result
+        assert "audio" in result and "artifact-1" in result and "in_progress" in result, result
+        assert fake.studio_create_calls == [("audio", nb.id, ["src-1"])]
+    finally:
+        nlm._get_client = original
+
+
+def test_create_studio_artifact_requires_sources():
+    fake = _FakeClient()
+    original = _patch_client(fake)
+    try:
+        result = nlm.create_studio_artifact("t", "audio", genre_override="ジャンルA")
+        assert is_failure_result(result), "ソースが無いノートブックで成功してしまった"
+    finally:
+        nlm._get_client = original
+
+
+def test_create_studio_artifact_rejects_invalid_type():
+    fake = _FakeClient()
+    nb = fake.create_notebook(title=f"{nlm.NOTEBOOK_TITLE_PREFIX}ジャンルA")
+    fake._sources_by_notebook[nb.id] = [{"id": "src-1", "title": "s", "url": "https://x.example"}]
+    original = _patch_client(fake)
+    try:
+        result = nlm.create_studio_artifact("t", "not_a_real_type", genre_override="ジャンルA")
+        assert is_failure_result(result), result
+        assert result.startswith("Error:"), result
+    finally:
+        nlm._get_client = original
+
+
+def test_check_studio_status_reports_completed_artifact_with_url():
+    fake = _FakeClient()
+    nb = fake.create_notebook(title=f"{nlm.NOTEBOOK_TITLE_PREFIX}宇宙")
+    fake.studio_artifacts[nb.id] = [
+        {"artifact_id": "artifact-1", "type": "audio", "title": "音声概要",
+         "status": "completed", "audio_url": "https://audio.example/x"},
+    ]
+    original = _patch_client(fake)
+    try:
+        result = nlm.check_studio_status("宇宙の話", genre_override="宇宙")
+        assert "音声概要" in result, result
+        assert "status=completed" in result, result
+        assert "https://audio.example/x" in result, result
+    finally:
+        nlm._get_client = original
+
+
+def test_check_studio_status_does_not_create_notebook_when_missing():
+    """『確認するだけ』の呼び出しが、未作成のジャンルに対して空のノートブックを新規作成しないこと。"""
+    fake = _FakeClient()
+    original = _patch_client(fake)
+    try:
+        result = nlm.check_studio_status("t", genre_override="存在しないジャンル")
+        assert is_failure_result(result), result
+        assert "見つかりません" in result, result
+        assert fake.create_calls == 0, "確認するだけのはずが新規ノートブックを作成した"
+    finally:
+        nlm._get_client = original
+
+
+def test_check_studio_status_reports_no_artifacts():
+    fake = _FakeClient()
+    fake.create_notebook(title=f"{nlm.NOTEBOOK_TITLE_PREFIX}宇宙")
+    original = _patch_client(fake)
+    try:
+        result = nlm.check_studio_status("宇宙の話", genre_override="宇宙")
+        assert not is_failure_result(result), result
+        assert "生成物がありません" in result, result
+    finally:
+        nlm._get_client = original
+
+
+# ---------------------------------------------------------
 # sync_vault_export — Vault再エクスポート→差分アップロード
 # ---------------------------------------------------------
 
@@ -542,36 +1009,71 @@ def _patch_generate_content(fn):
     return original
 
 
-def test_classify_genre_reuses_existing_when_gemini_confirms_match():
+def test_classify_genre_reuses_existing_when_match_is_strong():
     original = _patch_generate_content(
-        lambda model, contents: _FakeGeminiResp('{"genre": "料理", "is_new": false}')
+        lambda model, contents: _FakeGeminiResp(
+            '{"existing_match": "料理", "match_is_strong": true, "new_genre_suggestion": "料理"}'
+        )
     )
     try:
         decision = nlm._classify_genre("パスタのレシピ動画", ["料理", "旅行"])
-        assert decision == {"genre": "料理", "is_new": False}, decision
+        assert decision == {
+            "existing_match": "料理", "match_is_strong": True, "new_genre_suggestion": "料理",
+        }, decision
     finally:
         lib_shared.client.models.generate_content = original
 
 
-def test_classify_genre_uses_new_genre_when_gemini_says_new():
+def test_classify_genre_uses_new_genre_when_match_is_weak():
     original = _patch_generate_content(
-        lambda model, contents: _FakeGeminiResp('{"genre": "ガジェット", "is_new": true}')
+        lambda model, contents: _FakeGeminiResp(
+            '{"existing_match": "", "match_is_strong": false, "new_genre_suggestion": "ガジェット"}'
+        )
     )
     try:
         decision = nlm._classify_genre("新しいスマホの比較", ["料理"])
-        assert decision == {"genre": "ガジェット", "is_new": True}, decision
+        assert decision == {
+            "existing_match": "", "match_is_strong": False, "new_genre_suggestion": "ガジェット",
+        }, decision
     finally:
         lib_shared.client.models.generate_content = original
 
 
-def test_classify_genre_falls_back_to_new_when_hallucinated_match_not_in_list():
-    """既存一覧に無いジャンル名を is_new=false (既存流用のつもり) で返してきた場合の幻覚対策。"""
+def test_classify_genre_does_not_force_weak_match_into_sparse_existing_genres():
+    """既存ジャンルが1つしかない状況で、無関係な話題までこじつけで押し込まれないこと。
+
+    2026-08-17実測: 既存ジャンルが「ビジネス」1つしかない状態で「最新のローカルLLM」が
+    ビジネスに分類された。分類プロンプトの「広く括るバイアス」が、候補が薄い時ほど
+    無関係な話題まで唯一の既存ジャンルへ押し込む方向に働いていたための回帰テスト。
+    """
     original = _patch_generate_content(
-        lambda model, contents: _FakeGeminiResp('{"genre": "存在しないジャンル", "is_new": false}')
+        lambda model, contents: _FakeGeminiResp(
+            '{"existing_match": "ビジネス", "match_is_strong": false, '
+            '"new_genre_suggestion": "AI技術"}'
+        )
+    )
+    try:
+        decision = nlm._classify_genre("最新のローカルLLMについて", ["ビジネス"])
+        assert decision["match_is_strong"] is False, decision
+        assert decision["existing_match"] == "ビジネス", (
+            "参考情報としては既存候補を残してよいが、match_is_strong=Falseのまま届くこと")
+        assert decision["new_genre_suggestion"] == "AI技術"
+    finally:
+        lib_shared.client.models.generate_content = original
+
+
+def test_classify_genre_hallucination_guard_resets_match_is_strong():
+    """既存一覧に無いジャンル名を existing_match として返してきた場合(幻覚)の安全策。"""
+    original = _patch_generate_content(
+        lambda model, contents: _FakeGeminiResp(
+            '{"existing_match": "存在しないジャンル", "match_is_strong": true, '
+            '"new_genre_suggestion": "存在しないジャンル"}'
+        )
     )
     try:
         decision = nlm._classify_genre("何かの内容", ["料理", "旅行"])
-        assert decision == {"genre": "存在しないジャンル", "is_new": True}, decision
+        assert decision["existing_match"] == "", decision
+        assert decision["match_is_strong"] is False, decision
     finally:
         lib_shared.client.models.generate_content = original
 
@@ -583,7 +1085,10 @@ def test_classify_genre_falls_back_to_sanitized_hint_on_exception():
     original = _patch_generate_content(_boom)
     try:
         decision = nlm._classify_genre("  パスタの  \n レシピ  ", [])
-        assert decision == {"genre": "パスタの レシピ", "is_new": True}, decision
+        assert decision == {
+            "existing_match": "", "match_is_strong": False,
+            "new_genre_suggestion": "パスタの レシピ",
+        }, decision
     finally:
         lib_shared.client.models.generate_content = original
 
@@ -594,7 +1099,9 @@ def test_classify_genre_falls_back_to_sanitized_hint_on_malformed_json():
     )
     try:
         decision = nlm._classify_genre("何かの内容", [])
-        assert decision == {"genre": "何かの内容", "is_new": True}, decision
+        assert decision == {
+            "existing_match": "", "match_is_strong": False, "new_genre_suggestion": "何かの内容",
+        }, decision
     finally:
         lib_shared.client.models.generate_content = original
 

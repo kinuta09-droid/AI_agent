@@ -105,21 +105,27 @@ import lib.lib_shared as _ls  # noqa: E402
 
 
 def _isolate_gemini_counter() -> str:
-    """本番と共有の日次カウンタ (logs/gemini_daily_calls.json) から切り離す。
+    """本番と共有の日次カウンタ (logs/gemini_light_daily_calls.json 等) から切り離す。
 
     lib_shared は client.models.generate_content を予算チェックで包むので
     (lib_shared.py:302-308)、google.genai をスタブしても
-    cost_guard.check_and_increment() は必ず走り、本番のカウントを進めてしまう。
-    cost_guard.check_and_increment() はモジュールグローバルを呼び出し時に引くため、
-    ここで差し替えれば経路全体に効く。
+    cost_guard.GEMINI_LIGHT_COUNTER/GEMINI_HEAVY_COUNTER への加算は必ず走り、
+    本番のカウントを進めてしまう。lib_shared側はこの2つをモジュールグローバル
+    として呼び出し時に引くため、ここで両方差し替えれば経路全体に効く
+    (2026-08-17: LIGHT/HEAVY分離に伴い、片方だけ差し替えると使われなかった方の
+    経路だけ本番ファイルを汚染し続ける、という新しい抜け穴になるため両方必須)。
     """
     from lib import cost_guard
     d = tempfile.mkdtemp(prefix="create_note_counter_")
-    cost_guard.GEMINI_COUNTER = cost_guard.DailyCounter(
-        path=os.path.join(d, "gemini_daily_calls.json"),
-        limit=0,  # 0 = ガード無効。予算超過の検証は test_cost_guard の担当
-        name="Gemini API (test)",
-    )
+    for attr, filename in (
+        ("GEMINI_LIGHT_COUNTER", "gemini_light_daily_calls.json"),
+        ("GEMINI_HEAVY_COUNTER", "gemini_heavy_daily_calls.json"),
+    ):
+        setattr(cost_guard, attr, cost_guard.DailyCounter(
+            path=os.path.join(d, filename),
+            limit=0,  # 0 = ガード無効。予算超過の検証は test_cost_guard の担当
+            name=f"Gemini API (test:{attr})",
+        ))
     return d
 
 
@@ -269,9 +275,12 @@ def test_without_template():
 def test_no_production_side_effects():
     print("\n[4] 本番 Vault と日次カウンタに触らない")
     from lib import cost_guard
-    check("日次カウンタが一時パスを向いている",
-          _COUNTER_DIR in str(cost_guard.GEMINI_COUNTER.path),
-          str(cost_guard.GEMINI_COUNTER.path))
+    check("LIGHT日次カウンタが一時パスを向いている",
+          _COUNTER_DIR in str(cost_guard.GEMINI_LIGHT_COUNTER.path),
+          str(cost_guard.GEMINI_LIGHT_COUNTER.path))
+    check("HEAVY日次カウンタが一時パスを向いている",
+          _COUNTER_DIR in str(cost_guard.GEMINI_HEAVY_COUNTER.path),
+          str(cost_guard.GEMINI_HEAVY_COUNTER.path))
     check("tool_obsidian.WORK_DIR が復元されている",
           tobs.WORK_DIR != _COUNTER_DIR and os.path.isabs(str(tobs.WORK_DIR)),
           str(tobs.WORK_DIR))

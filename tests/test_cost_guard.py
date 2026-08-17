@@ -3,8 +3,8 @@
 cost_guard (Tier2-b APIコストガード) のユニットテスト。
 
 一時ディレクトリ上に DailyCounter を新規構築してテストするため、
-実カウンタファイル logs/gemini_daily_calls.json には一切触れない
-(グローバルシングルトン GEMINI_COUNTER も使わない)。
+実カウンタファイル logs/gemini_light_daily_calls.json 等には一切触れない
+(グローバルシングルトン GEMINI_LIGHT_COUNTER/GEMINI_HEAVY_COUNTER も使わない)。
 
 実行: py tests/test_cost_guard.py
 """
@@ -232,6 +232,108 @@ def test_get_limit_env_parsing():
 
 
 # --------------------------------------------------------------------------
+# LIGHT/HEAVY別カウンタ + HEAVY上限時のLIGHTフォールバック (2026-08-17)
+# --------------------------------------------------------------------------
+
+def test_light_and_heavy_use_separate_counters():
+    """LIGHTモデルとHEAVYモデルの呼び出しが別々のカウンタに計上されること
+    (単一カウンタからモデル別カウンタへ分離。GoogleのRPD上限もモデル毎に
+    別枠のため、合算カウンタだと片方が余っていてももう片方に引っ張られていた)。
+    """
+    import lib.lib_shared as ls
+    from lib import cost_guard
+
+    root = tempfile.mkdtemp(prefix="cost_guard_split_")
+    light = DailyCounter(path=os.path.join(root, "light.json"), limit=0, name="LIGHT-test")
+    heavy = DailyCounter(path=os.path.join(root, "heavy.json"), limit=0, name="HEAVY-test")
+    orig_light, orig_heavy = cost_guard.GEMINI_LIGHT_COUNTER, cost_guard.GEMINI_HEAVY_COUNTER
+    orig_call = ls._original_generate_content
+    try:
+        cost_guard.GEMINI_LIGHT_COUNTER = light
+        cost_guard.GEMINI_HEAVY_COUNTER = heavy
+        ls._original_generate_content = lambda *a, **k: "stub-response"
+
+        ls.client.models.generate_content(model=ls.MODEL_NAME, contents="x")
+        assert light.current() == 1, "LIGHT呼び出しがLIGHTカウンタに計上されていない"
+        assert heavy.current() == 0, "LIGHT呼び出しがHEAVYカウンタにも誤って計上された"
+
+        ls.client.models.generate_content(model=ls.MODEL_NAME_HEAVY, contents="x")
+        assert heavy.current() == 1, "HEAVY呼び出しがHEAVYカウンタに計上されていない"
+        assert light.current() == 1, "HEAVY呼び出しがLIGHTカウンタにも誤って計上された"
+    finally:
+        cost_guard.GEMINI_LIGHT_COUNTER = orig_light
+        cost_guard.GEMINI_HEAVY_COUNTER = orig_heavy
+        ls._original_generate_content = orig_call
+        shutil.rmtree(root, ignore_errors=True)
+    print("✅ test_light_and_heavy_use_separate_counters")
+
+
+def test_heavy_falls_back_to_light_when_heavy_exhausted():
+    """HEAVYが日次上限到達 → 例外を出さずLIGHTへ切り替えて続行すること。"""
+    import lib.lib_shared as ls
+    from lib import cost_guard
+
+    root = tempfile.mkdtemp(prefix="cost_guard_fallback_")
+    light = DailyCounter(path=os.path.join(root, "light.json"), limit=10, name="LIGHT-test")
+    heavy = DailyCounter(path=os.path.join(root, "heavy.json"), limit=1, name="HEAVY-test")
+    heavy.check_and_increment()  # HEAVYを使い切っておく (limit=1に対しcount=1)
+    orig_light, orig_heavy = cost_guard.GEMINI_LIGHT_COUNTER, cost_guard.GEMINI_HEAVY_COUNTER
+    orig_call = ls._original_generate_content
+    calls = []
+    try:
+        cost_guard.GEMINI_LIGHT_COUNTER = light
+        cost_guard.GEMINI_HEAVY_COUNTER = heavy
+
+        def _fake_call(*a, **k):
+            calls.append(k.get("model"))
+            return "stub-response"
+        ls._original_generate_content = _fake_call
+
+        result = ls.client.models.generate_content(model=ls.MODEL_NAME_HEAVY, contents="x")
+        assert result == "stub-response", "フォールバック後もAPI呼び出し自体は成功するべき"
+        assert calls == [ls.MODEL_NAME], f"実際に呼ばれたモデルがLIGHTに差し替わっていない: {calls}"
+        assert light.current() == 1, "フォールバック分がLIGHTカウンタに計上されていない"
+        assert heavy.current() == 1, "HEAVYカウンタが二重加算されている"
+    finally:
+        cost_guard.GEMINI_LIGHT_COUNTER = orig_light
+        cost_guard.GEMINI_HEAVY_COUNTER = orig_heavy
+        ls._original_generate_content = orig_call
+        shutil.rmtree(root, ignore_errors=True)
+    print("✅ test_heavy_falls_back_to_light_when_heavy_exhausted")
+
+
+def test_heavy_fallback_raises_when_light_also_exhausted():
+    """HEAVY・LIGHT両方が上限到達 → フォールバック先も無いのでGeminiBudgetExceededが伝播すること。"""
+    import lib.lib_shared as ls
+    from lib import cost_guard
+
+    root = tempfile.mkdtemp(prefix="cost_guard_fallback_fail_")
+    light = DailyCounter(path=os.path.join(root, "light.json"), limit=1, name="LIGHT-test")
+    heavy = DailyCounter(path=os.path.join(root, "heavy.json"), limit=1, name="HEAVY-test")
+    light.check_and_increment()
+    heavy.check_and_increment()
+    orig_light, orig_heavy = cost_guard.GEMINI_LIGHT_COUNTER, cost_guard.GEMINI_HEAVY_COUNTER
+    orig_call = ls._original_generate_content
+    try:
+        cost_guard.GEMINI_LIGHT_COUNTER = light
+        cost_guard.GEMINI_HEAVY_COUNTER = heavy
+        ls._original_generate_content = lambda *a, **k: "should-not-be-called"
+
+        raised = False
+        try:
+            ls.client.models.generate_content(model=ls.MODEL_NAME_HEAVY, contents="x")
+        except GeminiBudgetExceeded:
+            raised = True
+        assert raised, "LIGHTも上限のときはGeminiBudgetExceededが伝播するべき"
+    finally:
+        cost_guard.GEMINI_LIGHT_COUNTER = orig_light
+        cost_guard.GEMINI_HEAVY_COUNTER = orig_heavy
+        ls._original_generate_content = orig_call
+        shutil.rmtree(root, ignore_errors=True)
+    print("✅ test_heavy_fallback_raises_when_light_also_exhausted")
+
+
+# --------------------------------------------------------------------------
 # /future ツール層の日次上限 (API呼び出しゼロで検証)
 # --------------------------------------------------------------------------
 
@@ -271,6 +373,9 @@ if __name__ == "__main__":
         test_thread_safety_within_process,
         test_retry_does_not_retry_budget_exceeded,
         test_get_limit_env_parsing,
+        test_light_and_heavy_use_separate_counters,
+        test_heavy_falls_back_to_light_when_heavy_exhausted,
+        test_heavy_fallback_raises_when_light_also_exhausted,
         test_future_search_blocked_when_counter_full,
     ]
     for t in tests:

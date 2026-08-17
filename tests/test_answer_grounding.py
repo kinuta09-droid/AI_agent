@@ -285,6 +285,54 @@ def test_summary_prompt_has_temporal_consistency_rule():
     check("留保を付けさせる指示がある", "確認できない" in prompt)
 
 
+def test_rich_content_prompt_forbids_fabrication():
+    """[11] tool_create_note 用の _generate_rich_content が捏造を禁じていること (2026-08-17)
+
+    実測: 「Project AIRIについてリサーチして」で tool_notebooklm_research が本物の関連ソース
+    10件を実際にNotebookLM上へインポートしたのに(NotebookLM APIへ直接問い合わせて確認済み)、
+    続く tool_create_note が書いたObsidianノートの本文は、それらのソースと無関係な
+    「エンタープライズ向けAI基盤」の架空の統計(「RAGシステム比25〜30%向上」
+    「推論レイテンシ15%効率化」等)で埋められていた。_generate_rich_content のプロンプトが
+    「最低1500文字以上」という分量圧力だけを課し、捏造禁止の歯止めを一切持っていなかったため、
+    observationが薄いとGeminiが分量を埋めるために創作していた。
+    _build_final_summary_prompt の【出典の扱い】と同じ発想の歯止めを追加。
+    """
+    print("\n[11] _generate_rich_content の捏造禁止ルール")
+    import engine_plan_execute as eng
+
+    captured = {}
+
+    class _FakeResp:
+        text = "0" * 400  # 品質チェック(300文字以上)を通すだけのダミー
+
+    class _FakeModels:
+        def generate_content(self, model=None, contents=None, config=None):
+            captured["prompt"] = contents
+            return _FakeResp()
+
+    class _FakeClient:
+        models = _FakeModels()
+
+    original = eng.client
+    eng.client = _FakeClient()
+    try:
+        eng._generate_rich_content(
+            "テストタスク", "test.md",
+            [{"step": 1, "task": "調査", "observation": "薄い情報のみ"}],
+        )
+    finally:
+        eng.client = original
+
+    prompt = captured.get("prompt", "")
+    check("捏造禁止の節がある", "【捏造禁止】" in prompt)
+    check("調査結果に無い情報の創作を禁じている",
+          "調査結果に無いものを創作してはならない" in prompt)
+    check("情報が薄い場合に正直に書かせる指示がある",
+          "確認できませんでした" in prompt)
+    check("分量より捏造禁止を優先させている",
+          "【捏造禁止】を優先すること" in prompt)
+
+
 def test_planner_prompt_mentions_append_guideline():
     print("\n[5] Planner の【ツール選択の指針】に追記の行がある")
     path = os.path.join(_PROJECT_ROOT, "engine_plan_execute.py")
@@ -298,6 +346,38 @@ def test_planner_prompt_mentions_append_guideline():
           or "既存ファイルに文章を書き足す場合" in src and "tool_update_note を使う" in src)
     check("sync が同期専用だと Planner にも書いてある",
           "予定/タスクの同期専用" in src)
+
+
+def test_planner_prompt_routes_research_keyword_to_notebooklm():
+    """[6] 「リサーチして」で tool_web_search に語彙一致で奪われないこと。
+
+    2026-08-16〜17 実測: 2回とも tool_notebooklm_research (登録済み・callable) ではなく
+    tool_web_search + tool_create_note が選ばれた(Bot再起動で新コード反映を確認した上での
+    2回目も同じ結果)。
+      1回目「アドバーザリアルテストについてウェブから集めて、まとめて教えて」
+      2回目「KIMI K3についてウェブで調べてまとめてください」
+    最初に足した条件(「根拠付きでまとめたい場合」)は、"調べて"/"集めて" という一番普通の
+    言い回しでは発火せず、無条件の「外部情報が必要な場合: tool_web_search を使う」に
+    毎回吸われていた。
+    → 「調べて」は今まで通り tool_web_search、「リサーチして」と明示されたときだけ
+    tool_notebooklm_research、と動詞で切り分ける方式に変更 (ユーザー合意の上での再設計)。
+    文言なので壊れても例外は出ず、静的に見張るしかない。
+    """
+    print("\n[6] Planner の【ツール選択の指針】が「リサーチして」を tool_notebooklm_research に案内している")
+    path = os.path.join(_PROJECT_ROOT, "engine_plan_execute.py")
+    with open(path, encoding='utf-8') as f:
+        src = f.read()
+
+    check("「リサーチして」の指針がある",
+          "「リサーチして」と依頼された場合" in src)
+    check("指針が tool_notebooklm_research を指している",
+          "tool_web_search ではなく" in src and "tool_notebooklm_research を使う" in src)
+    check("「調べて」は tool_web_search のままだと明示している",
+          "「調べて」だけの通常の依頼" in src and "「リサーチして」の指定が" in src)
+    check("studio系ツールへの案内もある",
+          "tool_notebooklm_studio_create" in src and "tool_notebooklm_studio_status" in src)
+    check("ツール自身の説明文にも同じ優先順位が書いてある",
+          "「リサーチして」と依頼した場合はtool_web_searchより優先" in _tool_desc("tool_notebooklm_research"))
 
 
 def test_resolve_tool_args_prompt_mentions_recency_days():
@@ -341,6 +421,75 @@ def test_resolve_tool_args_prompt_mentions_query_year_month():
     check("実測での順位変化に言及している", "検索順位で優先されやすく" in src)
 
 
+def test_resolve_tool_args_prompt_copies_filename_verbatim_for_update_note():
+    """[11] tool_update_note の filename が言い換えられないこと (2026-08-17)
+
+    実測: NotebookLMリサーチ→tool_create_noteでノート作成
+    (observation: "Success: Created [[ローカルLLM最新リサーチ_20260817.md]] with template.")
+    →Criticの追加ステップでtool_update_noteに追記させようとしたところ、filenameが
+    "30_Main/ローカルLLMリサーチ結果_2026年夏" というそれらしいが実在しない名前に
+    言い換えられ、「File ... not found」で失敗した。_resolve_tool_args のプロンプトに
+    tool_web_search/tool_create_note向けの個別指示はあったのに tool_update_note には
+    無かったため。observation中の [[ファイル名.md]] を一字一句コピーさせる指示を追加。
+    """
+    print("\n[11] _resolve_tool_args プロンプトが tool_update_note のfilenameをコピーさせる")
+    path = os.path.join(_PROJECT_ROOT, "engine_plan_execute.py")
+    with open(path, encoding='utf-8') as f:
+        src = f.read()
+
+    check("tool_update_note 向けの個別指示がある", "tool_update_note の場合:" in src)
+    check("ファイル名を一字一句コピーさせる指示がある",
+          "一字一句そのままコピーすること" in src)
+    check("言い換え・拡張子省略を禁じている", "拡張子省略は禁止" in src)
+    check("observationのCreated [[...]]形式に言及している",
+          "Success: Created [[ファイル名.md]]" in src)
+
+
+def test_resolve_tool_args_prompt_forbids_fabricating_append_text():
+    """[12] tool_update_note の append_text も捏造禁止であること (2026-08-17)
+
+    実測: NotebookLMリサーチが「status=no_research」で実質空振りだったのに、
+    続く tool_update_note の append_text にはResource Curse・アセモグルの制度論
+    といった具体的な学術的知見が書き足され、あたかも本物のリサーチ結果であるかの
+    ようにObsidianノートへ追記されていた。_generate_rich_content
+    (tool_create_noteのcontent用) には捏造禁止ルールがあったのに、
+    tool_update_noteのappend_textには無かったための抜け漏れ。
+    """
+    print("\n[12] _resolve_tool_args プロンプトが tool_update_note のappend_textでも捏造を禁じている")
+    path = os.path.join(_PROJECT_ROOT, "engine_plan_execute.py")
+    with open(path, encoding='utf-8') as f:
+        src = f.read()
+
+    check("append_textの個別指示がある", "append_text: これまでの実行結果" in src)
+    check("observationに実際に含まれる情報だけを使う指示がある",
+          "実際に含まれる情報だけを使って" in src)
+    check("調査未完了時に正直に書かせる指示がある",
+          "追加のリサーチが必要です" in src)
+    check("捏造という言葉で明示的に禁じている", "捏造であり" in src)
+
+
+def test_critique_prompt_forbids_obsidian_folder_names_as_genre_override():
+    """[13] Criticがgenre_overrideにObsidianフォルダ名を指定しないこと (2026-08-17)
+
+    実測: Criticの再計画で「既存ジャンル「30_Main」を指定して...リサーチを行う」と
+    指示され、tool_notebooklm_researchが無意味な[ARMS] 30_Mainノートブックを
+    作成した挙句、status=no_researchで調査が空振りした。30_MainはObsidianの
+    固定フォルダ名であり、NotebookLMのジャンル名とは無関係。Criticのプロンプトに
+    この混同を禁じる指示が無かったための実害。
+    """
+    print("\n[13] Critic のプロンプトが 30_Main 等のフォルダ名をgenre_overrideに使わせない")
+    path = os.path.join(_PROJECT_ROOT, "engine_plan_execute.py")
+    with open(path, encoding='utf-8') as f:
+        src = f.read()
+
+    check("genre_override専用の節がある",
+          "tool_notebooklm_research / tool_notebooklm_studio_create の genre_override" in src)
+    check("Obsidianフォルダ名との混同を明示的に禁じている",
+          "30_Main等のフォルダ名を" in src and "指定してはならない" in src)
+    check("[要確認]の提案ジャンル名をそのまま使わせる指示がある",
+          "そのまま使うこと" in src)
+
+
 if __name__ == "__main__":
     print("=" * 55)
     print(" 自機能グラウンディング / 追記ツール弁別 回帰テスト")
@@ -354,9 +503,14 @@ if __name__ == "__main__":
     test_t12_assertion_still_rejects_the_original_bug()
     test_summary_prompt_preserves_citations()
     test_summary_prompt_has_temporal_consistency_rule()
+    test_rich_content_prompt_forbids_fabrication()
     test_planner_prompt_mentions_append_guideline()
+    test_planner_prompt_routes_research_keyword_to_notebooklm()
     test_resolve_tool_args_prompt_mentions_recency_days()
     test_resolve_tool_args_prompt_mentions_query_year_month()
+    test_resolve_tool_args_prompt_copies_filename_verbatim_for_update_note()
+    test_resolve_tool_args_prompt_forbids_fabricating_append_text()
+    test_critique_prompt_forbids_obsidian_folder_names_as_genre_override()
 
     print("\n" + "=" * 55)
     print(f"PASS: {len(_PASS)} / FAIL: {len(_FAIL)}")

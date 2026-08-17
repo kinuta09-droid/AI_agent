@@ -45,11 +45,15 @@ def _stub_gemini_and_isolate_counter() -> str:
     from lib import cost_guard
 
     d = tempfile.mkdtemp(prefix="result_icons_counter_")
-    cost_guard.GEMINI_COUNTER = cost_guard.DailyCounter(
-        path=os.path.join(d, "gemini_daily_calls.json"),
-        limit=0,  # 0 = ガード無効。予算超過の検証は test_cost_guard の担当
-        name="Gemini API (test)",
-    )
+    for attr, filename in (
+        ("GEMINI_LIGHT_COUNTER", "gemini_light_daily_calls.json"),
+        ("GEMINI_HEAVY_COUNTER", "gemini_heavy_daily_calls.json"),
+    ):
+        setattr(cost_guard, attr, cost_guard.DailyCounter(
+            path=os.path.join(d, filename),
+            limit=0,  # 0 = ガード無効。予算超過の検証は test_cost_guard の担当
+            name=f"Gemini API (test:{attr})",
+        ))
 
     def _stub_generate(*a, **k):
         return _types.SimpleNamespace(text="STUB")
@@ -533,7 +537,7 @@ def test_run_plan_and_execute_reports_total_failure():
         "## 📋 結論\n情報を取得できたのでまとめました")
 
     try:
-        engine.execute_plan = lambda p, cb=None: {
+        engine.execute_plan = lambda p, cb=None, initial_context=None: {
             "success": False, "results": [dict(fail_step)], "final_output": ""}
         with contextlib.redirect_stdout(_io.StringIO()):
             result = engine.run_plan_and_execute("LoRAのメモを探して")
@@ -545,7 +549,7 @@ def test_run_plan_and_execute_reports_total_failure():
               logged and not any(r.get("success") for r in logged[-1]), str(logged))
 
         # 1歩でも成功していれば従来どおり Gemini 要約を返す (過剰に ❌ にしない)
-        engine.execute_plan = lambda p, cb=None: {
+        engine.execute_plan = lambda p, cb=None, initial_context=None: {
             "success": True,
             "results": [{"step": 1, "task": "検索", "tool": "tool_x",
                          "observation": "Success: ok", "success": True}],

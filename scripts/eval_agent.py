@@ -527,11 +527,13 @@ def check_budget(estimated: int) -> str:
     評価が本番の定時ジョブの予算を食い潰さないためのガード。
     新しいカウンタは足さず、既存の共有カウンタを参照するだけにする。
     """
-    from lib.cost_guard import GEMINI_COUNTER
-    limit = GEMINI_COUNTER.limit
+    from lib.cost_guard import GEMINI_LIGHT_COUNTER, GEMINI_HEAVY_COUNTER
+    # LIGHT/HEAVYはモデル別の別枠カウンタ (2026-08-17分離)。評価はどちらの
+    # モデルも使いうるため、簡易な見積りとして合算する。
+    limit = GEMINI_LIGHT_COUNTER.limit + GEMINI_HEAVY_COUNTER.limit
     if limit <= 0:
-        return ""  # 上限無効 (キルスイッチ) — ガードしない
-    used = GEMINI_COUNTER.current()
+        return ""  # 両方とも上限無効 (キルスイッチ) — ガードしない
+    used = GEMINI_LIGHT_COUNTER.current() + GEMINI_HEAVY_COUNTER.current()
     remaining = limit - used
     if estimated > remaining:
         return (f"日次 Gemini 予算が不足: 見積り {estimated}回 / 残り {remaining}回 "
@@ -730,9 +732,9 @@ def main() -> int:
         print(f"[eval] ⛔ {shortage}")
         return 1
 
-    from lib.cost_guard import GEMINI_COUNTER
+    from lib.cost_guard import GEMINI_LIGHT_COUNTER, GEMINI_HEAVY_COUNTER
     from lib.lib_shared import MODEL_NAME
-    calls_before = GEMINI_COUNTER.current()
+    calls_before = GEMINI_LIGHT_COUNTER.current() + GEMINI_HEAVY_COUNTER.current()
 
     print(f"[eval] {len(questions)}問 / モード={'full' if args.full else 'plan-only'} "
           f"/ Gemini 見積り {estimated}回")
@@ -757,7 +759,8 @@ def main() -> int:
         "eval_set": os.path.basename(args.eval_set),
         "version": data.get("version"),
         "estimated_calls": estimated,
-        "actual_calls": GEMINI_COUNTER.current() - calls_before,
+        "actual_calls": (GEMINI_LIGHT_COUNTER.current() + GEMINI_HEAVY_COUNTER.current())
+                        - calls_before,
         "duration_seconds": round(time.time() - t_start, 1),
     }
 

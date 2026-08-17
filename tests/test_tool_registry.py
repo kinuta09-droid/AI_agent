@@ -47,6 +47,39 @@ def test_gmail_alias_resolution():
     print("✅ registry: tool_gmail_check alias resolved")
 
 
+def test_notebooklm_wrapper_accepts_list_or_string_sources():
+    """sources に list (Plannerがargs_jsonでJSON配列を渡す場合) を渡してもクラッシュしないこと。
+
+    2026-08-17実測: 「複数可」という説明文からPlannerがJSON配列を渡し、
+    'list' object has no attribute 'split' で失敗した (sources.split("\n") が
+    文字列専用だったため)。文字列/リストどちらで来ても動くことを固定する。
+    """
+    import tools.tool_notebooklm as nlm
+    captured = {}
+
+    def _fake_run(topic, sources, question, genre_override=""):
+        captured["sources"] = sources
+        return "ok"
+
+    original = nlm.run_notebooklm_research
+    nlm.run_notebooklm_research = _fake_run
+    try:
+        result = registry._tool_notebooklm_wrapper(
+            "topic", ["https://a.example", "https://b.example"], "question"
+        )
+        assert result == "ok", result
+        assert captured["sources"] == ["https://a.example", "https://b.example"], captured
+
+        result2 = registry._tool_notebooklm_wrapper(
+            "topic", "https://a.example\nhttps://b.example", "question"
+        )
+        assert result2 == "ok", result2
+        assert captured["sources"] == ["https://a.example", "https://b.example"], captured
+    finally:
+        nlm.run_notebooklm_research = original
+    print("✅ registry: tool_notebooklm wrapper accepts list or newline-string sources")
+
+
 def test_prompt_ordering():
     config_tools, _ = get_tools_config()
     names = [t["name"] for t in config_tools]
@@ -108,7 +141,8 @@ MUST_NOT_BE_PARALLEL_SAFE = {
     # out_dir へ画像/動画をダウンロード書き込みする
     "tool_web_design",
     # NotebookLM 上にノートブック/ソースを作成し、処理完了まで待つ (外部状態の書き込み)
-    "tool_notebooklm",
+    "tool_notebooklm", "tool_notebooklm_research", "tool_notebooklm_studio_create",
+    "tool_notebooklm_studio_status",
 }
 
 

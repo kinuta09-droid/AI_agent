@@ -142,6 +142,24 @@ def test_json_call_prefers_parsed():
         engine.client = original
 
 
+def test_json_call_sets_low_temperature_for_deterministic_routing():
+    """計画生成/Critic判定は既定温度(~1.0)だと同一クエリでもツール選択が揺れる実測があった
+    (「〜についてリサーチして」で tool_notebooklm_research が選ばれる回と選ばれない回が混在)。
+    低温度でサンプリング揺らぎを減らしていることを固定する。"""
+    original = engine.client
+    try:
+        engine.client = _FakeClient(_FakeResponse(
+            parsed={"plan": [], "expected_outcome": "done"},
+            text='{"ignored": true}',
+        ))
+        engine._gemini_json_call("model-x", "prompt", {"type": "OBJECT"})
+        cfg = engine.client.models.last_config
+        assert cfg.temperature is not None and cfg.temperature <= 0.3, cfg.temperature
+        print("✅ json call: 低temperatureで呼ばれている")
+    finally:
+        engine.client = original
+
+
 def test_json_call_fallback_to_safe_loads():
     original = engine.client
     try:
@@ -177,6 +195,86 @@ def test_json_call_raises_on_unparseable():
     finally:
         engine.client = original
         engine.time.sleep = original_sleep
+
+
+# ---------------------------------------------------------
+# execute_plan: initial_context が revision をまたいで引き継がれる
+# ---------------------------------------------------------
+
+def test_execute_plan_carries_initial_context_into_arg_resolution():
+    """execute_plan の2回目の呼び出し (Criticのrevisionによる再実行) が、
+    initial_context 経由で1回目の実行結果を _resolve_tool_args に渡せること。
+
+    2026-08-17実測: execute_plan は毎回 accumulated_context=[] から始まっていたため、
+    Criticがrevised_planを出してrun_plan_and_executeがexecute_planを再度呼ぶたびに、
+    前revisionの実行結果 (例: tool_create_noteが実際に作ったファイル名) が
+    _resolve_tool_args から見えなくなっていた。実際に「1回目のrevisionでノート作成
+    →Criticが再計画→2回目のrevisionのtool_update_noteが、見えなくなった実ファイル名の
+    代わりにタスク説明文中の語句("30_Main"というフォルダ名)を誤ってファイル名として
+    拾い、『File 30_Main.md not found』で失敗する」という実害が出た。
+    """
+    def _probe_tool():
+        return "probe ok"
+
+    orig_get_tools = engine._get_tools_config
+    orig_resolve = engine._resolve_tool_args
+    seen_contexts = []
+
+    def _fake_get_tools_config():
+        config = [{"name": "tool_probe", "usage": "tool_probe()", "description": "probe"}]
+        return config, {"tool_probe": _probe_tool}
+
+    def _spy_resolve_tool_args(tool_name, args_hint, task, context):
+        seen_contexts.append(list(context))
+        return {}
+
+    engine._get_tools_config = _fake_get_tools_config
+    engine._resolve_tool_args = _spy_resolve_tool_args
+    try:
+        plan1 = [{"step": 1, "task": "1回目", "tool": "tool_probe", "args_hint": "x"}]
+        result1 = engine.execute_plan(plan1)
+        assert result1["success"], result1
+
+        plan2 = [{"step": 1, "task": "2回目", "tool": "tool_probe", "args_hint": "x"}]
+        engine.execute_plan(plan2, initial_context=result1["results"])
+
+        assert seen_contexts[0] == [], "1回目の呼び出しは前提通り空contextで始まるべき"
+        assert len(seen_contexts) == 2, seen_contexts
+        assert seen_contexts[1] and seen_contexts[1][0]["task"] == "1回目", (
+            f"2回目の呼び出しが1回目の結果を見られていない: {seen_contexts[1]}")
+    finally:
+        engine._get_tools_config = orig_get_tools
+        engine._resolve_tool_args = orig_resolve
+    print("✅ execute_plan: initial_context が2回目の呼び出しに引き継がれる")
+
+
+def test_execute_plan_defaults_to_empty_context_when_omitted():
+    """initial_context省略時は従来通り空から始まること (後方互換性)。"""
+    def _probe_tool():
+        return "probe ok"
+
+    orig_get_tools = engine._get_tools_config
+    orig_resolve = engine._resolve_tool_args
+    seen_contexts = []
+
+    def _fake_get_tools_config():
+        config = [{"name": "tool_probe", "usage": "tool_probe()", "description": "probe"}]
+        return config, {"tool_probe": _probe_tool}
+
+    def _spy_resolve_tool_args(tool_name, args_hint, task, context):
+        seen_contexts.append(list(context))
+        return {}
+
+    engine._get_tools_config = _fake_get_tools_config
+    engine._resolve_tool_args = _spy_resolve_tool_args
+    try:
+        plan = [{"step": 1, "task": "単発", "tool": "tool_probe", "args_hint": "x"}]
+        engine.execute_plan(plan)
+        assert seen_contexts == [[]], seen_contexts
+    finally:
+        engine._get_tools_config = orig_get_tools
+        engine._resolve_tool_args = orig_resolve
+    print("✅ execute_plan: initial_context省略時は空contextのまま (後方互換)")
 
 
 if __name__ == "__main__":

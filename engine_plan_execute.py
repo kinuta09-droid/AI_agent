@@ -58,8 +58,13 @@ def _gemini_json_call(model: str, prompt: str, schema: dict = None) -> dict:
     schema を渡すと response_schema でキー構造・enum まで強制できる。
     preview モデルが schema 非対応だった場合の保険として、
     parsed が取れないときのみ safe_json_loads にフォールバックする。
+
+    temperature=0.2: 呼び出し元 (generate_plan の計画生成 / critique_results の判定) は
+    どちらも創造的な文章ではなく構造化された判断なので、既定温度(~1.0)のサンプリング揺らぎで
+    同じ入力でも毎回違うツールが選ばれる事故を減らす (実測: 「〜についてリサーチして」という
+    同一クエリで tool_notebooklm_research が選ばれる回とtool_web_searchが選ばれる回があった)。
     """
-    config_kwargs = {"response_mime_type": "application/json"}
+    config_kwargs = {"response_mime_type": "application/json", "temperature": 0.2}
     if schema is not None:
         config_kwargs["response_schema"] = schema
     response = client.models.generate_content(
@@ -217,7 +222,16 @@ def generate_plan(user_query: str, session_context: str = "") -> dict:
 - 「実行不可」と返すのは本当にどうしようもない場合のみ
 
 【ツール選択の指針】
-- **外部情報が必要な場合** (最新ニュース、一般知識、技術情報など): tool_web_search を使う
+- **「リサーチして」と依頼された場合**: tool_web_search ではなく tool_notebooklm_research を使う
+  (「調べて」だけの通常の依頼は、この下の tool_web_search のルールに従う。「リサーチして」は、
+  見つけた資料をノートブックとして保持し、後続の質問(tool_notebooklm)や音声/動画/マインドマップ/
+  クイズ/フラッシュカード等への変換(tool_notebooklm_studio_create、進捗確認は
+  tool_notebooklm_studio_status)に再利用したいという合図として扱う)
+  - 既に手元にある資料(URLや文章)だけを根拠に質問したい場合: tool_notebooklm
+  - 集めた資料を音声/動画/マインドマップ/クイズ/フラッシュカード等に変換したい場合:
+    tool_notebooklm_studio_create (生成後の進捗確認は tool_notebooklm_studio_status)
+- **外部情報が必要な場合** (最新ニュース、一般知識、技術情報など。「リサーチして」の指定が
+  無い、通常の「調べて」の場合): tool_web_search を使う
 - **「今日/本日/急に」等、直近の出来事の正確な理由・数値が特に重要な場合**:
   まず tool_web_search (recency_days付き) を試す。それでも精度が不安な場合や、
   Criticから再検索を求められた場合の代替として tool_web_search_grounded を使う
@@ -660,12 +674,14 @@ def _emit_wave_event(step_callback, wave: list, total: int, status: str,
     step_callback(event)
 
 
-def execute_plan(plan: list, step_callback=None) -> dict:
+def execute_plan(plan: list, step_callback=None, initial_context: list = None) -> dict:
     """計画を実行する。依存の無い連続ステップは同時に走らせる (Phase C1)。
 
     Args:
         plan: generate_plan() が返した plan リスト
         step_callback: Discord等へのリアルタイム通知用コールバック
+        initial_context: 直前までの実行結果 (Critic revision で再実行するときに渡す)。
+            省略時は空から始まる (単発実行時の従来動作と同じ)。
 
     Returns:
         {"success": bool, "results": [...], "final_output": "...",
@@ -675,10 +691,18 @@ def execute_plan(plan: list, step_callback=None) -> dict:
     ウェーブ単位に読み替えたもの)。ウェーブ内で失敗が出ても同ウェーブの
     他ステップの結果は捨てない — 既に実行済みなので、捨てる方が実態に反する。
     失敗の局所化 (依存していない後続ステップを続行する) は Phase C2 の範囲。
+
+    initial_context (2026-08-17): 以前は毎回空リストから始めていたため、
+    Critic が revised_plan を出して execute_plan を再度呼ぶたびに、前の
+    revisionで実行した結果 (例: tool_create_noteが実際に作ったファイル名) が
+    _resolve_tool_args から見えなくなっていた。実測: 1回目のrevisionで
+    ノートを作成→Criticが再計画→2回目のrevisionのtool_update_noteが、
+    見えなくなった実ファイル名の代わりにタスク説明文中の語句 ("30_Main" という
+    フォルダ名) を誤ってファイル名として拾い、「File 30_Main.md not found」で失敗した。
     """
     _, tools_map = _get_tools_config()
     results = []
-    accumulated_context = []
+    accumulated_context = list(initial_context) if initial_context else []
     total = len(plan)
     parallel = {"waves": 0, "saved_seconds": 0.0}
 
@@ -775,6 +799,20 @@ def _resolve_tool_args(tool_name: str, args_hint: str, task: str,
     ★ 最低でも500文字以上の本文を生成する（短すぎるレポートは不可）
     ★ 「概要」「詳細」「まとめ」などのセクションに分けて整理する
   - summary: 1-2行の要約
+- tool_update_note の場合:
+  - filename: これまでの実行結果に `tool_create_note` の observation
+    (`Success: Created [[ファイル名.md]] with template.` の形) が含まれている場合、
+    その `[[...]]` 内のファイル名を一字一句そのままコピーすること。要約・言い換え・
+    拡張子省略は禁止(タイトルをそれらしく言い換えると実在しないファイル名になり、
+    「File ... not found」で失敗する)。observationに無い場合のみタスクの説明から
+    推測してよいが、その場合も拡張子 .md を必ず付けること
+  - append_text: これまでの実行結果(observation)に実際に含まれる情報だけを使って
+    追記文を生成すること。observationが薄い、または「まだ処理中です」「no_research」
+    「[要確認]」のように調査が未完了なことを示している場合、それらしい内容を
+    創作してはならない。その場合は「追加のリサーチが必要です」等、情報が
+    不足している旨を正直に書くこと(observationに無い数値・固有名詞・学術的
+    知見を一般知識から書き足すのは捏造であり、根拠付きリサーチという
+    ツールの前提を壊す)
 - 引数の値は「これまでの実行結果」の observation から抽出・生成してください
 - 引数が不要なら空の辞書 {{}} を返してください
 
@@ -823,6 +861,13 @@ def _generate_rich_content(task: str, filename: str, context: list) -> str:
 【調査結果（これを元にレポートを作成）】:
 {ctx_text}
 
+【捏造禁止】（最重要！）
+- 【調査結果】に実際に書かれている情報だけを使うこと。数値データ・固有名詞・統計・
+  具体的な事実は、調査結果に無いものを創作してはならない
+- 調査結果が薄く、下の分量目安に届かない場合でも、量を優先して情報を創作しないこと。
+  実際に分かったことだけを簡潔にまとめ、不足している場合は
+  「今回集まった情報からはこれ以上の詳細は確認できませんでした」のように正直に書く
+
 【レポート作成ルール】
 1. Markdown形式で構造化すること（##見出し、箇条書き、**太字**を活用）
 2. 以下のセクション構成を推奨:
@@ -834,7 +879,8 @@ def _generate_rich_content(task: str, filename: str, context: list) -> str:
    - 固有名詞（人名、企業名、サービス名）
    - 数値データ（金額、人数、日付、パーセンテージ）
    - 重要な引用や事実関係
-4. 最低1500文字以上の本文を生成すること
+4. 分量目安は1500文字以上だが、【捏造禁止】を優先すること
+   （調査結果が薄い場合は無理に埋めない）
 5. 抽象的・一般論的な記述ではなく、調査結果の具体的データに基づいた記述にする
 6. フロントマター（---）は付けない。純粋な本文のみ出力する
 
@@ -919,6 +965,15 @@ def critique_results(user_query: str, plan: list, results: list) -> dict:
 - ユーザーの要求に「〜せずに」「〜なしで」「〜を使わないで」「〜禁止」があれば、該当ツールは使用禁止
 - 例: 「Web検索せずに」→ revised_plan に tool_web_search, tool_fetch_daily_news, tool_fetch_url を含めてはいけない
 - 代替手段がある場合は必ずその代替案で revised_plan を作成すること
+
+【tool_notebooklm_research / tool_notebooklm_studio_create の genre_override】（重要！）
+- genre_override はNotebookLM側の話題ジャンル名であり、Obsidianの保存フォルダ名
+  (30_Main, 40_Report 等の固定フォルダ構造)とは無関係。30_Main等のフォルダ名を
+  genre_override に指定してはならない(実測: フォルダ名をジャンル名と誤って
+  指定し、無意味なノートブックが作られ調査が空振りした)
+- 直前のobservationが「[要確認]」で始まるジャンル確認待ちの場合、そこに書かれている
+  提案ジャンル名(①新規作成の候補名、または②既存ジャンル名)をそのまま使うこと。
+  それ以外の名前を推測して指定してはならない
 
 【評価基準】
 1. 全ステップが成功しているか
@@ -1024,7 +1079,7 @@ def run_plan_and_execute(user_query: str, step_callback=None,
             if step_callback:
                 step_callback({"phase": "revision", "attempt": revision})
 
-        exec_result = execute_plan(plan, step_callback)
+        exec_result = execute_plan(plan, step_callback, initial_context=all_results)
         all_results.extend(exec_result["results"])
         wave_stats = exec_result.get("parallel") or {}
         parallel_total["waves"] += wave_stats.get("waves", 0)

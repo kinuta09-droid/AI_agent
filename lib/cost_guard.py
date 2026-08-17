@@ -32,8 +32,6 @@ load_dotenv(ENV_PATH)
 DEFAULT_DAILY_LIMIT = 200
 WARN_RATIO = 0.8
 
-GEMINI_COUNTER_PATH = os.path.join(LOGS_DIR, "gemini_daily_calls.json")
-
 
 class GeminiBudgetExceeded(Exception):
     """日次API呼び出し上限超過。lib_shared.retry() は再試行せず即座に再送出する。
@@ -164,11 +162,23 @@ class DailyCounter:
         return count
 
 
-# --- グローバル日次カウンタ (Gemini API 共有client用シングルトン) ----------
-GEMINI_COUNTER = DailyCounter(
-    path=GEMINI_COUNTER_PATH,
-    limit=get_limit("DAILY_GEMINI_CALL_LIMIT", DEFAULT_DAILY_LIMIT),
-    name="Gemini API",
+# --- グローバル日次カウンタ (Gemini API 共有client用シングルトン、LIGHT/HEAVY別枠) ---
+# 2026-08-17: 単一カウンタ(旧 GEMINI_COUNTER, DAILY_GEMINI_CALL_LIMIT)から分離。
+# LIGHT(MODEL_NAME)とHEAVY(MODEL_NAME_HEAVY)は別モデルであり、Google側のRPD上限も
+# モデル毎に別枠。単一の合計カウンタだと、実際にはどちらのモデルの実枠にも
+# 余裕があるのに、うちの自主規制だけが先に頭打ちになっていた。
+# モデル毎にどちらのカウンタを使うかは lib_shared.py 側 (MODEL_NAME/MODEL_NAME_HEAVY
+# を知っている場所) で判定する。ここでは2つのカウンタを提供するだけに留める
+# (循環import回避: cost_guard は lib_shared を import しない)。
+GEMINI_LIGHT_COUNTER = DailyCounter(
+    path=os.path.join(LOGS_DIR, "gemini_light_daily_calls.json"),
+    limit=get_limit("DAILY_GEMINI_LIGHT_LIMIT", DEFAULT_DAILY_LIMIT),
+    name="Gemini API (LIGHT)",
+)
+GEMINI_HEAVY_COUNTER = DailyCounter(
+    path=os.path.join(LOGS_DIR, "gemini_heavy_daily_calls.json"),
+    limit=get_limit("DAILY_GEMINI_HEAVY_LIMIT", DEFAULT_DAILY_LIMIT),
+    name="Gemini API (HEAVY)",
 )
 
 # --- Crypto Watcher 分析回数カウンタ (Phase 2) -----------------------------
@@ -205,7 +215,3 @@ GROUNDING_COUNTER = DailyCounter(
     limit=get_limit("DAILY_GROUNDING_CALL_LIMIT", 30),
     name="Google Search Grounding",
 )
-
-
-def check_and_increment(n: int = 1) -> int:
-    return GEMINI_COUNTER.check_and_increment(n)

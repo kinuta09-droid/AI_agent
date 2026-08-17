@@ -23,7 +23,8 @@ import requests
 
 # cost_guard はモジュールレベルで lib_shared を import しないため循環しない
 # (save_json/load_json は cost_guard 側が関数内で遅延 import する)
-from lib.cost_guard import GeminiBudgetExceeded, check_and_increment
+from lib import cost_guard
+from lib.cost_guard import GeminiBudgetExceeded
 from lib.paths import PROJECT_ROOT, ENV_PATH, VAULT_ROOT
 
 # Windowsコンソールでの文字化け防止
@@ -305,10 +306,32 @@ def resolve_obsidian_links(text: str) -> str:
 # 束縛メソッドを差し替えるため、import順に関係なく全利用箇所に伝播する。
 # 呼び出し「前」にカウントする: 失敗したAPI呼び出しもリクエスト試行として
 # 消費されるため、過小計上より過大計上を選ぶ (セーフティネット用途)。
-_original_generate_content = client.models.generate_content
-
+#
+# LIGHT/HEAVY別カウンタ (2026-08-17): モデル毎にRPD上限が別枠のGoogle側の実態に
+# 合わせて、cost_guard.GEMINI_LIGHT_COUNTER / GEMINI_HEAVY_COUNTER を使い分ける。
+# HEAVYが日次上限に達した場合は例外を伝播させず、LIGHTへ切り替えて続行する
+# (HEAVYは品質重視で選んでいるが、上限到達でタスク全体を失敗させるより、
+# 精度の落ちる回答で完走させる方が有用という判断。LIGHT側も上限なら
+# そこで初めて GeminiBudgetExceeded を伝播する)。
 def _guarded_generate_content(*args, **kwargs):
-    check_and_increment()  # 上限超過時は API を呼ばずに GeminiBudgetExceeded
+    requested_model = kwargs.get("model") if "model" in kwargs else (args[0] if args else None)
+
+    if requested_model == MODEL_NAME_HEAVY:
+        try:
+            cost_guard.GEMINI_HEAVY_COUNTER.check_and_increment()
+        except GeminiBudgetExceeded:
+            print(f"[CostGuard] HEAVY({MODEL_NAME_HEAVY})が日次上限に到達。"
+                  f"LIGHT({MODEL_NAME})へフォールバックします。")
+            cost_guard.GEMINI_LIGHT_COUNTER.check_and_increment()
+            if "model" in kwargs:
+                kwargs["model"] = MODEL_NAME
+            elif args:
+                args = (MODEL_NAME,) + args[1:]
+    else:
+        cost_guard.GEMINI_LIGHT_COUNTER.check_and_increment()
+
     return _original_generate_content(*args, **kwargs)
 
+
+_original_generate_content = client.models.generate_content
 client.models.generate_content = _guarded_generate_content

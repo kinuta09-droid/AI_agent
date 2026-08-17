@@ -105,25 +105,31 @@ def _isolate_gemini_counter():
     なぜ必要か (2026-07-30 に実際に踏んだ):
       lib_shared は client.models.generate_content を予算チェックで包むので
       (lib_shared.py:302-308)、google.genai をスタブしても
-      cost_guard.check_and_increment() は必ず走る。
-      その参照先 cost_guard.GEMINI_COUNTER は **本番の**
-      logs/gemini_daily_calls.json を見ている。
+      cost_guard.GEMINI_LIGHT_COUNTER/GEMINI_HEAVY_COUNTER への加算は必ず走る。
+      その参照先は **本番の**
+      logs/gemini_light_daily_calls.json / gemini_heavy_daily_calls.json を見ている。
       さらに上の _install_module_stubs() が dotenv をスタブするため
       cost_guard の load_dotenv が無効化され、.env の
-      DAILY_GEMINI_CALL_LIMIT=0 (無効) が読まれず既定値 200 に落ちる。
+      DAILY_GEMINI_LIGHT_LIMIT/HEAVY_LIMIT=0 (無効) が読まれず既定値 200 に落ちる。
       結果このテストは **本番のカウントが200を超えた時刻以降だけ赤くなる** =
       同じコードが朝は緑・夜は赤という状態だった (実測: count 212 で再現)。
 
-      cost_guard.check_and_increment() はモジュールグローバルを呼び出し時に
-      引くので、ここで差し替えれば経路全体に効く。
+      lib_shared側はこの2つをモジュールグローバルとして呼び出し時に引くので、
+      ここで両方差し替えれば経路全体に効く (2026-08-17: LIGHT/HEAVY分離に伴い、
+      片方だけ差し替えると使われなかった方の経路だけ本番ファイルを汚染し続ける
+      という新しい抜け穴になるため両方必須)。
     """
     from lib import cost_guard
     counter_dir = tempfile.mkdtemp(prefix="curate_counter_")
-    cost_guard.GEMINI_COUNTER = cost_guard.DailyCounter(
-        path=os.path.join(counter_dir, "gemini_daily_calls.json"),
-        limit=0,  # 0 = ガード無効。予算超過はここで演じない (test_cost_guard の担当)
-        name="Gemini API (test)",
-    )
+    for attr, filename in (
+        ("GEMINI_LIGHT_COUNTER", "gemini_light_daily_calls.json"),
+        ("GEMINI_HEAVY_COUNTER", "gemini_heavy_daily_calls.json"),
+    ):
+        setattr(cost_guard, attr, cost_guard.DailyCounter(
+            path=os.path.join(counter_dir, filename),
+            limit=0,  # 0 = ガード無効。予算超過はここで演じない (test_cost_guard の担当)
+            name=f"Gemini API (test:{attr})",
+        ))
     return counter_dir
 
 
