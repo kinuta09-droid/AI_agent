@@ -18,6 +18,8 @@
   [6] agent_scheduler を再 import してもログハンドラが増えない
   [7] 「今の分」は catch-up 対象にしない (メインループとの二重発火防止)
   [8] catch-up の逐次実行は1ジョブの例外で打ち切られない
+  [9] import しただけでは本番 scheduler.log にハンドラが繋がらない
+      (テストのスタブが本番ログを汚染する事故の再発防止)
 
 実行: py tests/test_scheduler_catch_up.py
 """
@@ -147,6 +149,31 @@ def test_logger_handler_guard():
           f"before={before} after={after}")
 
 
+def test_import_does_not_open_production_log():
+    """[9] import しただけでは本番 scheduler.log にハンドラが繋がらない。
+
+    以前はハンドラ登録がモジュールスコープにあり、`import agent_scheduler`
+    した時点で本番ログが開かれていた。そのため catch-up テストのスタブ
+    (Boom / simulated failure) や TestTask が本番ログへ書き込まれ、半年で
+    386行混入していた。実際の警告は1件しか無いのに、テスト由来のエラー115件に
+    埋もれて障害調査に使えない状態だった。
+
+    LOG_FILE をテスト側で差し替える隔離方式では直せない (import 時点で
+    ハンドラが実ファイルに繋がるため後から差し替えられない) ので、
+    本番側で登録を run_scheduler() まで遅延させてある。
+    このテストはその遅延が外れていないことを守る。
+    """
+    from logging.handlers import RotatingFileHandler
+
+    file_handlers = [h for h in agent_scheduler.logger.handlers
+                     if isinstance(h, RotatingFileHandler)]
+    check("[9] import だけでは本番ログのハンドラが付かない",
+          not file_handlers,
+          f"付いている: {[getattr(h, 'baseFilename', '?') for h in file_handlers]}")
+    check("[9] setup_logging() は公開されている (run_scheduler が呼ぶ)",
+          callable(getattr(agent_scheduler, "setup_logging", None)))
+
+
 def _drive_catch_up(schedule, state, execute):
     """SCHEDULE / 状態ファイル / _execute_task を差し替えて _run_catch_up を1回回す。
 
@@ -235,6 +262,7 @@ def main():
     test_outage_scenario()
     test_schedule_flags()
     test_logger_handler_guard()
+    test_import_does_not_open_production_log()
     test_skips_current_minute()
     test_sequential_isolates_failures()
     print("\n" + ("❌ 失敗あり" if _FAIL else "✅ 全て成功"))

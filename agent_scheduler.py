@@ -224,18 +224,11 @@ def _run_skill_radar() -> str:
 
 # Vault NotebookLM Sync (optional — import失敗でスケジューラ全体を壊さない)
 try:
-    from tools.tool_notebooklm import sync_vault_export
+    from tools.tool_notebooklm import sync_vault_export, VAULT_SYNC_GENRE as _VAULT_SYNC_GENRE
     _HAS_NOTEBOOKLM = True
 except ImportError as _e:
     _notebooklm_err = str(_e)
     _HAS_NOTEBOOKLM = False
-
-# sync_vault_export の対象ジャンル。NotebookLM側の実ノートブックタイトルは
-# "[ARMS] Vault" (find_or_create_notebookがNOTEBOOK_TITLE_PREFIXを自動で
-# 前置するため、ここでは "Vault" のみ指定する)。NotebookLM側でこのノートブックを
-# 手動リネームした場合は同じコミットでこの定数も書き換えること
-# (find_or_create_notebookはタイトル完全一致でしか探さないため)。
-_VAULT_SYNC_GENRE = "Vault"
 
 
 def _run_vault_notebooklm_sync() -> str:
@@ -284,13 +277,28 @@ LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scheduler.l
 logger = logging.getLogger("Scheduler")
 logger.setLevel(logging.INFO)
 
-# ハンドラの二重登録ガード。
-# 実プロセスはこのファイルを __main__ として動かすので、tools 側が実行時に
-# `from agent_scheduler import ...` すると Python は同じファイルを別名モジュール
-# として **もう一度実行する**。logging.getLogger("Scheduler") は同一シングルトンを
-# 返すため、ガードが無いとハンドラが2組になり以降の全ログが2重に出る
-# (実際 2026-08-11 03:20 の tool_vault_watcher 初回実行を境に発生していた)。
-if not logger.handlers:
+def setup_logging():
+    """ログハンドラを attach する。**実プロセスの起動時にのみ呼ぶ** (run_scheduler)。
+
+    import 時に呼んではいけない。以前はモジュールスコープで実行しており、
+    `import agent_scheduler` しただけで本番の scheduler.log が開かれていた。
+    結果、テストのスタブ (TestTask / Dummy / Boom / simulated failure) が
+    本番ログへ書き込まれ、半年で386行混入していた。実際の警告は1件しか
+    無いのに、テスト由来のエラー115件に埋もれて障害調査の役に立たない
+    状態だった (Known Bug Patterns C「テストが本番と共有する可変資源」)。
+    LOG_FILE をテスト側で差し替える方式では直せない — import した時点で
+    ハンドラが実ファイルに繋がってしまい、後から差し替えられないため。
+
+    ハンドラの二重登録ガード:
+    実プロセスはこのファイルを __main__ として動かすので、tools 側が実行時に
+    `from agent_scheduler import ...` すると Python は同じファイルを別名モジュール
+    として **もう一度実行する**。logging.getLogger("Scheduler") は同一シングルトンを
+    返すため、ガードが無いとハンドラが2組になり以降の全ログが2重に出る
+    (実際 2026-08-11 03:20 の tool_vault_watcher 初回実行を境に発生していた)。
+    """
+    if logger.handlers:
+        return
+
     # File Handler (Rotating)
     file_handler = RotatingFileHandler(LOG_FILE, maxBytes=1024*1024, backupCount=5, encoding='utf-8')
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
@@ -791,6 +799,7 @@ def _run_catch_up():
 
 
 def run_scheduler():
+    setup_logging()  # ハンドラ登録はここだけ (import 時にやらない — setup_logging の docstring 参照)
     if not _acquire_pid_lock(PID_FILE):
         print(f"[Scheduler] ⚠️ Another scheduler instance is already running "
               f"(PID {_read_pid_owner(PID_FILE)}). Exiting.")
