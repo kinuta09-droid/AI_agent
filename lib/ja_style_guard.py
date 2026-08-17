@@ -13,8 +13,9 @@ plans/ja-style-guard 系のセッション記録を参照。
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 
-from lib.paths import JA_STYLE_DICT_PATH
+from lib.paths import JA_STYLE_DICT_PATH, JA_STYLE_UNRESOLVED_LOG
 from lib.lib_shared import client
 
 _ENTRY_PATTERNS = {
@@ -28,6 +29,11 @@ _ENTRY_PATTERNS = {
 _MONOTONY_SUFFIXES = ("ます", "です", "した", "ました", "でした", "ません")
 _KEIGO_RE = re.compile(r"(ます|です)。")
 _JOTAI_RE = re.compile(r"(だ|である)。")
+# 番号付き/箇条書きリストの項目は、語尾が揃うこと自体が構造上自然な並列表現なので
+# 文末単調の判定対象から除外する (例: "1. 実行と評価: ...採点します。2. コードの書き換え:
+# ...書き換えます。3. 適用判断: ...反映させます。" は"ます"の3連続だが問題ではない。
+# 2026-08-17、logs/ja_style_unresolved.jsonl の実例より)
+_LIST_ITEM_RE = re.compile(r"^\s*(?:\d+[.、)）]|[-*・])\s*")
 
 
 @dataclass
@@ -69,17 +75,22 @@ def check_style(text: str, dictionary: dict = None) -> list:
     sentences = _split_sentences(text)
 
     if "sentence-ending-monotony" in agg_by_id:
-        run_suffix, run_len = None, 0
+        run_suffix, run_sentences = None, []
         for s in sentences:
+            if _LIST_ITEM_RE.match(s):
+                run_suffix, run_sentences = None, []
+                continue
             stripped = s.rstrip("。\n ")
             suffix = next((suf for suf in _MONOTONY_SUFFIXES if stripped.endswith(suf)), None)
             if suffix is not None and suffix == run_suffix:
-                run_len += 1
+                run_sentences.append(s.strip())
             else:
-                run_suffix, run_len = suffix, (1 if suffix is not None else 0)
-            if run_len >= 3:
+                run_suffix = suffix
+                run_sentences = [s.strip()] if suffix is not None else []
+            if len(run_sentences) >= 3:
                 c = agg_by_id["sentence-ending-monotony"]
-                violations.append(Violation("sentence-ending-monotony", f"「{run_suffix}」が3文以上連続", c["desc"], c["good_pattern"]))
+                excerpt = "".join(run_sentences[-3:])
+                violations.append(Violation("sentence-ending-monotony", excerpt, c["desc"], c["good_pattern"]))
                 break
 
     if "style-mixing" in agg_by_id and _KEIGO_RE.search(text) and _JOTAI_RE.search(text):
@@ -115,11 +126,32 @@ def build_feedback_prompt(original_prompt: str, text: str, violations: list) -> 
 """
 
 
+def _log_unresolved(violations: list) -> None:
+    """リトライしても解消しなかった実例をJSONLに追記する。
+
+    辞書のpattern_hint/good_patternを実例で肉付けするための材料として蓄積する
+    (2026-08-17)。ログ失敗で本処理を止めない (fail-safe)。
+    """
+    timestamp = datetime.now().isoformat()
+    try:
+        with open(JA_STYLE_UNRESOLVED_LOG, "a", encoding="utf-8") as f:
+            for v in violations:
+                f.write(json.dumps({
+                    "timestamp": timestamp,
+                    "id": v.id,
+                    "matched": v.matched,
+                    "reason": v.reason,
+                    "good_pattern": v.good_pattern,
+                }, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 def enforce_style(text: str, original_prompt: str, model: str, max_retries: int = 1) -> str:
     """違反ゼロなら即返す。違反があれば1回だけ書き直しを再呼び出しする。
 
     再チェックしてまだ違反が残れば、無言で通さず末尾に警告を付記する
-    (Known Bug Pattern A: 無言の死を避ける)。
+    (Known Bug Pattern A: 無言の死を避ける)。あわせて未解消の実例をログする。
     """
     violations = check_style(text)
     if not violations:
@@ -133,5 +165,6 @@ def enforce_style(text: str, original_prompt: str, model: str, max_retries: int 
         if not violations:
             return text
 
+    _log_unresolved(violations)
     ids = ", ".join(v.id for v in violations)
     return f"{text}\n\n⚠️ 文体チェック未解消: {ids}"

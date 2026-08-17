@@ -15,6 +15,7 @@
 
 実行: py tests/test_ja_style_guard.py
 """
+import json
 import os
 import sys
 import tempfile
@@ -115,6 +116,14 @@ _prod_snapshot = {
     for p in (_PROD_LIGHT_PATH, _PROD_HEAVY_PATH)
 }
 
+# 未解消ログも本番と共有の logs/ から切り離す (同じ理由で isolate)
+_UNRESOLVED_LOG_DIR = tempfile.mkdtemp(prefix="ja_style_guard_unresolved_")
+jsg.JA_STYLE_UNRESOLVED_LOG = os.path.join(_UNRESOLVED_LOG_DIR, "ja_style_unresolved.jsonl")
+_PROD_UNRESOLVED_LOG_PATH = os.path.join(_PROJECT_ROOT, "logs", "ja_style_unresolved.jsonl")
+_prod_unresolved_snapshot = (
+    os.path.getmtime(_PROD_UNRESOLVED_LOG_PATH) if os.path.exists(_PROD_UNRESOLVED_LOG_PATH) else None
+)
+
 
 class _CountingStub:
     """generate_content の呼び出し回数を数えつつ、固定の応答テキストを返す。"""
@@ -195,6 +204,35 @@ check(
 )
 
 # ---------------------------------------------------------
+# [5b] check_style: 番号付きリストの語尾統一はsentence-ending-monotonyを誤検知しない
+#      (logs/ja_style_unresolved.jsonl の実例 [AutoDesign paper-digest下書き] より)
+# ---------------------------------------------------------
+_list_text = (
+    "具体的には、以下の3ステップで自動改善を行います。\n\n"
+    "1. **実行と評価**: エージェントが生成した成果物を、人間やルールに基づく評価器が採点します。\n"
+    "2. **コードの書き換え**: 評価結果を基に、コーディングエージェントが「設計基盤（ハーネス）」のコードを直接書き換えます。\n"
+    "3. **適用判断**: 性能が向上する場合のみ、その更新をシステムに反映させます。"
+)
+_list_violations = jsg.check_style(_list_text, _dictionary)
+check(
+    "[5b] check_style: 番号付きリストでsentence-ending-monotony誤検知しない",
+    not any(v.id == "sentence-ending-monotony" for v in _list_violations),
+    str([v.id for v in _list_violations]),
+)
+
+# ---------------------------------------------------------
+# [5c] check_style: リストでない通常のプロ文で3文連続する語尾は引き続き検出される
+#      (5bの除外がsentence-ending-monotonyの検出そのものを潰していないことの回帰確認)
+# ---------------------------------------------------------
+_monotony_prose_text = "まず設定を確認します。次に依存関係を導入します。最後に起動を確認します。"
+_monotony_prose_violations = jsg.check_style(_monotony_prose_text, _dictionary)
+check(
+    "[5c] check_style: リストでないプロ文の3文連続は引き続き検出される",
+    any(v.id == "sentence-ending-monotony" for v in _monotony_prose_violations),
+    str([v.id for v in _monotony_prose_violations]),
+)
+
+# ---------------------------------------------------------
 # [6] enforce_style: 違反ゼロなら generate_content を呼ばず即返す
 # ---------------------------------------------------------
 _result6, _stub6 = _run_enforce_with_stub(_good_text, "元の指示", response_text="使われない")
@@ -216,6 +254,21 @@ _result8, _stub8 = _run_enforce_with_stub(_bad_text, "元の指示", response_te
 check("[8] enforce_style: max_retries=1なのでgenerate_content呼び出しは1回のみ", _stub8.calls == 1, str(_stub8.calls))
 check("[8] enforce_style: 未解消時は警告文言が末尾に付記される", "⚠️ 文体チェック未解消:" in _result8, _result8)
 
+with open(jsg.JA_STYLE_UNRESOLVED_LOG, encoding="utf-8") as f:
+    _unresolved_records = [json.loads(line) for line in f if line.strip()]
+_unresolved_ids = {r["id"] for r in _unresolved_records}
+_bad_ids_for_log = {v.id for v in jsg.check_style(_bad_text)}
+check(
+    "[8] enforce_style: 未解消の実例がJSONLに記録される",
+    _unresolved_ids == _bad_ids_for_log,
+    f"{_unresolved_ids} != {_bad_ids_for_log}",
+)
+check(
+    "[8] enforce_style: 記録されたmatchedが実際の該当文である(説明文でない)",
+    all(r["matched"] and "3文以上連続" not in r["matched"] for r in _unresolved_records),
+    str(_unresolved_records),
+)
+
 # ---------------------------------------------------------
 # [9] カウンタ隔離の確認: 一時パスを指しており、本番ログファイルを汚染していない
 # ---------------------------------------------------------
@@ -228,6 +281,17 @@ check(
     "[9] GEMINI_HEAVY_COUNTER が一時パスを指す",
     cost_guard.GEMINI_HEAVY_COUNTER.path.startswith(_COUNTER_DIR),
     cost_guard.GEMINI_HEAVY_COUNTER.path,
+)
+check(
+    "[9] JA_STYLE_UNRESOLVED_LOG が一時パスを指す",
+    jsg.JA_STYLE_UNRESOLVED_LOG.startswith(_UNRESOLVED_LOG_DIR),
+    jsg.JA_STYLE_UNRESOLVED_LOG,
+)
+check(
+    "[9] 本番の未解消ログファイルが増減していない",
+    (os.path.getmtime(_PROD_UNRESOLVED_LOG_PATH) if os.path.exists(_PROD_UNRESOLVED_LOG_PATH) else None)
+    == _prod_unresolved_snapshot,
+    f"before={_prod_unresolved_snapshot}",
 )
 _prod_after = {
     p: (os.path.getmtime(p) if os.path.exists(p) else None)

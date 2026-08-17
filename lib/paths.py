@@ -65,3 +65,7 @@ DOCLING_ARTIFACTS_PATH = os.getenv("DOCLING_ARTIFACTS_PATH", "").strip() or None
 # (VAULT_ROOT/BITNET_DIR と違いリポジトリ外の "実体" ではなく単なる設定ファイル)。
 DEFAULT_JA_STYLE_DICT_PATH = os.path.join(os.path.expanduser("~"), ".claude", "hooks", "data", "ja_style_ng_words.json")
 JA_STYLE_DICT_PATH = os.getenv("JA_STYLE_DICT_PATH", "").strip() or DEFAULT_JA_STYLE_DICT_PATH
+
+# enforce_style がリトライしても解消できなかった実例のログ (JSONL、1行1件追記)。
+# 辞書のpattern_hint/good_patternを実例で肉付けするための材料 (2026-08-17)。
+JA_STYLE_UNRESOLVED_LOG = os.path.join(LOGS_DIR, "ja_style_unresolved.jsonl")
