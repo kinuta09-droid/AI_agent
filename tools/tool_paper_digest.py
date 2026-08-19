@@ -217,7 +217,10 @@ Xプレミアム (Basic以上) に加入しており、140字制限なく長文�
 
 {EDITORIAL_STYLE_RULES}"""
     resp = client.models.generate_content(model=MODEL_NAME_HEAVY, contents=prompt)
-    text = enforce_style(resp.text or "", prompt, MODEL_NAME_HEAVY)
+    # このプロンプト自体が「断定口調・煽り・絵文字付きラベル」を明示指定しており、
+    # ja_style_guardの絵文字装飾・誇張表現チェックと目的が相反するため対象外とする
+    # (2026-08-19、summarize_paper/build_note_articleは記事本文なので対象のまま)
+    text = resp.text or ""
     parsed = safe_json_loads(text)
     post = parsed.get("post") if isinstance(parsed, dict) else None
     if not isinstance(post, str) or not post.strip():
