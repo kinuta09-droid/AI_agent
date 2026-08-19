@@ -38,6 +38,10 @@ load_dotenv(ENV_PATH)
 
 LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
 
+# tool_paper_digest.py が note記事の「じゃあ、今日から何をすればいいのか」セクションで
+# 紹介するMCP/Skill/プラグインのカタログ (カテゴリ別、静的データ)
+TOOL_RECOMMENDATION_POOL_PATH = os.path.join(PROJECT_ROOT, "lib", "data", "tool_recommendation_pool.json")
+
 # --- リポジトリの外にあるもの ------------------------------------------------
 # Vault も BitNet もリポジトリ外の実体 (別ドライブ / 別インストール) なので
 # __file__ 相対では表せない。**絶対パスの直書きを許すのはこのファイルだけ**にして、

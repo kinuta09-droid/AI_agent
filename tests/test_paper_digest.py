@@ -62,6 +62,92 @@ def test_trim_post_enforces_limit():
     print("✅ [1] trim_post: 文字数を機械で担保する")
 
 
+def test_insert_paid_section_marker_inserts_before_heading():
+    """PAID_SECTION_HEADING の直前にnote.com有料エリアの目印を挿入すること。"""
+    import tools.tool_paper_digest as digest
+    body = f"本文の前半です。\n\n{digest.PAID_SECTION_HEADING}\n\nここが後半です。"
+    result = digest.insert_paid_section_marker(body)
+    marker_pos = result.find(digest.PAID_SECTION_MARKER)
+    heading_pos = result.find(digest.PAID_SECTION_HEADING)
+    assert marker_pos != -1 and marker_pos < heading_pos, result
+    print("✅ [1c] insert_paid_section_marker: 見出し直前にマーカーを挿入する")
+
+
+def test_insert_paid_section_marker_noop_without_heading():
+    """見出しが無い(LLMが指示を守らなかった)場合は本文をそのまま返すこと。"""
+    import tools.tool_paper_digest as digest
+    body = "見出しの無い本文だけです。"
+    assert digest.insert_paid_section_marker(body) == body
+    print("✅ [1d] insert_paid_section_marker: 見出しが無ければ何もしない")
+
+
+def test_load_tool_pool_missing_file_returns_empty_dict():
+    """カタログファイルが無い/壊れていても例外を投げず {} を返すこと (記事生成を落とさない)。"""
+    import tools.tool_paper_digest as digest
+    original = digest.TOOL_RECOMMENDATION_POOL_PATH
+    digest.TOOL_RECOMMENDATION_POOL_PATH = "C:/nonexistent/tool_pool.json"
+    try:
+        assert digest.load_tool_pool() == {}
+    finally:
+        digest.TOOL_RECOMMENDATION_POOL_PATH = original
+    print("✅ [1e] load_tool_pool: ファイルが無ければ空dictを返す")
+
+
+def test_select_relevant_tools_matches_by_keyword():
+    """digest の文面とカテゴリ keywords が一致するカテゴリのツールだけを抽出すること。
+
+    数百件規模のカタログを毎回全件LLMへ渡さないための絞り込みが核心なので、
+    マッチしたカテゴリ以外のツールが混ざらないことを確認する。
+    """
+    import tools.tool_paper_digest as digest
+    pool = {
+        "browser": {"label": "ブラウザ自動化", "keywords": ["ブラウザ"],
+                    "tools": [{"name": "playwright-mcp", "note": "..."}]},
+        "docgen": {"label": "文書生成", "keywords": ["資料作成"],
+                   "tools": [{"name": "docx-skill", "note": "..."}]},
+    }
+    d = {"one_liner": "", "problem": "ブラウザ操作の自動テストが手作業で辛い",
+         "method": "", "novelty": "", "results": "", "limitations": "",
+         "implication": "", "keywords": []}
+    tools = digest.select_relevant_tools(d, pool)
+    names = [t["name"] for t in tools]
+    assert names == ["playwright-mcp"], names
+    print("✅ [1f] select_relevant_tools: keywordが一致したカテゴリだけを抽出する")
+
+
+def test_select_relevant_tools_no_match_returns_empty():
+    """どのカテゴリの keywords ともマッチしなければ空リストを返すこと (紹介を無理強いしない)。"""
+    import tools.tool_paper_digest as digest
+    pool = {"browser": {"label": "ブラウザ自動化", "keywords": ["ブラウザ"],
+                        "tools": [{"name": "playwright-mcp", "note": "..."}]}}
+    d = {"one_liner": "宇宙物理の観測データ解析", "problem": "", "method": "",
+         "novelty": "", "results": "", "limitations": "", "implication": "", "keywords": []}
+    assert digest.select_relevant_tools(d, pool) == []
+    print("✅ [1g] select_relevant_tools: マッチが無ければ空リストを返す")
+
+
+def test_select_relevant_tools_dedupes_across_categories():
+    """複数カテゴリに同じツールが (表記ゆれ込みで) 重複登録されていても1回しか出さないこと。
+
+    lib/data/tool_recommendation_pool.json は複数のリサーチAgentが分野ごとに独立して
+    集めたため、同じツールが別カテゴリに括弧内の補足だけ違う形で重複登録されることがある
+    (実例: "Semgrep MCP (MCP)" と "Semgrep MCP (Semgrep公式)")。マッチしたカテゴリを
+    複数集約したときに、その重複がそのまま記事に二重掲載されないことを確認する。
+    """
+    import tools.tool_paper_digest as digest
+    pool = {
+        "code_review": {"label": "コードレビュー", "keywords": ["脆弱性"],
+                        "tools": [{"name": "Semgrep MCP (MCP)", "note": "静的解析"}]},
+        "security": {"label": "セキュリティ", "keywords": ["脆弱性"],
+                     "tools": [{"name": "Semgrep MCP (Semgrep公式)", "note": "脆弱性スキャン"}]},
+    }
+    d = {"one_liner": "脆弱性が見逃されやすい", "problem": "", "method": "",
+         "novelty": "", "results": "", "limitations": "", "implication": "", "keywords": []}
+    tools = digest.select_relevant_tools(d, pool)
+    assert len(tools) == 1, tools
+    print("✅ [1h] select_relevant_tools: 表記ゆれのある重複ツールは1回だけ出す")
+
+
 def test_mechanical_hook_post_uses_digest_labels():
     """LLM 完全不通時のフォールバックは、digest の値をそのまま出すだけであること。"""
     import tools.tool_paper_digest as digest

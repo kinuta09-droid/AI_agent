@@ -43,7 +43,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from dotenv import load_dotenv
 
-from lib.paths import ENV_PATH
+from lib.paths import ENV_PATH, TOOL_RECOMMENDATION_POOL_PATH
 
 load_dotenv(ENV_PATH)
 
@@ -73,6 +73,73 @@ SNS_POST_LIMIT = int(os.getenv("SNS_POST_LIMIT", "1500"))
 
 DIGEST_KEYS = ["one_liner", "problem", "method", "novelty", "results",
                "limitations", "implication", "keywords"]
+
+# note記事の「じゃあどうすればいいか」セクションで紹介してよいツールのカタログ
+# (lib/data/tool_recommendation_pool.json、カテゴリ別)。LLMがここに無い製品名を
+# 捏造しないよう、紹介できる範囲をこのカタログに限定する。カタログ自体は数百件規模を
+# 想定しているため、記事生成のたびに全件渡すのではなく、digestの内容とカテゴリの
+# keywords をマッチさせて関連度の高いカテゴリだけを抜粋する。
+
+
+def load_tool_pool() -> dict:
+    """カテゴリ別のツールカタログを読み込む。
+
+    {category_key: {"label": str, "keywords": [str], "tools": [{"name", "note", "caution"?}]}}
+    ファイルが無い/壊れていても記事生成自体は失敗させたくないので {} を返す
+    (呼び出し側は空カタログなら「紹介できるツールが無い」経路に自然に落ちる)。
+    """
+    try:
+        with open(TOOL_RECOMMENDATION_POOL_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def select_relevant_tools(digest: dict, pool: dict, max_categories: int = 3, max_tools: int = 6) -> list:
+    """digest の内容とカテゴリの keywords をマッチさせ、関連度の高いツールだけ抽出する。
+
+    数百件規模のカタログを毎回LLMへ丸ごと渡すとプロンプトが肥大化するための絞り込み。
+    マッチするカテゴリが無ければ空リストを返す (紹介を無理強いしない)。
+    """
+    haystack = " ".join(str(digest.get(k, "")) for k in DIGEST_KEYS)
+    scored = []
+    for cat in pool.values():
+        score = sum(1 for kw in cat.get("keywords", []) if kw and kw in haystack)
+        if score > 0:
+            scored.append((score, cat))
+    scored.sort(key=lambda item: -item[0])
+    tools = []
+    seen_names = set()
+    for _, cat in scored[:max_categories]:
+        for t in cat.get("tools", []):
+            # 同じツールが複数カテゴリに (自然に) 重複登録されていることがあるため、
+            # 括弧内の補足 (種別/開発元) を除いた核の名前で名寄せして二重紹介を防ぐ。
+            key = re.sub(r"\s*\(.*?\)", "", t.get("name", "")).strip().lower()
+            if key and key in seen_names:
+                continue
+            seen_names.add(key)
+            tools.append(t)
+    return tools[:max_tools]
+
+
+# 「じゃあ、今日から何をすればいいのか」セクションを note.com の有料エリアにする
+# ときの目印。LLMに区切り位置まで生成させると見出し文言がぶれて検出できなくなるため、
+# 見出し文言だけをLLMに固定させ、マーカーの挿入はここで機械的に行う。
+PAID_SECTION_HEADING = "## じゃあ、今日から何をすればいいのか"
+PAID_SECTION_MARKER = (
+    "---\n\n🔒 **ここから先は有料エリア**\n"
+    "(note.comでは、この行の直前にカーソルを置いて「続きを読むには」を設定してください)\n\n"
+)
+
+
+def insert_paid_section_marker(body: str) -> str:
+    """PAID_SECTION_HEADING の直前に note.com 有料エリアの目印を挿入する。
+
+    見出しが無ければ (LLMが指示通りに書かなかった等) 何もしない。
+    """
+    if PAID_SECTION_HEADING not in body:
+        return body
+    return body.replace(PAID_SECTION_HEADING, PAID_SECTION_MARKER + PAID_SECTION_HEADING, 1)
 
 
 # ---------------------------------------------------------
@@ -466,6 +533,9 @@ def build_note_article(digest: dict, paper: dict, capture: dict) -> dict:
     if paper.get("published"):
         meta_lines.append(f"公開日: {paper['published']}")
 
+    relevant_tools = select_relevant_tools(digest, load_tool_pool())
+    tool_pool_json = json.dumps(relevant_tools, ensure_ascii=False, indent=2)
+
     prompt = f"""以下の{subject}要約をもとに、note.com と X Articles (Xプレミアム限定の
 長文記事機能) の両方にそのまま転載する日本語記事を書いてください。
 
@@ -487,10 +557,23 @@ def build_note_article(digest: dict, paper: dict, capture: dict) -> dict:
   PASONA的な流れ (課題の言語化→共感→解決策→根拠→行動) を使ってよい。
 - 各セクションに最低1箇所、「個人開発者として使うなら」等の一人称の示唆を入れること。
 - 見出しは "## " を使う。
-- 長さ: 2000〜3000字
+- 本文の最後、末尾リンクの直前に「## じゃあ、今日から何をすればいいのか」という見出し
+  (この文言をそのまま使うこと) のセクションを追加すること。ここは論文の課題・結果を
+  受けて「読者が今日から導入できる、具体的で軽い一歩」を示す"答え"パートであり、
+  読み終えた読者に「これをやっておけば安心」と思わせるのが目的。
+  紹介する対策は【導入可能ツールリスト】から論文の内容に合うものを1〜3個だけ選び、
+  「なぜこの論文の課題に効くか」を一言添えること。各ツールに `caution` フィールドが
+  あれば、その注記も本文中に短く添えること (例: 個人制作なので自己責任で導入する旨)。
+  **リストに無いツール名・サービス名を書いてはいけない** (捏造禁止)。
+  合うものが無ければ無理に紹介せず一般的な心構えで締めてよい。
+- 長さ: 2000〜3000字 (「じゃあ、今日から何をすればいいのか」セクションを含む)
 - 数値・固有名詞は与えられた要約に含まれるものだけを使う。**推測で補わないこと**
-  (タイトルも含む)。{caveat}
+  (タイトルも含む。ただし「じゃあ、今日から何をすればいいのか」で紹介するツール名は
+  【導入可能ツールリスト】記載のものに限り使ってよい)。{caveat}
 {tail_instruction}
+
+【導入可能ツールリスト (JSON、この中からのみ選ぶこと)】
+{tool_pool_json}
 
 【{subject}】
 {"\n".join(meta_lines)}
@@ -501,6 +584,7 @@ def build_note_article(digest: dict, paper: dict, capture: dict) -> dict:
 {EDITORIAL_STYLE_RULES}"""
     resp = client.models.generate_content(model=MODEL_NAME_HEAVY, contents=prompt)
     text = enforce_style((resp.text or "").strip(), prompt, MODEL_NAME_HEAVY)
+    text = insert_paid_section_marker(text)
     match = re.match(r'^#\s+(.+?)\s*\n', text)
     if not match:
         print(f"[PaperDigest] ⚠️ note記事にタイトル行が無かったため{subject}タイトルで代替")

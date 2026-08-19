@@ -1,0 +1,1223 @@
+{
+  "code_review": {
+    "label": "コードレビュー・静的解析",
+    "keywords": [
+      "バグ",
+      "コードレビュー",
+      "静的解析",
+      "セキュリティスキャン",
+      "品質ゲート",
+      "脆弱性",
+      "リンター"
+    ],
+    "tools": [
+      {
+        "name": "SonarQube MCP Server (MCP)",
+        "note": "SonarSource公式。コード品質・セキュリティホットスポット・カバレッジをAIエージェントから照会し、品質ゲートの状態確認や指摘の修正提案に使える。",
+        "source": "https://github.com/SonarSource/sonarqube-mcp-server"
+      },
+      {
+        "name": "Semgrep MCP (MCP)",
+        "note": "Semgrep公式。5000以上のルールで脆弱性やコーディング上の問題を静的スキャンし、結果をAIエージェントの会話内に返す。",
+        "source": "https://github.com/semgrep/mcp"
+      },
+      {
+        "name": "CodeRabbit MCP Server (MCP)",
+        "note": "CodeRabbit公式(2026年5月公開)。PR分析やレビュー設定、カスタムレポート生成をAIから操作できる。比較的新しく機能は発展途上。",
+        "source": "https://github.com/0ui-labs/coderabbit-mcp-server"
+      },
+      {
+        "name": "Codacy MCP Server (MCP)",
+        "note": "Codacy公式。SAST/SCA/シークレット検出などの品質・セキュリティ指摘やPRインサイトをAIエージェントに提供する。",
+        "source": "https://www.codacy.com/guardrails"
+      },
+      {
+        "name": "ESLint MCP (@eslint/mcp) (MCP)",
+        "note": "ESLint公式(v9.26.0で追加)。IDEに常駐するAIがJS/TSコードに対して直接Lintを実行できる。",
+        "source": "https://eslint.org/docs/latest/use/mcp"
+      },
+      {
+        "name": "Snyk MCP Server (MCP)",
+        "note": "Snyk公式。OSS依存関係・自作コード・IaC設定の脆弱性スキャンとAI支援の修正案をエディタ内で取得できる。",
+        "source": "https://snyk.io/articles/claude-desktop-and-snyk-mcp/"
+      },
+      {
+        "name": "code-review (Claude Code公式プラグイン)",
+        "note": "Anthropic公式。`/code-review`で4体のレビューエージェントを並列起動し、確信度80以上の指摘をPRコメントとして投稿できる。",
+        "source": "https://github.com/anthropics/claude-code/blob/main/plugins/code-review/README.md"
+      },
+      {
+        "name": "code-review-graph (MCP)",
+        "note": "Tree-sitterでコードをナレッジグラフ化し、差分の影響範囲やテストギャップをトークン効率よく返す個人製ツール(30k+スター)。本プロジェクトでも導入実績あり。",
+        "source": "https://github.com/topics/code-analysis",
+        "caution": "個人製のため自己責任で導入してください。"
+      },
+      {
+        "name": "mcp-code-review-server (MCP)",
+        "note": "リポジトリ全体を対象にLLMでコードレビューを行う個人製MCPサーバー。",
+        "source": "https://github.com/crazyrabbitLTC/mcp-code-review-server/",
+        "caution": "個人製のため自己責任で導入してください。"
+      }
+    ]
+  },
+  "browser_automation": {
+    "label": "ブラウザ自動化・E2Eテスト",
+    "keywords": [
+      "ブラウザ自動化",
+      "E2Eテスト",
+      "スクレイピング",
+      "スクリーンショット",
+      "フォーム入力",
+      "アクセシビリティツリー"
+    ],
+    "tools": [
+      {
+        "name": "Playwright MCP (MCP)",
+        "note": "Microsoft公式。アクセシビリティスナップショット経由でChrome/Firefox/WebKit/Edgeを操作でき、視覚モデル不要でナビゲーション・フォーム入力・ネットワークモックまで40以上のツールを提供。",
+        "source": "https://github.com/microsoft/playwright-mcp"
+      },
+      {
+        "name": "Chrome DevTools MCP (MCP)",
+        "note": "Google Chromeチーム公式。Puppeteer/CDP経由でネットワーク検証・パフォーマンスプロファイリング・デバイスエミュレーションなど26ツールを提供し、実ブラウザでの深いデバッグに使える。",
+        "source": "https://github.com/ChromeDevTools/chrome-devtools-mcp/"
+      },
+      {
+        "name": "Browserbase MCP Server / Stagehand (MCP)",
+        "note": "Browserbase公式。「ログインボタンをクリック」のような自然言語命令でAI駆動のWeb操作ができ、レイアウト変化にも強い。クラウド版は有料、ローカル実行も可。",
+        "source": "https://github.com/browserbase/mcp-server-browserbase"
+      },
+      {
+        "name": "Puppeteer MCP Server (MCP, リファレンス実装/アーカイブ済み)",
+        "note": "modelcontextprotocol公式のリファレンス実装。ナビゲーション・フォーム入力・スクリーンショット取得ができるが、現在はアーカイブされ積極メンテナンスはされていない点に注意。",
+        "source": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/puppeteer"
+      },
+      {
+        "name": "TestSprite MCP Server (MCP)",
+        "note": "TestSprite社製。自然言語プロンプトからUI/APIのE2Eテストを自動生成しクラウドサンドボックスで実行、セレクタの自己修復までこなす。",
+        "source": "https://www.testsprite.com/use-cases/en/mcp-testing-server"
+      },
+      {
+        "name": "Selenium MCP (mcp-selenium) (MCP)",
+        "note": "Selenium WebDriverをMCP経由で操作できる個人製サーバー。既存のSelenium資産をAIエージェントから使い回したい場合に有用。",
+        "source": "https://github.com/angiejones/mcp-selenium",
+        "caution": "個人製のため自己責任で導入してください。"
+      }
+    ]
+  },
+  "git_github": {
+    "label": "Git/GitHub/GitLab連携",
+    "keywords": [
+      "Git",
+      "GitHub",
+      "GitLab",
+      "プルリクエスト",
+      "Issue管理",
+      "コードレビュー自動化",
+      "リポジトリ検索"
+    ],
+    "tools": [
+      {
+        "name": "GitHub MCP Server (MCP)",
+        "note": "GitHub公式。リポジトリ閲覧・Issue/PR管理・CI/CDインサイト・セキュリティ検出結果の取得までREST/GraphQL API経由で操作でき、OAuthログインでトークン管理不要。",
+        "source": "https://github.com/github/github-mcp-server"
+      },
+      {
+        "name": "GitLab MCP server (MCP)",
+        "note": "GitLab公式。プロジェクト情報・Issue/MR取得やGitLab固有操作をAIツールから安全に実行できる(GitLab 19.2からFree版でも利用可)。",
+        "source": "https://docs.gitlab.com/user/model_context_protocol/mcp_server/"
+      },
+      {
+        "name": "Git MCP Server (リファレンス実装) (MCP)",
+        "note": "modelcontextprotocol公式リファレンス。ローカルGitリポジトリの読み取り・検索・操作ツールを提供する基本形。",
+        "source": "https://github.com/modelcontextprotocol/servers/blob/main/src/git"
+      },
+      {
+        "name": "GitKraken MCP Server (MCP)",
+        "note": "GitLensを作るGitKraken社公式。Git履歴・ブランチ・Issue/PRに加えGitHub/GitLab/Bitbucket/Jira等マルチリポジトリ横断の文脈をAIに渡せる。",
+        "source": "https://github.com/gitkraken/mcp"
+      },
+      {
+        "name": "octocode-mcp (MCP)",
+        "note": "GitHub/NPMのコードやIssue・PR・コミット履歴を横断検索し、実装パターンや依存関係を自然言語で調査できる個人製ツール。",
+        "source": "https://github.com/bgauryy/octocode-mcp",
+        "caution": "個人製のため自己責任で導入してください。"
+      },
+      {
+        "name": "gh_mcp_server (MCP)",
+        "note": "GitHub CLI(gh)をラップしてリポジトリ管理・PR・Issue・Actions監視をMCP経由で提供する個人製サーバー。`gh auth login`済みの認証をそのまま使える。",
+        "source": "https://github.com/kousen/gh_mcp_server",
+        "caution": "個人製のため自己責任で導入してください。"
+      }
+    ]
+  },
+  "ide_debug": {
+    "label": "IDE統合・デバッグ支援",
+    "keywords": [
+      "デバッグ",
+      "ブレークポイント",
+      "IDE統合",
+      "スタックトレース",
+      "コンテナ",
+      "言語サーバー",
+      "ビルドエラー"
+    ],
+    "tools": [
+      {
+        "name": "JetBrains MCP Server (MCP)",
+        "note": "JetBrains公式。IntelliJ/PyCharm/WebStorm/Android Studio等に2025.2以降バンドルされ、Claude CodeなどからIDE内のコード生成・リファクタ機能を呼び出せる。",
+        "source": "https://github.com/JetBrains/mcp-jetbrains"
+      },
+      {
+        "name": "XcodeBuildMCP (MCP)",
+        "note": "Sentry傘下(getsentry組織)で開発が続くXcode向けMCP。ビルド・テスト・アーカイブ・LLDBでのブレークポイント設定/状態検査まで82ツールでカバーし、iOS/macOS開発のデバッグを自動化できる。",
+        "source": "https://github.com/getsentry/XcodeBuildMCP"
+      },
+      {
+        "name": "Sentry MCP Server (MCP)",
+        "note": "Sentry公式。本番環境のエラー・スタックトレースを検索し、Seer(AI根本原因分析)を呼び出してIDEから直接デバッグできる。",
+        "source": "https://docs.sentry.io/product/agents/mcp/"
+      },
+      {
+        "name": "DebugMCP (MCP)",
+        "note": "Microsoft製の実験的リポジトリ。.NET等のデバッグワークフローをMCP経由で行うための土台。",
+        "source": "https://github.com/microsoft/DebugMCP"
+      },
+      {
+        "name": "Docker MCP Server (MCP)",
+        "note": "Docker公式。コンテナ/イメージ/ネットワークの起動・停止・ログストリーミング・compose操作を自然言語で行え、ローカル環境の再現やデバッグに使える。",
+        "source": "https://www.curatedmcp.com/marketplace/docker-mcp"
+      },
+      {
+        "name": "kubernetes-mcp-server (MCP)",
+        "note": "containers組織(Red Hat系)によるKubernetes/OpenShift公式寄りMCP。kubectlのラッパーではなくAPIサーバーに直接アクセスし、破壊的操作を無効化した安全なクラスタ調査モードを持つ。",
+        "source": "https://github.com/containers/kubernetes-mcp-server"
+      },
+      {
+        "name": "mcp-language-server (MCP)",
+        "note": "gopls/pyright/typescript-language-server等のLSPをMCP経由でブリッジし、定義ジャンプ・参照検索・診断・リネームをAIエージェントに提供する個人製ツール。",
+        "source": "https://github.com/isaacphi/mcp-language-server",
+        "caution": "個人製のため自己責任で導入してください。"
+      },
+      {
+        "name": "VSCode Debugger MCP Server (MCP)",
+        "note": "VS Codeのデバッグ機能と連携し、式の評価やインタラクティブなデバッグをAIエージェントから行える個人製拡張。",
+        "source": "https://www.pulsemcp.com/servers/jasonjmcghee-claude-debugger",
+        "caution": "個人製のため自己責任で導入してください。"
+      }
+    ]
+  },
+  "doc_reference": {
+    "label": "API/ライブラリドキュメント参照",
+    "keywords": [
+      "ドキュメント参照",
+      "バージョン別ドキュメント",
+      "APIリファレンス",
+      "幻覚防止",
+      "パッケージ情報"
+    ],
+    "tools": [
+      {
+        "name": "Context7 (MCP)",
+        "note": "Upstash公式。ライブラリ名からバージョン別の最新ドキュメント・コード例を取得し、古い学習データに基づくAIの誤情報を防ぐ。Cursor/Claude Code等30以上のクライアントに対応。",
+        "source": "https://github.com/upstash/context7"
+      },
+      {
+        "name": "Ref MCP (ref.tools) (MCP)",
+        "note": "Ref.tools公式。API/サービス/ライブラリのドキュメントをトークン効率よく検索・取得でき、セッション内での重複結果を除去する。",
+        "source": "https://github.com/ref-tools/ref-tools-mcp"
+      },
+      {
+        "name": "DeepWiki MCP (MCP)",
+        "note": "Devinを作るCognition社公式。任意の公開GitHubリポジトリを自動でWiki化し、構造の一覧取得や自然言語での質問応答ができる無料・認証不要のリモートMCP。",
+        "source": "https://docs.devin.ai/work-with-devin/deepwiki-mcp"
+      },
+      {
+        "name": "GitMCP (git-mcp) (MCP)",
+        "note": "GitHubリポジトリのURLを`gitmcp.io`に置き換えるだけで、そのリポジトリを最新ドキュメントハブとして参照できる無料・オープンソースの個人製サービス。",
+        "source": "https://github.com/idosal/git-mcp",
+        "caution": "個人製のため自己責任で導入してください。"
+      },
+      {
+        "name": "DevDocs MCP Server (MCP)",
+        "note": "DevDocs.ioのドキュメントをプロジェクトの依存バージョンに合わせて取得する個人製サーバー。",
+        "source": "https://www.npmjs.com/package/@madhan-g-p/devdocs-mcp-server",
+        "caution": "個人製のため自己責任で導入してください。"
+      },
+      {
+        "name": "npm-package-docs-mcp (MCP)",
+        "note": "npmパッケージのREADMEやGitHubリポジトリのドキュメントをIDE内で直接取得できる個人製サーバー。",
+        "source": "https://github.com/meanands/npm-package-docs-mcp",
+        "caution": "個人製のため自己責任で導入してください。"
+      },
+      {
+        "name": "mcp-package-docs (MCP)",
+        "note": "複数言語(npm/pip等)のパッケージドキュメントとLSP機能を横断的に提供する個人製サーバー。",
+        "source": "https://github.com/sammcj/mcp-package-docs",
+        "caution": "個人製のため自己責任で導入してください。"
+      }
+    ]
+  },
+  "database": {
+    "label": "データベース連携(SQL/NoSQL操作)",
+    "keywords": [
+      "SQL",
+      "NoSQL",
+      "スキーマ検査",
+      "クエリ実行",
+      "パフォーマンス分析",
+      "データベース管理"
+    ],
+    "tools": [
+      {
+        "name": "Postgres MCP Pro (postgres-mcp) (MCP)",
+        "note": "PostgreSQL公式リファレンス実装はSQLインジェクション脆弱性のため2025年にAnthropicが廃止・アーカイブ済み。代わりに広く推奨されているのがcrystaldba製で、設定可能な読み書きアクセスに加えインデックス調整などの性能分析機能を持つ。",
+        "source": "https://github.com/crystaldba/postgres-mcp",
+        "caution": "個人・企業(CrystalDBA)製のため自己責任で導入してください。公式リファレンス実装は非推奨・アーカイブ済みです。"
+      },
+      {
+        "name": "mcp-server-mysql (MCP)",
+        "note": "MySQLのスキーマ検査・クエリ実行ができる個人製サーバー。書き込み系操作は既定で無効化されており環境変数で個別に有効化する安全設計。",
+        "source": "https://github.com/benborla/mcp-server-mysql",
+        "caution": "個人製のため自己責任で導入してください。"
+      },
+      {
+        "name": "SQLite MCP Server (MCP, リファレンス実装/アーカイブ済み)",
+        "note": "modelcontextprotocol公式のリファレンス実装。SQLiteデータベースの操作とビジネスインテリジェンス機能を提供するが、現在はアーカイブされている。",
+        "source": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/sqlite"
+      },
+      {
+        "name": "MongoDB MCP Server (MCP)",
+        "note": "MongoDB公式。Atlas/Community/Enterpriseいずれのデプロイにも接続し、クラスタ管理・クエリ・インデックス作成・パフォーマンスアドバイザーを提供する。",
+        "source": "https://github.com/mongodb-js/mongodb-mcp-server"
+      },
+      {
+        "name": "Supabase MCP Server (MCP)",
+        "note": "Supabase公式。Postgresデータベース・認証・ストレージ・Edge Functionsまで含めたプロジェクト全体をSQL実行やスキーマ変更を通じて管理できる。",
+        "source": "https://mcpservers.org/servers/supabase-community/supabase-mcp"
+      },
+      {
+        "name": "Neo4j MCP Server (MCP)",
+        "note": "Neo4j公式。グラフスキーマの検査、読み取り専用/書き込みCypherクエリの実行、永続的なナレッジグラフとしての事実保存ができる。",
+        "source": "https://github.com/neo4j/mcp"
+      },
+      {
+        "name": "Snowflake MCP Server (MCP)",
+        "note": "Snowflake公式。Cortex Analyst/Cortex Searchをツールとして統合し、追加インフラなしでSnowflakeアカウントのデータに安全にアクセスできる。",
+        "source": "https://github.com/Snowflake-Labs/mcp"
+      },
+      {
+        "name": "ClickHouse MCP Server (MCP)",
+        "note": "ClickHouse公式。データベース/テーブル一覧の取得や読み取り専用SELECTクエリの実行、ローカルファイルに対するSQL実行までカバーする。",
+        "source": "https://mcpservers.org/servers/ClickHouse/mcp-clickhouse"
+      },
+      {
+        "name": "Redis MCP Server (mcp-redis) (MCP)",
+        "note": "Redis公式。文字列・ハッシュ・JSON・ベクトル埋め込みなどRedisが扱う全データ型を自然言語インターフェースで操作できる。",
+        "source": "https://github.com/redis/mcp-redis"
+      },
+      {
+        "name": "BigQuery MCP Server (bq_mcp) (MCP)",
+        "note": "Google BigQueryのデータセット/テーブル/スキーマ情報をキャッシュして提供する個人製サーバー。テーブル許可リストやクエリ上限などコスト暴走対策の仕組みを持つ。",
+        "source": "https://mcpservers.org/servers/takada-at/bq_mcp",
+        "caution": "個人製のため自己責任で導入してください。"
+      }
+    ]
+  },
+  "doc_generation": {
+    "label": "ドキュメント生成・編集",
+    "keywords": [
+      "資料作成",
+      "スライド",
+      "PDF",
+      "Word",
+      "Excel",
+      "Markdown変換",
+      "文書自動生成"
+    ],
+    "tools": [
+      {
+        "name": "docx (Anthropic公式Skill)",
+        "note": "Claude内蔵のWord文書生成・編集Skill。議事録やレポートをdocx形式でそのまま出力できる。",
+        "source": "https://github.com/anthropics/skills/tree/main/skills/docx"
+      },
+      {
+        "name": "pptx (Anthropic公式Skill)",
+        "note": "Claude内蔵のPowerPoint生成Skill。プレゼン資料の構成〜デザインまで一気に作成できる。",
+        "source": "https://github.com/anthropics/skills/tree/main/skills/pptx"
+      },
+      {
+        "name": "xlsx (Anthropic公式Skill)",
+        "note": "Claude内蔵のExcel生成・編集Skill。関数付きの表計算シートを自然言語指示から作れる。",
+        "source": "https://github.com/anthropics/skills/tree/main/skills/xlsx"
+      },
+      {
+        "name": "pdf (Anthropic公式Skill)",
+        "note": "Claude内蔵のPDF生成・読み取りSkill。契約書やレポートのPDF化・内容抽出に使える。",
+        "source": "https://github.com/anthropics/skills/tree/main/skills/pdf"
+      },
+      {
+        "name": "MarkItDown MCP (Microsoft公式)",
+        "note": "PDF/Office/画像/音声など29種以上のファイルをMarkdownに変換し、AIが読める形に統一する。",
+        "source": "https://github.com/microsoft/markitdown/tree/main/packages/markitdown-mcp"
+      },
+      {
+        "name": "mcp-pandoc (MCP)",
+        "note": "Pandocを使いMarkdown/DOCX/PDF/HTML等の相互変換をAIエージェントから呼び出せる。",
+        "source": "https://github.com/vivekVells/mcp-pandoc",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "Office-PowerPoint-MCP-Server (MCP)",
+        "note": "python-pptxベースでPowerPointの新規作成・既存ファイル編集・テンプレート適用ができる、機能が最も充実したOSS実装。",
+        "source": "https://github.com/GongRzhe/Office-PowerPoint-MCP-Server",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "Office-Word-MCP-Server (MCP)",
+        "note": "Word文書の作成・読み取り・書式編集をAIから直接操作できる。",
+        "source": "https://github.com/GongRzhe/Office-Word-MCP-Server",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "excel-mcp-server (MCP)",
+        "note": "Microsoft Excel不要でxlsxの作成・読み書き・書式設定ができる。",
+        "source": "https://github.com/haris-musa/excel-mcp-server",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "slide-deck (makerskills Skill)",
+        "note": "makerskillsパッケージのスライド資料作成支援Skill。",
+        "source": "https://github.com/coreyhaines31/makerskills",
+        "caution": "個人製のため自己責任で導入してください"
+      }
+    ]
+  },
+  "project_management": {
+    "label": "プロジェクト管理・タスク管理",
+    "keywords": [
+      "タスク管理",
+      "カンバン",
+      "スプリント",
+      "課題管理",
+      "Notion",
+      "Linear",
+      "Jira",
+      "Todoist"
+    ],
+    "tools": [
+      {
+        "name": "Notion MCP Server (Notion公式)",
+        "note": "NotionのページやDBをAIから直接読み書きでき、議事録やタスクDBの自動更新に使える。",
+        "source": "https://github.com/makenotion/notion-mcp-server"
+      },
+      {
+        "name": "Linear (公式リモートMCP)",
+        "note": "Linear社が提供するホスト型MCP。イシューやプロジェクトの作成・更新を自然言語で行える。",
+        "source": "https://mcp.linear.app/sse"
+      },
+      {
+        "name": "Atlassian MCP Server (Atlassian公式)",
+        "note": "Jira/Confluence/Bitbucketに安全に接続し、チケット起票や検索をAIから行える公式サーバー。",
+        "source": "https://github.com/atlassian/atlassian-mcp-server"
+      },
+      {
+        "name": "Todoist MCP (Doist公式)",
+        "note": "Todoist社自身が提供するMCP。タスクの追加・完了・検索を音声/チャットから操作できる。",
+        "source": "https://github.com/Doist/todoist-mcp"
+      },
+      {
+        "name": "clickup-mcp-server (MCP)",
+        "note": "ClickUpのタスク・スプリント・ドキュメントを自然言語で操作できる、ClickUp向けの事実上の標準実装。",
+        "source": "https://github.com/taazkareem/clickup-mcp-server",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "mcp-server-asana (MCP)",
+        "note": "AsanaのタスクやプロジェクトをAIアシスタントから作成・更新できる。",
+        "source": "https://github.com/roychri/mcp-server-asana",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "airtable-mcp-server (MCP)",
+        "note": "Airtableのベース/テーブルのスキーマ理解とレコードの読み書きができる。",
+        "source": "https://github.com/domdomegg/airtable-mcp-server",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "mcp-atlassian (MCP)",
+        "note": "Atlassian公式より前から存在する広く使われているJira/Confluence連携の代替実装。",
+        "source": "https://github.com/sooperset/mcp-atlassian",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "pm (makerskills Skill)",
+        "note": "複数事業のタスクをカンバン+アイゼンハワーマトリクスで管理するClaude Code Skill。",
+        "source": "https://github.com/coreyhaines31/makerskills",
+        "caution": "個人製のため自己責任で導入してください"
+      }
+    ]
+  },
+  "communication": {
+    "label": "コミュニケーション連携",
+    "keywords": [
+      "Slack",
+      "Discord",
+      "メール",
+      "Gmail",
+      "カレンダー",
+      "通知自動化"
+    ],
+    "tools": [
+      {
+        "name": "Slack MCP Server (公式リファレンス)",
+        "note": "Slackのチャンネル管理・メッセージ送信をAIから行える公式リファレンス実装(現在はコミュニティ主導でメンテナンス継続中)。",
+        "source": "https://github.com/modelcontextprotocol/servers/tree/main/src/slack",
+        "caution": "現在は開発元がZencoderに移管されコミュニティ主体で保守されているため、利用前に最新の状態を確認してください"
+      },
+      {
+        "name": "Resend MCP (Resend公式)",
+        "note": "メール送信サービスResendの公式MCP。下書き作成から実際のメール送信までAIから行える。",
+        "source": "https://github.com/resend/resend-mcp"
+      },
+      {
+        "name": "google_workspace_mcp (MCP)",
+        "note": "Gmail/Calendar/Docs/Sheets/Slides等をまとめて操作できる包括的なGoogle Workspace連携。",
+        "source": "https://github.com/taylorwilsdon/google_workspace_mcp",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "google-calendar-mcp (MCP)",
+        "note": "Google カレンダーの予定作成・検索・空き時間調整をAIから行える、スター1000超の代表的実装。",
+        "source": "https://github.com/nspady/google-calendar-mcp",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "discord-mcp (MCP)",
+        "note": "Discordのチャンネル管理・メッセージ送受信・モデレーションをAIアシスタントから操作できる。",
+        "source": "https://github.com/SaseQ/discord-mcp",
+        "caution": "個人製のため自己責任で導入してください"
+      }
+    ]
+  },
+  "scheduling_automation": {
+    "label": "スケジューリング・定期実行・自動化",
+    "keywords": [
+      "cron",
+      "定期実行",
+      "ワークフロー自動化",
+      "リマインダー",
+      "ノーコード連携"
+    ],
+    "tools": [
+      {
+        "name": "Zapier MCP (Zapier公式)",
+        "note": "8000以上のアプリと連携するZapierの公式ホスト型MCP。1つの接続で多数の自動化アクションを呼び出せる。",
+        "source": "https://github.com/zapier/zapier-mcp"
+      },
+      {
+        "name": "n8n-workflow-builder (MCP)",
+        "note": "自己ホスト型自動化ツールn8nのワークフローを自然言語で作成・管理できる。",
+        "source": "https://github.com/makafeli/n8n-workflow-builder",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "scheduler-mcp (MCP)",
+        "note": "シェルコマンド・API呼び出し・AIタスク・デスクトップ通知をcron式でスケジュール実行できる。",
+        "source": "https://github.com/PhialsBasement/scheduler-mcp",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "mcp-cron (MCP)",
+        "note": "AIプロンプトやWebhook、シェルコマンドの定期実行を管理するMCPサーバー。",
+        "source": "https://github.com/jolks/mcp-cron",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "reminder-mcp (MCP)",
+        "note": "Slack/Telegramへ指定時刻にリマインダーを送信する、外部cronサービス連携型MCP。",
+        "source": "https://github.com/arifszn/reminder-mcp",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "loopify (makerskills Skill)",
+        "note": "Claude Codeでcron的な定期実行ループ(日次ブリーフィング等)を安全に設計・設定するSkill。",
+        "source": "https://github.com/coreyhaines31/makerskills",
+        "caution": "個人製のため自己責任で導入してください"
+      }
+    ]
+  },
+  "knowledge_base": {
+    "label": "ノート・ナレッジベース管理",
+    "keywords": [
+      "Obsidian",
+      "ナレッジグラフ",
+      "第二の脳",
+      "メモ管理",
+      "ノート連携"
+    ],
+    "tools": [
+      {
+        "name": "mcp-obsidian (MCP)",
+        "note": "Obsidian Local REST APIプラグイン経由でVaultのファイル検索・読み書きができる、Obsidian連携MCPの代表格。",
+        "source": "https://github.com/MarkusPfundstein/mcp-obsidian",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "obsidian-mcp (MCP)",
+        "note": "Obsidianを起動していなくてもMarkdownファイルを直接操作できるシンプル版実装。",
+        "source": "https://github.com/StevenStavrakis/obsidian-mcp",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "obsidian-mcp-server (MCP)",
+        "note": "タグやフロントマターまで含めてVaultを外科的に編集できる高機能版実装。",
+        "source": "https://github.com/cyanheads/obsidian-mcp-server",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "Knowledge Graph Memory Server (公式リファレンス)",
+        "note": "エンティティ・関係・観測からなる知識グラフをJSONLで永続化し、セッションをまたいでAIに記憶を持たせる公式サーバー。",
+        "source": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory"
+      },
+      {
+        "name": "Anytype MCP (Anytype公式)",
+        "note": "暗号化・ローカルファーストのWikiツールAnytypeを自然言語で操作できる公式MCP。",
+        "source": "https://github.com/anyproto/anytype-mcp"
+      },
+      {
+        "name": "mcp-logseq (MCP)",
+        "note": "LogseqのローカルHTTP API経由でグラフの読み書き・管理ができる。",
+        "source": "https://github.com/ergut/mcp-logseq",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "Readwise MCP (Readwise公式)",
+        "note": "Readwise Reader/ハイライトの保存記事・書籍・ハイライトにAIからアクセスできる公式MCP。",
+        "source": "https://docs.readwise.io/tools/mcp"
+      },
+      {
+        "name": "second-brain (makerskills Skill)",
+        "note": "生データ→AIが編集するWiki→生成物、という3層構造で個人のナレッジベースを運用するSkill。",
+        "source": "https://github.com/coreyhaines31/makerskills",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "company-brain (makerskills Skill)",
+        "note": "second-brainのチーム版。人物・会社・議事録・SOPを構造化しチームの共有知識として管理する。",
+        "source": "https://github.com/coreyhaines31/makerskills",
+        "caution": "個人製のため自己責任で導入してください"
+      }
+    ]
+  },
+  "research": {
+    "label": "リサーチ・情報収集",
+    "keywords": [
+      "Web検索自動化",
+      "多段リサーチ",
+      "クローリング",
+      "ファクトチェック",
+      "情報収集エージェント"
+    ],
+    "tools": [
+      {
+        "name": "Tavily MCP (Tavily公式)",
+        "note": "リアルタイム検索・抽出・クロールを1つのAPIで提供する、AIエージェント向けに最適化された公式検索MCP。",
+        "source": "https://github.com/tavily-ai/tavily-mcp"
+      },
+      {
+        "name": "Exa MCP (Exa公式)",
+        "note": "意味検索ベースのWeb検索・企業リサーチ・コード検索ができる公式MCP。",
+        "source": "https://github.com/exa-labs/exa-mcp-server"
+      },
+      {
+        "name": "Firecrawl MCP (Firecrawl公式)",
+        "note": "JSレンダリング対応のスクレイピング・サイトマップ化・クロールをAIから実行できる公式MCP。",
+        "source": "https://github.com/firecrawl/firecrawl-mcp-server"
+      },
+      {
+        "name": "Brave Search MCP (Brave公式)",
+        "note": "Web/画像/動画/ニュース検索とAI要約を提供する、最も広く導入されている検索MCPの一つ。",
+        "source": "https://github.com/brave/brave-search-mcp-server"
+      },
+      {
+        "name": "Perplexity MCP (Perplexity公式)",
+        "note": "Perplexityのリアルタイム検索・推論・リサーチ機能をAgent APIとSearch API経由で使える公式MCP。",
+        "source": "https://github.com/perplexityai/modelcontextprotocol"
+      },
+      {
+        "name": "Fetch MCP Server (公式リファレンス)",
+        "note": "指定URLの内容をMarkdownとして取得し、AIがWebページを段階的に読めるようにする公式サーバー。",
+        "source": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch"
+      },
+      {
+        "name": "DeepWiki MCP (Cognition公式)",
+        "note": "GitHub公開リポジトリを対象に、AIが生成した最新ドキュメントへ質問形式でアクセスできる公式ホスト型MCP。",
+        "source": "https://docs.devin.ai/work-with-devin/deepwiki-mcp"
+      },
+      {
+        "name": "deep-research-mcp (MCP)",
+        "note": "OpenAI Deep Research・Gemini Deep Research Agent・Hugging Face Open Deep Researchなど複数の多段リサーチエンジンを1つのMCPから呼び出せる。",
+        "source": "https://github.com/pminervini/deep-research-mcp",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "deep-research (makerskills Skill)",
+        "note": "Web検索・ページ取得・過去30日分の話題性データを組み合わせ、引用付きの調査ブリーフを生成するSkill。",
+        "source": "https://github.com/coreyhaines31/makerskills",
+        "caution": "個人製のため自己責任で導入してください"
+      }
+    ]
+  },
+  "data_viz": {
+    "label": "データ可視化・ダッシュボード",
+    "keywords": [
+      "グラフ",
+      "可視化",
+      "ダッシュボード",
+      "チャート",
+      "図表",
+      "レポート自動生成"
+    ],
+    "tools": [
+      {
+        "name": "AntV Chart Server (MCP)",
+        "note": "Ant Group発のAntVライブラリで25種類以上のグラフ(棒・折れ線・地図・ネットワーク図等)をコマンド一つで生成でき、論文の分析結果をそのまま図解できる",
+        "source": "https://github.com/antvis/mcp-server-chart",
+        "caution": "企業(Ant Group)バックのOSSだが開発は個人有志中心のため自己責任で導入してください"
+      },
+      {
+        "name": "ECharts MCP Server (MCP)",
+        "note": "Apache ECharts形式のインタラクティブなグラフをAIが自動生成、Webページやレポートに埋め込みやすい",
+        "source": "https://github.com/hustcc/mcp-echarts",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "VegaLite MCP Server (MCP)",
+        "note": "取得したデータをVega-Lite文法で可視化、統計的な傾向を素早くグラフ化できる",
+        "source": "https://github.com/isaacwasserman/mcp-vegalite-server",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "QuickChart MCP Server (MCP)",
+        "note": "QuickChart.io APIを使い棒・円・レーダーチャートやQRコードまで画像URLとして即生成、SNS投稿用の図解作りに向く",
+        "source": "https://github.com/GongRzhe/Quickchart-MCP-Server",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "MCP Dashboards (MCP)",
+        "note": "AIとの対話の中にインタラクティブなダッシュボードやKPIウィジェットをその場で描画できる",
+        "source": "https://github.com/KyuRish/mcp-dashboards",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "Grafana MCP Server (MCP)",
+        "note": "Grafana公式。既存ダッシュボードの検索・編集やメトリクス/ログのクエリをAIから直接操作でき、監視データの解説に使える",
+        "source": "https://github.com/grafana/mcp-grafana"
+      },
+      {
+        "name": "Tableau MCP Server (MCP)",
+        "note": "Tableau(Salesforce)公式。既存のTableauダッシュボードをAIエージェントに読み取らせ、データの意味を自然言語で解説させられる",
+        "source": "https://github.com/tableau/tableau-mcp"
+      },
+      {
+        "name": "Data Plugin ( /create-viz , /build-dashboard ) (Claude Code Skill/Plugin)",
+        "note": "Anthropic公式。Pythonでの静的グラフ生成とフィルタ付きインタラクティブHTMLダッシュボード生成をワンコマンドで行える",
+        "source": "https://claude.com/plugins/data"
+      }
+    ]
+  },
+  "data_analysis": {
+    "label": "データ分析・統計処理",
+    "keywords": [
+      "データ分析",
+      "統計",
+      "pandas",
+      "データウェアハウス",
+      "SQL",
+      "ノートブック"
+    ],
+    "tools": [
+      {
+        "name": "Pandas MCP Server (MCP)",
+        "note": "pandasコードをAI経由で実行し、CSV/Excelの集計・統計・可視化を自然言語の指示だけで行える",
+        "source": "https://github.com/marlonluo2018/pandas-mcp-server",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "Jupyter MCP Server (MCP)",
+        "note": "起動中のJupyterLabにAIが直接コードセルを追加・実行し、出力(グラフ含む)を読み取って自己修正しながら分析を進められる",
+        "source": "https://github.com/datalayer/jupyter-mcp-server",
+        "caution": "Datalayer社が開発する小規模プロジェクトのため自己責任で導入してください"
+      },
+      {
+        "name": "MCP Toolbox for Databases (MCP)",
+        "note": "Google公式。BigQueryやPostgres等のDBに自然言語でクエリを投げ、スキーマ探索やNL2SQLを安全な権限設定付きで行える",
+        "source": "https://github.com/googleapis/mcp-toolbox"
+      },
+      {
+        "name": "ClickHouse MCP Server (MCP)",
+        "note": "ClickHouse公式。大量データの高速集計クエリやテーブル構造の確認をAIから実行できる",
+        "source": "https://github.com/ClickHouse/mcp-clickhouse"
+      },
+      {
+        "name": "Snowflake MCP Server (MCP)",
+        "note": "Snowflake公式。Cortex Analystによる自然言語→SQL変換やスキーマ探索、セマンティック検索をAIから利用できる",
+        "source": "https://github.com/Snowflake-Labs/mcp"
+      },
+      {
+        "name": "MotherDuck MCP Server (MCP)",
+        "note": "MotherDuck公式。DuckDBをローカル/クラウドの両方でAIから直接クエリでき、個人開発者でも手軽に高速なSQL分析ができる",
+        "source": "https://github.com/motherduckdb/mcp-server-motherduck"
+      },
+      {
+        "name": "DuckDB MCP Server (MCP)",
+        "note": "ローカルDuckDBファイルに対しSQLクエリとスキーマ確認をAI経由で行える軽量サーバー",
+        "source": "https://github.com/ktanaka101/mcp-server-duckdb",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "MCP Database Server (MCP)",
+        "note": "SQLite/SQL Server/PostgreSQLに対応した汎用DB操作サーバー、複数DBを横断してAIに分析させたい個人開発者向け",
+        "source": "https://github.com/executeautomation/mcp-database-server",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "MCP Server Data Exploration (MCP)",
+        "note": "CSV等の未整形データを自動でプロファイリングし、可視化候補や統計サマリーを提示してくれる探索支援サーバー",
+        "source": "https://github.com/reading-plus-ai/mcp-server-data-exploration",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "PostHog MCP Server (MCP)",
+        "note": "PostHog公式。プロダクト分析のHogQLクエリ実行やフィーチャーフラグ操作をAI対話だけで行え、非エンジニアでもプロダクト指標を分析できる",
+        "source": "https://github.com/posthog/mcp"
+      },
+      {
+        "name": "Wolfram Alpha MCP Server (MCP)",
+        "note": "Wolfram|Alphaの計算エンジンをAIから呼び出し、数式処理や統計計算・単位変換を正確に行わせられる",
+        "source": "https://github.com/akalaric/mcp-wolframalpha",
+        "caution": "個人製のため自己責任で導入してください"
+      }
+    ]
+  },
+  "search_rag": {
+    "label": "検索・RAG(ベクトル検索・ハイブリッド検索)",
+    "keywords": [
+      "ベクトル検索",
+      "RAG",
+      "セマンティック検索",
+      "全文検索",
+      "埋め込み"
+    ],
+    "tools": [
+      {
+        "name": "Chroma MCP Server (MCP)",
+        "note": "Chroma公式。ローカルで動くベクトルDBのコレクション作成・追加・検索をAIから直接操作でき、個人のRAGプロトタイピングに向く",
+        "source": "https://github.com/chroma-core/chroma-mcp"
+      },
+      {
+        "name": "Qdrant MCP Server (MCP)",
+        "note": "Qdrant公式。store/findの2ツールだけで使えるシンプルなAIエージェント用の長期記憶・検索基盤",
+        "source": "https://github.com/qdrant/mcp-server-qdrant"
+      },
+      {
+        "name": "Pinecone MCP Server (MCP)",
+        "note": "Pinecone公式。マネージドのベクトル検索とリランキングを本番運用レベルでAIから利用できる",
+        "source": "https://github.com/pinecone-io/pinecone-mcp"
+      },
+      {
+        "name": "Elasticsearch MCP Server (MCP)",
+        "note": "Elastic公式。既存のElasticsearchインデックスへ自然言語でES|QLクエリを投げ、全文検索やログ分析をAI対話で行える",
+        "source": "https://github.com/elastic/mcp-server-elasticsearch"
+      },
+      {
+        "name": "Meilisearch MCP Server (MCP)",
+        "note": "Meilisearch公式。全文検索・セマンティック検索のインデックス管理やクエリ実行をAIから行え、高速な検索体験を自作アプリに組み込みやすい",
+        "source": "https://github.com/meilisearch/meilisearch-mcp"
+      },
+      {
+        "name": "Algolia MCP (Go/Node公式実装) (MCP)",
+        "note": "Algolia公式。検索の実行やインデックス管理、A/Bテスト、検索分析の取得までAIから操作できる",
+        "source": "https://www.algolia.com/blog/engineering/building-an-ai-powered-mcp-client-for-algolia"
+      },
+      {
+        "name": "MCP Omnisearch (MCP)",
+        "note": "Tavily/Brave/Kagi/Exa等の複数検索エンジンとFirecrawl等の抽出サービスを1つのMCPで統合利用できる",
+        "source": "https://github.com/spences10/mcp-omnisearch",
+        "caution": "個人製のため自己責任で導入してください"
+      }
+    ]
+  },
+  "finance_payment": {
+    "label": "決済・金融データ連携",
+    "keywords": [
+      "決済",
+      "Stripe",
+      "会計",
+      "銀行データ連携",
+      "サブスク管理"
+    ],
+    "tools": [
+      {
+        "name": "Stripe MCP Server (MCP)",
+        "note": "Stripe公式(mcp.stripe.comでホスト)。顧客・請求・返金・サブスクなどの操作や決済ナレッジベース検索をAIから行える",
+        "source": "https://docs.stripe.com/mcp"
+      },
+      {
+        "name": "Plaid MCP Server (MCP)",
+        "note": "Plaid公式。連携済み銀行口座の取引履歴・残高・投資データをAIエージェントから取得し、家計簿や資金繰り分析を自動化できる",
+        "source": "https://www.pulsemcp.com/servers/plaid"
+      },
+      {
+        "name": "PayPal Agent Toolkit (MCP)",
+        "note": "PayPal公式。決済リンクの発行や注文・請求情報の取得をAIエージェント経由で操作できる",
+        "source": "https://github.com/paypal/agent-toolkit"
+      },
+      {
+        "name": "Xero MCP Server (MCP)",
+        "note": "Xero公式。請求書・取引先・レポート・給与など会計データをAIから読み書きでき、中小企業の経理業務を自然言語で扱える",
+        "source": "https://github.com/XeroAPI/xero-mcp-server"
+      },
+      {
+        "name": "Coupler.io MCP (QuickBooks/Xero/Stripe連携) (Plugin)",
+        "note": "QuickBooks・Xero・Stripeなど70以上の会計/業務ツールを横断し、AIにキャッシュフローや経費のデータ分析をさせられる",
+        "source": "https://www.coupler.io/mcp/quickbooks",
+        "caution": "個人ではなく企業(Coupler.io社)製の小規模SaaS連携ツールのため、導入前に利用規約を確認してください"
+      }
+    ]
+  },
+  "spreadsheet": {
+    "label": "スプレッドシート・表計算連携",
+    "keywords": [
+      "Excel",
+      "Googleスプレッドシート",
+      "表計算",
+      "自動集計"
+    ],
+    "tools": [
+      {
+        "name": "mcp-google-sheets (MCP)",
+        "note": "Google Drive/Sheets APIと連携し、スプレッドシートの作成・読み書き・シート操作をAIの自然言語指示だけで行える",
+        "source": "https://github.com/xing5/mcp-google-sheets",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "Excel MCP Server (MCP)",
+        "note": "Excelアプリ不要でxlsxファイルの作成・数式・書式設定・グラフ・ピボットテーブルまでAIから直接操作できる",
+        "source": "https://github.com/haris-musa/excel-mcp-server",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "xlsx (Claude Code Skill)",
+        "note": "Anthropic公式スキル。Excelファイルの読み書き・数式・グラフ生成をClaude Codeから直接行え、非エンジニアでも報告書のExcel化を任せられる",
+        "source": "https://github.com/anthropics/skills/tree/main/skills/xlsx"
+      },
+      {
+        "name": "Coupler.io MCP (スプレッドシート連携) (Plugin)",
+        "note": "Google SheetsやExcelへ各種SaaSデータを自動同期し、AIに定期レポートの集計・分析をさせられる",
+        "source": "https://www.coupler.io/mcp/quickbooks",
+        "caution": "個人ではなく企業(Coupler.io社)製の小規模SaaS連携ツールのため、導入前に利用規約を確認してください"
+      }
+    ]
+  },
+  "web_search_api": {
+    "label": "Web検索・情報収集API",
+    "keywords": [
+      "Web検索",
+      "リサーチ",
+      "情報収集",
+      "クローリング",
+      "スクレイピング"
+    ],
+    "tools": [
+      {
+        "name": "Tavily MCP Server (MCP)",
+        "note": "Tavily公式。リアルタイムWeb検索・データ抽出・クロールを1つのAPIで行え、論文の背景調査や最新情報の裏取りに向く",
+        "source": "https://docs.tavily.com/documentation/mcp"
+      },
+      {
+        "name": "Perplexity Ask MCP Server (MCP)",
+        "note": "Perplexity公式。Sonarモデルによる引用付きのリアルタイムWeb回答をAIエージェントから呼び出せる",
+        "source": "https://github.com/perplexityai/modelcontextprotocol"
+      },
+      {
+        "name": "Brave Search MCP Server (MCP)",
+        "note": "Brave公式。GoogleやBingに依存しない独自インデックス(400億ページ以上)によるプライバシー重視のWeb検索ができる",
+        "source": "https://mcp.directory/servers/brave-search"
+      },
+      {
+        "name": "Exa MCP Server (MCP)",
+        "note": "Exa公式。独自クローラによるニューラル検索で、キーワード一致でなく意味的に近いページを見つけられる",
+        "source": "https://github.com/exa-labs/exa-mcp-server"
+      },
+      {
+        "name": "Firecrawl MCP Server (MCP)",
+        "note": "Firecrawl公式。検索・スクレイピング・クロール・自律リサーチを1つのセッションで行え、URLからクリーンなMarkdown抽出まで一気通貫でできる",
+        "source": "https://www.firecrawl.dev/blog/best-web-search-mcp"
+      },
+      {
+        "name": "Jina AI Reader/Search MCP Server (MCP)",
+        "note": "Jina AI公式。URL→Markdown変換、Web検索・画像検索、埋め込み/リランクまでを1つのリモートMCPで提供",
+        "source": "https://github.com/jina-ai/MCP"
+      }
+    ]
+  },
+  "image_generation": {
+    "label": "画像生成・編集",
+    "keywords": [
+      "画像生成",
+      "イラスト",
+      "AIアート",
+      "画像編集",
+      "アップスケール"
+    ],
+    "tools": [
+      {
+        "name": "fal-mcp (MCP)",
+        "note": "fal.aiの600以上のAIモデル(画像・動画・音声生成)にClaudeから直接アクセスできる",
+        "source": "https://github.com/enescanguven/fal-mcp",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "Comfy MCP (MCP)",
+        "note": "ComfyOrg公式。ローカルComfyUIやFlux/Ideogram/DALL·E/Recraft等のホスト型モデルをAIエージェントから操作できる",
+        "source": "https://github.com/Comfy-Org/comfy-mcp"
+      },
+      {
+        "name": "mcp-server-stability-ai (MCP)",
+        "note": "Stability AIによる画像生成・編集・アップスケールをMCP経由で呼び出せる",
+        "source": "https://github.com/tadasant/mcp-server-stability-ai",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "Image-Generation-MCP-Server (MCP)",
+        "note": "Replicate上のFluxモデルで高品質画像生成を行える",
+        "source": "https://github.com/GongRzhe/Image-Generation-MCP-Server",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "mcp-server-gemini-image-generator (MCP)",
+        "note": "Google Gemini Flashモデルでテキストからの画像生成・命名を自動化できる",
+        "source": "https://github.com/qhdrl12/mcp-server-gemini-image-generator",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "imagegen-mcp (MCP)",
+        "note": "OpenAI Image API (text-to-image / inpaintingでのimage-to-image) をラップした軽量MCPサーバー",
+        "source": "https://github.com/spartanz51/imagegen-mcp",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "MidjourneyMCP (MCP)",
+        "note": "AceDataCloud API経由でMidjourneyの画像生成をClaudeから呼び出せる",
+        "source": "https://github.com/acedatacloud/midjourneymcp",
+        "caution": "Midjourney非公式のサードパーティAPI経由のため自己責任で導入してください"
+      },
+      {
+        "name": "fal-generate (Claude Code Skill)",
+        "note": "fal.aiの画像/動画生成モデルを自然言語から呼び出すスキル",
+        "source": "https://mcpmarket.com/tools/skills/fal-ai-image-video-generator",
+        "caution": "配布元は個人/コミュニティ製のため自己責任で導入してください"
+      },
+      {
+        "name": "canvas-design (Claude Code Skill)",
+        "note": "デザイン哲学に基づき、png/pdf形式の視覚的アート作品を生成できるスキル",
+        "source": "https://github.com/anthropics/skills"
+      }
+    ]
+  },
+  "video_audio": {
+    "label": "動画・音声生成・処理",
+    "keywords": [
+      "動画生成",
+      "音声生成",
+      "音楽生成",
+      "文字起こし",
+      "TTS"
+    ],
+    "tools": [
+      {
+        "name": "elevenlabs-mcp (MCP)",
+        "note": "ElevenLabs公式MCPサーバー。TTS・音声クローン・文字起こし・音声エージェント構築に対応",
+        "source": "https://github.com/elevenlabs/elevenlabs-mcp"
+      },
+      {
+        "name": "kie-ai-mcp (MCP)",
+        "note": "Kie.ai経由でIdeogram/Kling/Runway/Suno/ElevenLabs等の画像・動画・音声生成をまとめて呼び出せる",
+        "source": "https://github.com/neokahu/kie-ai-mcp",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "mcp-video-gen / RunwayML+Luma (MCP)",
+        "note": "RunwayMLとLuma AIのAPIを束ね、テキスト/画像からの動画生成をMCP経由で扱える",
+        "source": "https://github.com/wheattoast11/mcp-video-gen",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "suno-mcp-server (MCP)",
+        "note": "Suno AIによる楽曲生成。ジャンルプロンプトテンプレートと既存曲の延長/リミックスに対応",
+        "source": "https://github.com/frankxai/suno-mcp-server",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "mcp-server-whisper (MCP)",
+        "note": "OpenAI Whisper/GPT-4oモデルを使った高度な音声文字起こし・音声処理サーバー",
+        "source": "https://github.com/arcaputo3/mcp-server-whisper",
+        "caution": "個人製のため自己責任で導入してください"
+      }
+    ]
+  },
+  "design": {
+    "label": "デザイン連携",
+    "keywords": [
+      "Figma",
+      "Canva",
+      "デザイン連携",
+      "UIデザイン",
+      "デザインツール自動化"
+    ],
+    "tools": [
+      {
+        "name": "Figma MCP Server (MCP/公式)",
+        "note": "Figma公式MCPサーバー。デザインファイルの読み取り専用アクセスをAIコーディングエージェントに提供",
+        "source": "https://github.com/figma/mcp-server-guide"
+      },
+      {
+        "name": "Figma-Context-MCP (MCP)",
+        "note": "FigmaのレイアウトデータをCursor/Claude等のAIコーディングエージェントに渡す、広く使われているコミュニティ実装",
+        "source": "https://github.com/glips/figma-context-mcp",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "Canva MCP Server (MCP/公式)",
+        "note": "Canva公式のリモートMCPサーバー。デザイン作成・編集、ブランド資産管理、書き出しなどに対応",
+        "source": "https://www.canva.dev/docs/mcp/"
+      },
+      {
+        "name": "Webflow MCP Server (MCP/公式)",
+        "note": "Webflow公式MCPサーバー。Webflow Data APIを介したサイト・CMSデータ操作に対応",
+        "source": "https://github.com/webflow/mcp-server"
+      },
+      {
+        "name": "adobe-mcp (MCP)",
+        "note": "Photoshop・Premiere Pro・Illustrator・InDesignを横断的にAIから操作できる統合MCPサーバー",
+        "source": "https://github.com/matrayu/adobe-mcp",
+        "caution": "個人製のため自己責任で導入してください"
+      }
+    ]
+  },
+  "security_audit": {
+    "label": "セキュリティ・脆弱性チェック・監査",
+    "keywords": [
+      "セキュリティ監査",
+      "脆弱性スキャン",
+      "SAST",
+      "DAST",
+      "シークレット検知",
+      "安全性",
+      "リスク",
+      "誤動作"
+    ],
+    "tools": [
+      {
+        "name": "claude-code-security-review (Anthropic公式)",
+        "note": "ClaudeによるAI駆動のセキュリティレビュー。PR差分を意味解析し脆弱性を検出するGitHub Action/スラッシュコマンド",
+        "source": "https://github.com/anthropics/claude-code-security-review"
+      },
+      {
+        "name": "Semgrep MCP (Semgrep公式)",
+        "note": "5000以上のルールを持つ静的解析エンジンSemgrepでコードの脆弱性をスキャンできる公式MCPサーバー",
+        "source": "https://github.com/semgrep/mcp"
+      },
+      {
+        "name": "trivy-mcp (Aqua Security公式)",
+        "note": "コンテナ・ファイルシステム・リポジトリの脆弱性/設定ミスを検出するTrivyの公式MCPプラグイン",
+        "source": "https://github.com/aquasecurity/trivy-mcp"
+      },
+      {
+        "name": "GitGuardian MCP (ggmcp) (GitGuardian公式)",
+        "note": "多種類のシークレットを検知し、漏洩前にコード内の認証情報を発見・修復できる公式MCPサーバー",
+        "source": "https://github.com/GitGuardian/ggmcp"
+      },
+      {
+        "name": "owasp-zap-mcp (MCP)",
+        "note": "OWASP ZAPを使った動的アプリケーションセキュリティテスト(DAST)をAIエージェントから実行できる",
+        "source": "https://github.com/ashmere/owasp-zap-mcp",
+        "caution": "個人製のため自己責任で導入してください"
+      }
+    ]
+  },
+  "devops_deploy": {
+    "label": "デプロイ・インフラ・CI/CD連携",
+    "keywords": [
+      "デプロイ",
+      "CI/CD",
+      "インフラ",
+      "Docker",
+      "クラウド"
+    ],
+    "tools": [
+      {
+        "name": "terraform-mcp-server (HashiCorp公式)",
+        "note": "Terraformレジストリ・HCP TerraformのAPIと連携し、IaCの自動化を支援する公式MCPサーバー",
+        "source": "https://github.com/hashicorp/terraform-mcp-server"
+      },
+      {
+        "name": "mcp-server-cloudflare (Cloudflare公式)",
+        "note": "Cloudflare Workers/KV/R2/DNS等をAIエージェントから自然言語で操作できる公式MCPサーバー",
+        "source": "https://github.com/cloudflare/mcp-server-cloudflare"
+      },
+      {
+        "name": "netlify-mcp (Netlify公式)",
+        "note": "NetlifyのAPI/CLIを使い、プロジェクト作成・ビルド・デプロイを自然言語で行える公式MCPサーバー",
+        "source": "https://github.com/netlify/netlify-mcp"
+      },
+      {
+        "name": "awslabs/mcp (AWS公式)",
+        "note": "AWSドキュメント検索・API操作・CloudFormationなど複数のAWS公式MCPサーバー群",
+        "source": "https://github.com/awslabs/mcp"
+      },
+      {
+        "name": "mcp-server-kubernetes (MCP)",
+        "note": "kubectl相当のKubernetes管理コマンドをAIエージェントから実行できる、広く使われる個人製実装",
+        "source": "https://github.com/Flux159/mcp-server-kubernetes",
+        "caution": "個人製のため自己責任で導入してください"
+      }
+    ]
+  },
+  "code_discipline": {
+    "label": "AIの過剰実装防止・コード品質規律系",
+    "keywords": [
+      "過剰実装防止",
+      "YAGNI",
+      "デッドコード検出",
+      "技術的負債",
+      "コード品質",
+      "精度",
+      "信頼性",
+      "検証",
+      "評価",
+      "限界",
+      "誤り"
+    ],
+    "tools": [
+      {
+        "name": "ponytail (Claude Code Skill/Plugin)",
+        "note": "「怠惰なシニア開発者」人格を注入し、YAGNI・既存コード再利用を強制することでAIの過剰実装を防ぐ",
+        "source": "https://github.com/DietrichGebert/ponytail",
+        "caution": "個人製のため自己責任で導入してください"
+      },
+      {
+        "name": "ast-grep-mcp (MCP)",
+        "note": "AST構造検索により、20以上の言語を横断してパターン一致するコードを安全にリファクタリングできる",
+        "source": "https://github.com/ast-grep/ast-grep-mcp"
+      },
+      {
+        "name": "deslop-mcp (MCP)",
+        "note": "AI生成コードにありがちな冗長コメント・過剰なtry-catch・無意味なasync等の「スロップ」パターンを検出・自動修正する",
+        "source": "https://github.com/collin-ho/deslop-mcp",
+        "caution": "個人製のため自己責任で導入してください"
+      }
+    ]
+  }
+}
