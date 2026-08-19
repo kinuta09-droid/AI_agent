@@ -114,7 +114,9 @@ def check_style(text: str, dictionary: dict = None) -> list:
             violations.append(Violation("ai-filler-myth-count", f"「これにより」が{count}回出現", c["desc"], c["good_pattern"]))
 
     if "connector-spam" in agg_by_id:
-        count = sum(text.count(w) for w in ("さらに", "また", "加えて"))
+        # 「また」は「または」(接続詞ではない)の一部として頻繁に誤カウントされるため除く
+        # (2026-08-17、このメモリファイル自身の記述で実際に踏んだ誤検知)
+        count = text.count("さらに") + (text.count("また") - text.count("または")) + text.count("加えて")
         if count >= _CONNECTOR_SPAM_THRESHOLD:
             c = agg_by_id["connector-spam"]
             violations.append(Violation("connector-spam", f"「さらに/また/加えて」が合計{count}回出現", c["desc"], c["good_pattern"]))

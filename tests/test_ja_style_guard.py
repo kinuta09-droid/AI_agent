@@ -205,6 +205,18 @@ _connector_spam_ids = {v.id for v in jsg.check_style(_connector_spam_text, _dict
 check("[3b] check_style: connector-spam 検出", "connector-spam" in _connector_spam_ids, str(_connector_spam_ids))
 
 # ---------------------------------------------------------
+# [3d] check_style: 「または」はconnector-spamの「また」に誤カウントされない
+#      (2026-08-17、このセッションのmemory記述自体で実際に踏んだ誤検知の回帰防止)
+# ---------------------------------------------------------
+_matawa_text = "さらに検証した。加えて別の観点も見た。方式Aまたは方式Bのいずれかを選ぶ。方式Cまたは方式Dも候補である。"
+_matawa_ids = {v.id for v in jsg.check_style(_matawa_text, _dictionary)}
+check(
+    "[3d] check_style: 「または」の混入でconnector-spamを誤検知しない",
+    "connector-spam" not in _matawa_ids,
+    str(_matawa_ids),
+)
+
+# ---------------------------------------------------------
 # [3c] check_style: 「触れる」「言及する」は empty-verb-llm を誤検知しない
 #      (このリポジトリ自身の.claude/rules・skillsで精密な意味の正当な用例が実測されたため
 #      entryから除外し manual_notes の llm-verb-context-dependent へ降格した回帰確認)
