@@ -159,6 +159,8 @@ check("[1] load_dictionary: aggregate_checks が非空", len(_dictionary.get("ag
 _expected_ids = {
     "vague-effect-verb", "negation-lead", "ai-cliche-hype",
     "format-clash", "literal-translation", "redundant-predicate",
+    "preview-and-summary-cliche", "empty-adjective", "empty-verb-llm",
+    "weak-hedge-llm", "posture-without-content",
 }
 _actual_ids = {e["id"] for e in _dictionary.get("entries", [])}
 check("[1] load_dictionary: 既定entry id が揃っている", _expected_ids <= _actual_ids, str(_actual_ids))
@@ -182,6 +184,38 @@ _bad_ids = {v.id for v in _bad_violations}
 check("[3] check_style: vague-effect-verb 検出", "vague-effect-verb" in _bad_ids, str(_bad_ids))
 check("[3] check_style: negation-lead 検出", "negation-lead" in _bad_ids, str(_bad_ids))
 check("[3] check_style: style-mixing 検出", "style-mixing" in _bad_ids, str(_bad_ids))
+
+# ---------------------------------------------------------
+# [3b] check_style: japanese-tech-writing由来の新規5entries + connector-spamの検出確認
+#      (2026-08-17、gist:k16shikano/fd287c3133457c4fd8f5601d34aa817d より導入)
+# ---------------------------------------------------------
+_new_entry_cases = {
+    "preview-and-summary-cliche": "重要なのはこの設計です。",
+    "empty-adjective": "これは不可欠な機能です。",
+    "empty-verb-llm": "この課題はまだ言語化していない。",
+    "weak-hedge-llm": "これは非常に有効と言えるだろう。",
+    "posture-without-content": "この課題に正面から扱う。",
+}
+for _entry_id, _case_text in _new_entry_cases.items():
+    _case_ids = {v.id for v in jsg.check_style(_case_text, _dictionary)}
+    check(f"[3b] check_style: {_entry_id} 検出", _entry_id in _case_ids, str(_case_ids))
+
+_connector_spam_text = "さらに検証した。また別の観点も見た。加えて第三の観点も確認した。さらに念のため再検証した。"
+_connector_spam_ids = {v.id for v in jsg.check_style(_connector_spam_text, _dictionary)}
+check("[3b] check_style: connector-spam 検出", "connector-spam" in _connector_spam_ids, str(_connector_spam_ids))
+
+# ---------------------------------------------------------
+# [3c] check_style: 「触れる」「言及する」は empty-verb-llm を誤検知しない
+#      (このリポジトリ自身の.claude/rules・skillsで精密な意味の正当な用例が実測されたため
+#      entryから除外し manual_notes の llm-verb-context-dependent へ降格した回帰確認)
+# ---------------------------------------------------------
+_context_dependent_verb_text = "要約は失敗に触れるとは限らない。「実行する」と「言及する」を区別できない。"
+_context_dependent_verb_ids = {v.id for v in jsg.check_style(_context_dependent_verb_text, _dictionary)}
+check(
+    "[3c] check_style: 触れる/言及するでempty-verb-llm誤検知しない",
+    "empty-verb-llm" not in _context_dependent_verb_ids,
+    str(_context_dependent_verb_ids),
+)
 
 # ---------------------------------------------------------
 # [4] check_style: 正常な文では違反ゼロ

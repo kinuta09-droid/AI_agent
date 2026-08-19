@@ -25,6 +25,13 @@ _ENTRY_PATTERNS = {
     "format-clash": re.compile(r"[✅💡🚀✨🎉🔥]"),
     "literal-translation": re.compile(r"(掘り下げ|重要な役割を果た)"),
     "redundant-predicate": re.compile(r"(を行うことができ|ということが大切です)"),
+    # 以下5件は japanese-tech-writing (gist:k16shikano/fd287c3133457c4fd8f5601d34aa817d) の
+    # 「LLMっぽい表現の禁止」リストから、フレーズ直接マッチで安全に判定できるものを抽出 (2026-08-17)
+    "preview-and-summary-cliche": re.compile(r"(重要なのは|本章では|ここでは.{0,10}(見ていき|扱います|扱う)|まとめると|要するに|に他ならない)"),
+    "empty-adjective": re.compile(r"(不可欠|核心的|鍵となる|根本的|多角的|包括的|総合的)"),
+    "empty-verb-llm": re.compile(r"(言語化する|言語化し)"),
+    "weak-hedge-llm": re.compile(r"(と言えるだろう|非常に|極めて)"),
+    "posture-without-content": re.compile(r"(正面から扱う|正面から回収する)"),
 }
 _MONOTONY_SUFFIXES = ("ます", "です", "した", "ました", "でした", "ません")
 _KEIGO_RE = re.compile(r"(ます|です)。")
@@ -34,6 +41,9 @@ _JOTAI_RE = re.compile(r"(だ|である)。")
 # ...書き換えます。3. 適用判断: ...反映させます。" は"ます"の3連続だが問題ではない。
 # 2026-08-17、logs/ja_style_unresolved.jsonl の実例より)
 _LIST_ITEM_RE = re.compile(r"^\s*(?:\d+[.、)）]|[-*・])\s*")
+# 「さらに/また/加えて」3語の合計出現回数の閾値。過去実データ(paper-digest下書き等)での
+# 実測により決定 (japanese-tech-writing、2026-08-17)
+_CONNECTOR_SPAM_THRESHOLD = 4
 
 
 @dataclass
@@ -102,6 +112,12 @@ def check_style(text: str, dictionary: dict = None) -> list:
         if count >= 3:
             c = agg_by_id["ai-filler-myth-count"]
             violations.append(Violation("ai-filler-myth-count", f"「これにより」が{count}回出現", c["desc"], c["good_pattern"]))
+
+    if "connector-spam" in agg_by_id:
+        count = sum(text.count(w) for w in ("さらに", "また", "加えて"))
+        if count >= _CONNECTOR_SPAM_THRESHOLD:
+            c = agg_by_id["connector-spam"]
+            violations.append(Violation("connector-spam", f"「さらに/また/加えて」が合計{count}回出現", c["desc"], c["good_pattern"]))
 
     return violations
 
