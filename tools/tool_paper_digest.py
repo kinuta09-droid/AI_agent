@@ -47,6 +47,7 @@ from lib.paths import ENV_PATH, TOOL_RECOMMENDATION_POOL_PATH
 
 load_dotenv(ENV_PATH)
 
+from lib.bot_errors import is_failure_result
 from lib.docling_client import CaptureError, capture_document, docling_import_error, is_available
 from lib.ja_style_guard import enforce_style
 from lib.lib_shared import (
@@ -54,8 +55,10 @@ from lib.lib_shared import (
     MODEL_NAME_HEAVY,
     VAULT_ROOT,
     client,
+    find_file_in_vault,
     safe_json_loads,
 )
+from tools.tool_obsidian import tool_create_note, tool_refactor_note
 from tools.tool_paper_radar import (
     load_latest_candidates,
     mark_seen,
@@ -593,6 +596,77 @@ def build_note_article(digest: dict, paper: dict, capture: dict) -> dict:
 
 
 # ---------------------------------------------------------
+# Wiki統合 (Karpathy「LLM Wiki」パターン: 都度新規作成ではなく、
+# 分野ごとのPermanentノートをLLMが継続的に編纂・更新する)
+# ---------------------------------------------------------
+
+def _render_wiki_section(digest: dict, paper: dict, raw_note_filename: str) -> str:
+    """field Wikiページに追記する1論文分の### セクションを組み立てる純関数。
+
+    render_digest_markdown と同じ digest キーを使うが、Rawノート(1論文フル
+    ディテール)とは違い複数論文が並ぶ前提の凝縮形にするため、描画コードは
+    あえて共有しない。
+    """
+    title = paper.get("title", "")
+    arxiv_id = paper.get("arxiv_id", "?")
+    abs_url = paper.get("abs_url", "")
+    published = paper.get("published", "?")
+    raw_stem = os.path.splitext(raw_note_filename)[0]
+    lines = [
+        f"### 📄 {title} ([arXiv:{arxiv_id}]({abs_url}), {published})",
+        f"- **一言でいうと**: {digest.get('one_liner', '')}",
+        f"- **課題**: {digest.get('problem', '')}",
+        f"- **手法**: {digest.get('method', '')}",
+        f"- **新規性**: {digest.get('novelty', '')}",
+        f"- **結果**: {digest.get('results', '')}",
+        f"- **限界**: {digest.get('limitations', '')}",
+        f"- **示唆**: {digest.get('implication', '')}",
+    ]
+    if raw_stem:
+        lines.append(f"- 元ノート: [[{raw_stem}]]")
+    return "\n".join(lines)
+
+
+def _compile_to_field_wiki(field: str, digest: dict, paper: dict, raw_note_filename: str) -> str:
+    """digestを分野Wikiページ (30_Main/Papers_{field}.md) へ統合する。
+
+    既存ページが無ければ新規作成 (tool_create_note)、あれば全文をLLMに渡して
+    再構成する (tool_refactor_note)。矛盾はノート本文内に⚠️で明示するだけで、
+    追加のLLM判定呼び出しやVault_Contradictions.mdへの記録はしない
+    (tool_vault_watcherの矛盾検知フローとは独立・非統合)。
+    戻り値は "Success: ..." / "Error: ..." (呼び出し側はこの結果で
+    パイプライン全体を止めない — 失敗しても Raw ノートは既に保存済み)。
+    """
+    wiki_filename = f"Papers_{slugify(field)}.md"
+    section = _render_wiki_section(digest, paper, raw_note_filename)
+
+    if not find_file_in_vault(wiki_filename):
+        initial_body = f"## {field} の論文まとめ\n\n{section}\n"
+        return tool_create_note(
+            filename=wiki_filename,
+            content=initial_body,
+            summary=f"{field} 分野で読んだ論文の継続的なまとめ (自動編纂)",
+        )
+
+    instructions = f"""以下は新しく読んだ論文の要約セクションです。このノートへ統合してください。
+
+<new_section>
+{section}
+</new_section>
+
+【統合ルール】
+- 既存の他の論文のセクション・記述は削除せず保持すること。
+- フロントマター (---で囲まれたYAMLブロック: tags/created/status/up) は変更しないこと。
+- 見出し構造「## {field} の論文まとめ」の下に論文ごとの「### 」セクションが並ぶ形を維持すること。
+- 既存の記述とこの新しい論文の間で主張が矛盾する場合、どちらも削除せず、
+  「⚠️矛盾: 既存ノートは〜と述べているが、本論文は〜と主張している」のように本文中に明示し、
+  両論併記すること。どちらが正しいか判定して一方を消してはいけない。
+- 重複説明は自然な1つの文章に統合してよいが、事実関係(数値・結論)は落とさないこと。
+"""
+    return tool_refactor_note(wiki_filename, instructions)
+
+
+# ---------------------------------------------------------
 # エントリポイント
 # ---------------------------------------------------------
 
@@ -628,6 +702,7 @@ def run_paper_digest(index: int = 1, arxiv_id: str = "", field: str = "",
     saved = []
 
     note_body = render_digest_markdown(digest, paper, capture)
+    wiki_status = ""
     if save:
         try:
             os.makedirs(PAPERS_DIR, exist_ok=True)
@@ -639,6 +714,24 @@ def run_paper_digest(index: int = 1, arxiv_id: str = "", field: str = "",
         except Exception as e:
             print(f"[PaperDigest] ❌ 要約ノートの保存に失敗: {e}")
             return f"Error: 要約ノートの保存に失敗しました ({e})"
+
+        # Wiki統合 (Karpathy「LLM Wiki」パターン)。Rawノートは既に保存済みなので
+        # ここで失敗してもパイプライン全体は止めない。失敗は必ず戻り値に出す
+        # (CLAUDE.md Known Bug Patterns A: 成否を副次的な兆候で判定/隠蔽しない)。
+        field_for_wiki = (paper.get("field") or "").strip()
+        if field_for_wiki:
+            try:
+                wiki_result = _compile_to_field_wiki(field_for_wiki, digest, paper, os.path.basename(path))
+                if is_failure_result(wiki_result):
+                    print(f"[PaperDigest] ⚠️ Wiki統合に失敗: {wiki_result}")
+                    wiki_status = f"⚠️ Wiki統合: 失敗しました ({wiki_result})"
+                else:
+                    wiki_status = f"📚 Wiki統合: [[Papers_{slugify(field_for_wiki)}]] に統合しました"
+            except Exception as e:
+                print(f"[PaperDigest] ⚠️ Wiki統合で例外: {e}")
+                wiki_status = f"⚠️ Wiki統合: 例外で失敗しました ({e})"
+        else:
+            wiki_status = "📚 Wiki統合: 論文のfieldが不明のためスキップしました"
 
     sns_post = ""
     if mode in ("sns", "both"):
@@ -693,6 +786,8 @@ def run_paper_digest(index: int = 1, arxiv_id: str = "", field: str = "",
         parts.append(f"【note/X Articles 記事下書き】タイトル案: {article_title} / {len(article_body)}字を生成しました")
     if saved:
         parts.append("保存先: " + ", ".join(f"[[{os.path.basename(p)}]]" for p in saved))
+    if wiki_status:
+        parts.append(wiki_status)
     return "\n\n".join(parts)
 
 

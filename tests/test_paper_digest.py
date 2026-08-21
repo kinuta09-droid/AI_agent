@@ -443,6 +443,70 @@ def test_digest_markdown_marks_abstract_only_capture():
 
 
 # ---------------------------------------------------------
+# [4c] Wiki統合 (Karpathy「LLM Wiki」パターン: field単位のPermanentノートへ編纂)
+# ---------------------------------------------------------
+
+def test_render_wiki_section_includes_all_digest_fields():
+    """純関数: 全digestキーが### セクションに出ること。"""
+    import tools.tool_paper_digest as digest
+    d = {"one_liner": "要約", "problem": "課題", "method": "手法", "novelty": "新規性",
+         "results": "結果", "limitations": "限界", "implication": "示唆"}
+    paper = _paper("2607.00100", title="T")
+    section = digest._render_wiki_section(d, paper, "2026-08-19_T.md")
+    assert "### 📄 T" in section and "2607.00100" in section
+    assert "課題" in section and "示唆" in section
+    assert "[[2026-08-19_T]]" in section, section
+    print("✅ [4c-1] _render_wiki_section: 全項目とarXiv ID・元ノートリンクが出る")
+
+
+def test_compile_to_field_wiki_creates_new_page_when_absent():
+    """既存ページが無ければ tool_create_note を呼び、同名退避を発動させないこと。"""
+    import tools.tool_paper_digest as digest
+    d = {"one_liner": "要約"}
+    paper = _paper("2607.00101", title="T")
+    paper["field"] = "ai_agent"
+
+    captured = {}
+    original_find, original_create = digest.find_file_in_vault, digest.tool_create_note
+    digest.find_file_in_vault = lambda name: None
+    digest.tool_create_note = lambda filename, content, summary="": (
+        captured.update(filename=filename, content=content) or "Success: Created.")
+    try:
+        result = digest._compile_to_field_wiki("ai_agent", d, paper, "2026-08-19_T.md")
+    finally:
+        digest.find_file_in_vault, digest.tool_create_note = original_find, original_create
+
+    assert not is_failure_result(result), result
+    assert captured["filename"] == "Papers_ai_agent.md", captured
+    assert "ai_agent の論文まとめ" in captured["content"], captured
+    print("✅ [4c-2] _compile_to_field_wiki: 新規ページはtool_create_noteで作成")
+
+
+def test_compile_to_field_wiki_merges_into_existing_page():
+    """既存ページがあれば tool_refactor_note に矛盾マーキング指示を渡すこと。"""
+    import tools.tool_paper_digest as digest
+    d = {"one_liner": "要約"}
+    paper = _paper("2607.00102", title="T2")
+    paper["field"] = "ai_agent"
+
+    captured = {}
+    original_find, original_refactor = digest.find_file_in_vault, digest.tool_refactor_note
+    digest.find_file_in_vault = lambda name: r"D:\vault\30_Main\Papers_ai_agent.md"
+    digest.tool_refactor_note = lambda filename, instructions: (
+        captured.update(filename=filename, instructions=instructions) or "Success: Refactored.")
+    try:
+        result = digest._compile_to_field_wiki("ai_agent", d, paper, "2026-08-19_T2.md")
+    finally:
+        digest.find_file_in_vault, digest.tool_refactor_note = original_find, original_refactor
+
+    assert not is_failure_result(result), result
+    assert captured["filename"] == "Papers_ai_agent.md", captured
+    assert "⚠️矛盾" in captured["instructions"], captured["instructions"]
+    assert "T2" in captured["instructions"], captured["instructions"]
+    print("✅ [4c-3] _compile_to_field_wiki: 既存ページはtool_refactor_noteでマージ")
+
+
+# ---------------------------------------------------------
 # [5] run_paper_digest 統合 (LLM呼び出しは全てスタブ)
 # ---------------------------------------------------------
 
@@ -568,6 +632,75 @@ def test_run_paper_digest_both_mode_includes_note_and_x_articles_sections():
              digest.build_sns_post, digest.build_note_article,
              digest.PAPERS_DIR, radar.SEEN_PATH, radar.LOGS_DIR) = originals
     print("✅ [5c] run_paper_digest: mode=both で note/X Articles 両セクションが出る")
+
+
+def test_run_paper_digest_skips_wiki_when_field_missing():
+    """field を持たない paper (arXiv ID直接指定相当) ではWiki統合を一切呼ばずスキップすること。"""
+    import tools.tool_paper_digest as digest
+
+    paper = _paper("2607.00110", title="No Field")  # field キーなし
+    stub_digest = {"one_liner": "要約", "keywords": ["k"]}
+    stub_capture = {"text": "本文", "backend": "docling", "chars": 4,
+                    "truncated": False, "source": "", "warnings": []}
+
+    def _boom(*a, **kw):
+        raise AssertionError("field が無いのにWiki統合が呼ばれた")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        originals = (digest._resolve_paper, digest.capture_paper, digest.summarize_paper,
+                     digest.build_sns_post, digest._compile_to_field_wiki,
+                     digest.PAPERS_DIR, radar.SEEN_PATH, radar.LOGS_DIR)
+        digest._resolve_paper = lambda **kwargs: paper
+        digest.capture_paper = lambda p, use_docling=True: stub_capture
+        digest.summarize_paper = lambda p, body: stub_digest
+        digest.build_sns_post = lambda d, p: "stub post"
+        digest._compile_to_field_wiki = _boom
+        digest.PAPERS_DIR = os.path.join(tmp, "Papers")
+        radar.SEEN_PATH = os.path.join(tmp, "seen.json")
+        radar.LOGS_DIR = tmp
+        try:
+            msg = digest.run_paper_digest(mode="sns", save=True)
+            assert not is_failure_result(msg), msg
+            assert "fieldが不明のためスキップ" in msg, msg
+        finally:
+            (digest._resolve_paper, digest.capture_paper, digest.summarize_paper,
+             digest.build_sns_post, digest._compile_to_field_wiki,
+             digest.PAPERS_DIR, radar.SEEN_PATH, radar.LOGS_DIR) = originals
+    print("✅ [5d] run_paper_digest: field不明ならWiki統合を呼ばずスキップする")
+
+
+def test_run_paper_digest_continues_when_wiki_compile_fails():
+    """Wiki統合が失敗しても Raw保存・戻り値は失敗にせず、失敗を戻り値に明示すること。"""
+    import tools.tool_paper_digest as digest
+
+    paper = _paper("2607.00111", title="Has Field")
+    paper["field"] = "ai_agent"
+    stub_digest = {"one_liner": "要約", "keywords": ["k"]}
+    stub_capture = {"text": "本文", "backend": "docling", "chars": 4,
+                    "truncated": False, "source": "", "warnings": []}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        originals = (digest._resolve_paper, digest.capture_paper, digest.summarize_paper,
+                     digest.build_sns_post, digest._compile_to_field_wiki,
+                     digest.PAPERS_DIR, radar.SEEN_PATH, radar.LOGS_DIR)
+        digest._resolve_paper = lambda **kwargs: paper
+        digest.capture_paper = lambda p, use_docling=True: stub_capture
+        digest.summarize_paper = lambda p, body: stub_digest
+        digest.build_sns_post = lambda d, p: "stub post"
+        digest._compile_to_field_wiki = lambda *a, **kw: "Error: gemini down"
+        digest.PAPERS_DIR = os.path.join(tmp, "Papers")
+        radar.SEEN_PATH = os.path.join(tmp, "seen.json")
+        radar.LOGS_DIR = tmp
+        try:
+            msg = digest.run_paper_digest(mode="sns", save=True)
+            assert not is_failure_result(msg), f"Wiki統合の失敗が全体失敗に昇格している: {msg}"
+            assert "⚠️ Wiki統合" in msg and "失敗" in msg, msg
+            assert len(os.listdir(digest.PAPERS_DIR)) == 2, "Wiki統合失敗でもRaw保存・下書きは残るはず"
+        finally:
+            (digest._resolve_paper, digest.capture_paper, digest.summarize_paper,
+             digest.build_sns_post, digest._compile_to_field_wiki,
+             digest.PAPERS_DIR, radar.SEEN_PATH, radar.LOGS_DIR) = originals
+    print("✅ [5e] run_paper_digest: Wiki統合失敗はRaw保存を道連れにせず、戻り値に明示する")
 
 
 def test_registry_entries_registered():
