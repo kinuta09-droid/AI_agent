@@ -244,8 +244,8 @@ def test_light_and_heavy_use_separate_counters():
     from lib import cost_guard
 
     root = tempfile.mkdtemp(prefix="cost_guard_split_")
-    light = DailyCounter(path=os.path.join(root, "light.json"), limit=0, name="LIGHT-test")
-    heavy = DailyCounter(path=os.path.join(root, "heavy.json"), limit=0, name="HEAVY-test")
+    light = DailyCounter(path=os.path.join(root, "light.json"), limit=0, name="LIGHT-test", notify=False)
+    heavy = DailyCounter(path=os.path.join(root, "heavy.json"), limit=0, name="HEAVY-test", notify=False)
     orig_light, orig_heavy = cost_guard.GEMINI_LIGHT_COUNTER, cost_guard.GEMINI_HEAVY_COUNTER
     orig_call = ls._original_generate_content
     try:
@@ -274,8 +274,8 @@ def test_heavy_falls_back_to_light_when_heavy_exhausted():
     from lib import cost_guard
 
     root = tempfile.mkdtemp(prefix="cost_guard_fallback_")
-    light = DailyCounter(path=os.path.join(root, "light.json"), limit=10, name="LIGHT-test")
-    heavy = DailyCounter(path=os.path.join(root, "heavy.json"), limit=1, name="HEAVY-test")
+    light = DailyCounter(path=os.path.join(root, "light.json"), limit=10, name="LIGHT-test", notify=False)
+    heavy = DailyCounter(path=os.path.join(root, "heavy.json"), limit=1, name="HEAVY-test", notify=False)
     heavy.check_and_increment()  # HEAVYを使い切っておく (limit=1に対しcount=1)
     orig_light, orig_heavy = cost_guard.GEMINI_LIGHT_COUNTER, cost_guard.GEMINI_HEAVY_COUNTER
     orig_call = ls._original_generate_content
@@ -308,8 +308,8 @@ def test_heavy_fallback_raises_when_light_also_exhausted():
     from lib import cost_guard
 
     root = tempfile.mkdtemp(prefix="cost_guard_fallback_fail_")
-    light = DailyCounter(path=os.path.join(root, "light.json"), limit=1, name="LIGHT-test")
-    heavy = DailyCounter(path=os.path.join(root, "heavy.json"), limit=1, name="HEAVY-test")
+    light = DailyCounter(path=os.path.join(root, "light.json"), limit=1, name="LIGHT-test", notify=False)
+    heavy = DailyCounter(path=os.path.join(root, "heavy.json"), limit=1, name="HEAVY-test", notify=False)
     light.check_and_increment()
     heavy.check_and_increment()
     orig_light, orig_heavy = cost_guard.GEMINI_LIGHT_COUNTER, cost_guard.GEMINI_HEAVY_COUNTER
