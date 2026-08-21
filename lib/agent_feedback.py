@@ -39,6 +39,38 @@ def save_feedback(rating: str, goal: str, result: str, reason: str = "",
     )
 
 
+def _sanitize_reason(reason: str) -> str:
+    """reason はユーザー自由入力＝プロンプトインジェクション面。Plannerプロンプトの
+    ブロック構造 (【...】) を壊せないよう改行を潰し全角鉤括弧を除去し120字で切る。"""
+    reason = (reason or "").replace("\n", " ").replace("\r", " ")
+    reason = reason.replace("【", "").replace("】", "").strip()
+    return reason[:120]
+
+
+def recent_bad_hints(days: int = 90, limit: int = 5,
+                      log_path: str = AGENT_FEEDBACK_LOG_PATH) -> list:
+    """直近の低評価 (bad) から「質問→理由」の1行ヒントを新しい順に返す。
+
+    Planner プロンプトへの直接注入用。result 全文 (meta.result) は注入しない
+    (ログの大半を占めプロンプトが爆発するため)。reason が空 (未記入) のものは
+    ヒントとして無意味なので除外する。
+    """
+    events = read_events(days=days, log_path=log_path)
+    bad_events = [e for e in events if e.get("event") == "bad"]
+
+    hints = []
+    for e in reversed(bad_events):
+        meta = e.get("meta") or {}
+        reason = _sanitize_reason(meta.get("reason", ""))
+        if not reason:
+            continue
+        item = str(e.get("item", "")).strip()
+        hints.append(f"「{item}」→ 低評価理由: {reason}")
+        if len(hints) >= limit:
+            break
+    return hints
+
+
 def summarize_feedback(days: int = 30, log_path: str = AGENT_FEEDBACK_LOG_PATH) -> str:
     """収集状況をテキストで返す (CLI 確認用。engagement_log.summarize() の作法を踏襲)。"""
     events = read_events(days=days, log_path=log_path)

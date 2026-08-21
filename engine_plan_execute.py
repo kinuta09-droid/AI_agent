@@ -1294,7 +1294,7 @@ def _generate_final_summary(user_query: str, results: list) -> str:
 # 学習DBに保持する最大エントリ数。超過分は archive JSONL へ退避する。
 LEARNING_DB_MAX_ENTRIES = 200
 # 信頼性・失敗パターン集計で参照する直近エントリ数（古い烙印を残さないための窓）
-RELIABILITY_WINDOW = 30
+RELIABILITY_WINDOW = 80
 
 
 def _load_learning_db() -> dict:
@@ -1515,6 +1515,37 @@ def extract_patterns() -> dict:
     }
 
 
+def low_reliability_tool_lines(execs: list = None) -> list:
+    """直近 RELIABILITY_WINDOW 件から成功率の低いツールを警告行として返す。
+
+    get_enhanced_prompt() (Plannerへの実注入) と週次フィードバックレポート
+    (人間向けの現状確認) の両方から呼ばれる共通実装。全件走査だと一度
+    rate<0.8 に落ちたツールが以後どれだけ成功しても全期間平均が上がりきらず
+    「要注意」の烙印が残り続けるため窓を切る。
+    """
+    if execs is None:
+        execs = _load_learning_db().get("executions", [])
+    recent_execs = execs[-RELIABILITY_WINDOW:]
+    tool_calls = {}
+    tool_success = {}
+    for e in recent_execs:
+        is_ok = e["outcome"] in ("success", "partial")
+        for t in e.get("tools_used", []):
+            if not t:
+                continue
+            tool_calls[t] = tool_calls.get(t, 0) + 1
+            if is_ok:
+                tool_success[t] = tool_success.get(t, 0) + 1
+
+    lines = []
+    for t, count in tool_calls.items():
+        if count >= 3:
+            rate = tool_success.get(t, 0) / count
+            if rate < 0.8:
+                lines.append(f"- {t}: 成功率 {rate:.0%}（要注意）")
+    return lines
+
+
 def get_enhanced_prompt(user_query: str) -> str:
     """過去の学習から関連情報を取得し、Planner プロンプトに追記する文字列を返す。"""
     parts = []
@@ -1527,6 +1558,16 @@ def get_enhanced_prompt(user_query: str) -> str:
             parts.append(patches)
     except Exception as e:
         print(f"[SelfImprove] Error loading patches: {e}")
+
+    # /agent 👍👎 フィードバックからの低評価ヒント注入 (learning_db の実行成否とは別系統)
+    try:
+        from lib.agent_feedback import recent_bad_hints
+        bad_hints = recent_bad_hints()
+        if bad_hints:
+            parts.append("【低評価だった回答（同じ轍を踏まないこと）】")
+            parts.extend(f"- {h}" for h in bad_hints)
+    except Exception as e:
+        print(f"[AgentFeedback] Error loading bad hints: {e}")
 
     db = _load_learning_db()
     execs = db.get("executions", [])
@@ -1542,27 +1583,7 @@ def get_enhanced_prompt(user_query: str) -> str:
             if len(recent_failures) >= 3:
                 break
 
-        # ツール信頼性の低いものを警告（直近 RELIABILITY_WINDOW 件のみ集計）。
-        # 全件走査だと一度 rate<0.8 に落ちたツールが以後どれだけ成功しても
-        # 全期間平均が上がりきらず「要注意」の烙印が残り続けるため窓を切る。
-        recent_execs = execs[-RELIABILITY_WINDOW:]
-        tool_calls = {}
-        tool_success = {}
-        for e in recent_execs:
-            is_ok = e["outcome"] in ("success", "partial")
-            for t in e.get("tools_used", []):
-                if not t:
-                    continue
-                tool_calls[t] = tool_calls.get(t, 0) + 1
-                if is_ok:
-                    tool_success[t] = tool_success.get(t, 0) + 1
-
-        low_reliability = []
-        for t, count in tool_calls.items():
-            if count >= 3:
-                rate = tool_success.get(t, 0) / count
-                if rate < 0.8:
-                    low_reliability.append(f"- {t}: 成功率 {rate:.0%}（要注意）")
+        low_reliability = low_reliability_tool_lines(execs)
 
         # 平均ステップ数
         avg_steps = sum(e.get("plan_steps", 0) for e in execs) / len(execs)

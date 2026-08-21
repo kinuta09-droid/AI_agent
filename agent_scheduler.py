@@ -56,7 +56,8 @@ _JOB_STATE_LOCK = threading.Lock()
 from tools.tool_web import tool_fetch_daily_news
 # 暗号資産系ツールの import は意図的に外してある (2026-08-17 稼働停止)。
 # 理由と再開条件は下の SCHEDULE 内のコメントを参照。
-from engine_plan_execute import generate_performance_dashboard
+from engine_plan_execute import generate_performance_dashboard, low_reliability_tool_lines
+from lib.agent_feedback import summarize_feedback
 from tools.tool_obsidian import tool_merge_all_weekly_reports, tag_untagged_clips
 
 # Vault Semantic Index (optional — import失敗でスケジューラ全体を壊さない)
@@ -284,6 +285,22 @@ def _run_paper_digest() -> str:
     except ImportError as e:
         return f"Paper Digest: tool_paper_digest not available ({e})"
     return run_paper_digest(index=1, mode="both")
+
+
+def _run_agent_feedback_weekly_report() -> str:
+    """/agent 👍👎 フィードバックと Planner 低信頼性警告を人間向けにまとめて返す。
+
+    Planner への実際の注入 (engine_plan_execute.get_enhanced_prompt) は毎リクエスト
+    自動で行われる (plans記載の Phase 1-2)。このジョブはプロンプト注入のためではなく、
+    「今どんな注入がされているか」を人間が確認するための週次スナップショット。
+    recent_bad_hints (注入用の直近5件) と窓を揃えるため days=90 を使う。
+    """
+    parts = [summarize_feedback(days=90)]
+    low_rel = low_reliability_tool_lines()
+    if low_rel:
+        parts.append("\n### Plannerへの信頼性警告 (現在注入中)")
+        parts.extend(low_rel)
+    return "\n".join(parts)
 
 # Audio Transcription Sync (optional)
 try:
@@ -625,6 +642,17 @@ SCHEDULE = [
         "time": "03:35",
         "name": "Vault NotebookLM Sync",
         "func": _run_vault_notebooklm_sync,
+    },
+    # Agent Feedback Weekly Report: 03:35 の直後、同じ夜間帯の末尾。
+    # /agent 👍👎 と Planner 低信頼性警告が「今どう注入されているか」を人間が
+    # 確認するためのスナップショット (plans記載 Phase 3)。Vault Health と同じ
+    # 週1回の性質なので weekday 指定 + catch_up。
+    {
+        "time": "03:40",
+        "name": "Agent Feedback Weekly Report",
+        "func": _run_agent_feedback_weekly_report,
+        "weekday": 6,  # 日曜
+        "catch_up": True,
     },
     {
         "time": "23:30",

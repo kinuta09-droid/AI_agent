@@ -140,6 +140,35 @@ def test_schedule_flags():
             check(f"[5c] {task['name']} は time を持つ", task.get("time") is not None)
 
 
+def test_agent_feedback_weekly_report_job_wiring_and_combination():
+    """[5d] Agent Feedback Weekly Report: 日曜(weekday=6)の週次ジョブとして登録され、
+    summarize_feedback() と low_reliability_tool_lines() の両方を合成して返すこと。
+
+    (plans記載 Phase 3。プロンプト注入 [Phase 1-2] とは別系統で、人間が「今どんな
+    注入がされているか」を確認するためのスナップショット)
+    """
+    by_name = {t["name"]: t for t in agent_scheduler.SCHEDULE}
+    task = by_name.get("Agent Feedback Weekly Report")
+    check("[5d-1] Agent Feedback Weekly Report が SCHEDULE に存在する", task is not None)
+    if task is None:
+        return
+    check("[5d-2] weekday=6 (日曜) の週次ジョブである", task.get("weekday") == 6)
+    check("[5d-3] catch_up が付いている", task.get("catch_up") is True)
+
+    orig_summarize = agent_scheduler.summarize_feedback
+    orig_low_rel = agent_scheduler.low_reliability_tool_lines
+    agent_scheduler.summarize_feedback = lambda days=30, log_path=None: "STUB_FEEDBACK_SUMMARY"
+    agent_scheduler.low_reliability_tool_lines = lambda: ["- STUB_TOOL: 成功率 10%（要注意）"]
+    try:
+        report = task["func"]()
+    finally:
+        agent_scheduler.summarize_feedback = orig_summarize
+        agent_scheduler.low_reliability_tool_lines = orig_low_rel
+
+    check("[5d-4] summarize_feedback() の内容を含む", "STUB_FEEDBACK_SUMMARY" in report)
+    check("[5d-5] low_reliability_tool_lines() の内容を含む", "STUB_TOOL" in report)
+
+
 def test_logger_handler_guard():
     """[6] 再 import してもハンドラが増えない (全ログ2重出力の再発防止)。"""
     before = len(agent_scheduler.logger.handlers)
@@ -261,6 +290,7 @@ def main():
     test_weekly_occurrence_unchanged()
     test_outage_scenario()
     test_schedule_flags()
+    test_agent_feedback_weekly_report_job_wiring_and_combination()
     test_logger_handler_guard()
     test_import_does_not_open_production_log()
     test_skips_current_minute()
