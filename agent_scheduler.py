@@ -10,6 +10,7 @@ import datetime
 import sys
 import os
 import json
+import subprocess
 import requests
 import logging
 import threading
@@ -220,6 +221,39 @@ def _run_skill_radar() -> str:
     if not _HAS_SKILL_RADAR:
         return f"Skill Radar: tool_skill_radar not available ({_skill_radar_err})"
     return _skill_radar(top_k=5)
+
+
+def _run_gws_auth_health_check() -> str:
+    """gws (Gmail/Calendar CLI) の認証切れを検知して通知する。
+
+    OAuthテストモードの7日失効 (→ 08-12にIn productionへ公開して対処済みのはず)
+    が再発していないか、または別要因で切れていないかを毎朝チェックする。
+    `gws auth status` の例外有無ではなく `token_valid` フィールドで判定する
+    (Known Bug Patterns A: 「例外が出なかった=成功」は無言の死につながる)。
+    silent=True なので正常時は何も通知しない — 通知するのは異常時のみ。
+    """
+    try:
+        proc = subprocess.run(
+            ["gws", "auth", "status"], capture_output=True,
+            encoding="utf-8", errors="replace", shell=True, timeout=15,
+        )
+        status = json.loads(proc.stdout)
+    except Exception as e:
+        msg = f"gws auth status の実行に失敗: {e}"
+        send_discord_notification(f"⚠️ **gws認証チェック失敗**\n{msg}")
+        return f"Error: {msg}"
+
+    if not status.get("token_valid"):
+        reason = status.get("token_error", "不明")
+        send_discord_notification(
+            f"🔴 **gws (Gmail/Calendar) の認証切れ**\n"
+            f"理由: `{reason}`\n"
+            f"再認証: `gws auth login`\n"
+            f"7日で再発する場合はOAuth同意画面が「In production」のままか確認: "
+            f"https://console.cloud.google.com/apis/credentials/consent?project={status.get('project_id', '')}"
+        )
+        return f"Error: gws token invalid ({reason})"
+    return ""
 
 
 # Vault NotebookLM Sync (optional — import失敗でスケジューラ全体を壊さない)
@@ -443,6 +477,15 @@ SCHEDULE = [
         "time": "06:30",
         "name": "Auto Deep-Dive (XTrend TOP1)",
         "func": _run_auto_deep_dive,
+        "catch_up": True,
+    },
+    # gws認証ヘルスチェック: 06:30の後・06:45の前。壊れていれば朝の連鎖(Daily Sync等)より
+    # 先にDiscordへ気付けるようにする。silent=Trueで正常時は無言 (異常時のみ自前で通知)。
+    {
+        "time": "06:40",
+        "name": "gws Auth Health Check",
+        "func": _run_gws_auth_health_check,
+        "silent": True,
         "catch_up": True,
     },
     # 論文レーダー: arXiv/HuggingFace/Semantic Scholar の公開APIのみ (課金ゼロ)。
