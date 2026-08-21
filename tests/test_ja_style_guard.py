@@ -119,6 +119,15 @@ _prod_snapshot = {
 # 未解消ログも本番と共有の logs/ から切り離す (同じ理由で isolate)
 _UNRESOLVED_LOG_DIR = tempfile.mkdtemp(prefix="ja_style_guard_unresolved_")
 jsg.JA_STYLE_UNRESOLVED_LOG = os.path.join(_UNRESOLVED_LOG_DIR, "ja_style_unresolved.jsonl")
+
+# 辞書も ~/.claude/hooks/ (このリポジトリ外・A系統と共有・git管理外) から切り離す。
+# このファイルの docstring が明言する通り A系統の実体はテスト対象外であり、
+# 実ファイルの中身に依存すると (a) A系統が git 管理外のため CI に無く entries が
+# 常に空になり check_style が何も検出しなくなる、(b) 開発機でも A系統の編集で
+# テストが割れる。tests/fixtures/ の固定内容を使い、機械にもこのリポジトリにも
+# 依存しないようにする (load_dictionary/check_style/enforce_style は path 省略時に
+# この JA_STYLE_DICT_PATH を module-level で参照するため、ここで差し替えれば全経路に効く)。
+jsg.JA_STYLE_DICT_PATH = os.path.join(_PROJECT_ROOT, "tests", "fixtures", "ja_style_ng_words_test.json")
 _PROD_UNRESOLVED_LOG_PATH = os.path.join(_PROJECT_ROOT, "logs", "ja_style_unresolved.jsonl")
 _prod_unresolved_snapshot = (
     os.path.getmtime(_PROD_UNRESOLVED_LOG_PATH) if os.path.exists(_PROD_UNRESOLVED_LOG_PATH) else None
@@ -151,7 +160,7 @@ def _run_enforce_with_stub(text, prompt, response_text, max_retries=1):
 
 
 # ---------------------------------------------------------
-# [1] load_dictionary: 実ファイルから正しく読める
+# [1] load_dictionary: 実ファイルから正しく読める (tests/fixtures/ の固定辞書)
 # ---------------------------------------------------------
 _dictionary = jsg.load_dictionary()
 check("[1] load_dictionary: entries が非空", len(_dictionary.get("entries", [])) > 0, str(_dictionary))
@@ -332,6 +341,11 @@ check(
     "[9] JA_STYLE_UNRESOLVED_LOG が一時パスを指す",
     jsg.JA_STYLE_UNRESOLVED_LOG.startswith(_UNRESOLVED_LOG_DIR),
     jsg.JA_STYLE_UNRESOLVED_LOG,
+)
+check(
+    "[9] JA_STYLE_DICT_PATH が本番の ~/.claude/hooks/ を指していない (このリポジトリの fixture)",
+    ".claude" not in jsg.JA_STYLE_DICT_PATH and jsg.JA_STYLE_DICT_PATH.startswith(_PROJECT_ROOT),
+    jsg.JA_STYLE_DICT_PATH,
 )
 check(
     "[9] 本番の未解消ログファイルが増減していない",

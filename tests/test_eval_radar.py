@@ -61,17 +61,32 @@ def check(name: str, cond: bool, detail: str = ""):
 # 一時環境
 # ---------------------------------------------------------
 
+# 実機の .env に書かれうる値 (例: EVAL_RADAR_MIN_AGENT_PASS_RATE のブートストラップ後の
+# 実測閾値) がテストプロセスにそのまま漏れると、「閾値未設定」を前提にしたテストが
+# 実機の .env 次第で割れる (2026-08-21 実測: ブートストラップで .env に閾値を書いた
+# 直後、このテストが本番 pass_rate=0.85 という架空値に対して実機の 0.90 を使って
+# breach 判定してしまい落ちた)。HISTORY_PATH 等と同じ「本番と共有する可変資源は
+# テストで隔離する」原則をここにも適用する。
+_EVAL_RADAR_ENV_KEYS = (
+    "EVAL_RADAR_MIN_HIT5", "EVAL_RADAR_MIN_MRR10", "EVAL_RADAR_MIN_AGENT_PASS_RATE",
+    "EVAL_RADAR_MAX_DROP", "EVAL_RADAR_MIN_RESERVE", "EVAL_RADAR_SKIP_RETRIEVAL",
+    "EVAL_RADAR_STALE_DAYS", "EVAL_RADAR_RETRY_COOLDOWN_HOURS",
+)
+
+
 class Sandbox:
     """HISTORY_PATH / STATE_PATH / EVAL_DIR を一時ディレクトリへ退避する。
 
     **3つとも直接差し替える**のが要点。これらは import 時に LOGS_DIR から
     計算済みの別定数なので、LOGS_DIR だけ書き換えても連動しない。
+    あわせて .env 由来の EVAL_RADAR_* 環境変数も実機の値から隔離する。
     """
 
     def __enter__(self):
         self.tmp = tempfile.mkdtemp(prefix="eval_radar_test_")
         self._saved = (radar.EVAL_DIR, radar.HISTORY_PATH, radar.STATE_PATH,
                        radar.subprocess, radar._notify, radar.budget_shortage)
+        self._saved_env = {k: os.environ.pop(k, None) for k in _EVAL_RADAR_ENV_KEYS}
         radar.EVAL_DIR = os.path.join(self.tmp, "eval")
         radar.HISTORY_PATH = os.path.join(radar.EVAL_DIR, "history.jsonl")
         radar.STATE_PATH = os.path.join(radar.EVAL_DIR, "radar_state.json")
@@ -84,6 +99,11 @@ class Sandbox:
     def __exit__(self, *exc):
         (radar.EVAL_DIR, radar.HISTORY_PATH, radar.STATE_PATH,
          radar.subprocess, radar._notify, radar.budget_shortage) = self._saved
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
         shutil.rmtree(self.tmp, ignore_errors=True)
         return False
 

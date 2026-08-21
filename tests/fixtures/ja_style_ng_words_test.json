@@ -1,0 +1,94 @@
+{
+  "entries": [
+    {
+      "id": "vague-effect-verb",
+      "pattern_hint": "「効く」「効果があります」「役立ちます」等、具体的な挙動を書かず曖昧な動詞で済ませる",
+      "reason": "ハルシネーション回避の安全策として機能的に曖昧な語を選びがち",
+      "good_pattern": "「速度が従来比30%向上します」のように定量的データ・具体的仕様を書く"
+    },
+    {
+      "id": "negation-lead",
+      "pattern_hint": "「単純なXではなく、Yである」のように頼んでいない否定対比から入る",
+      "reason": "英語 not A but B の直訳、または中立性を保とうとするガードレールの影響",
+      "good_pattern": "対比が不要なら削り、「Yを提供する基盤です」と本質を直接提示する"
+    },
+    {
+      "id": "ai-cliche-hype",
+      "pattern_hint": "「革命的な」「可能性を解き放つ」「魔法のように」「ゲームチェンジ」等の紋切り型誇張表現",
+      "reason": "欧米スタートアップ発マーケティング用語の逐語訳",
+      "good_pattern": "過度な文飾を排し「普及を促進する」等、客観的事実で記述する"
+    },
+    {
+      "id": "format-clash",
+      "pattern_hint": "✅💡🚀✨🎉🔥等の過剰な絵文字装飾",
+      "reason": "Markdownにおける欧米ドキュメント形式の流用",
+      "good_pattern": "日本語の書式に合わせ不要な記号を排したプレーンテキストで書く"
+    },
+    {
+      "id": "literal-translation",
+      "pattern_hint": "「掘り下げる(delve)」「重要な役割を果たす」等、英語慣用句の直訳",
+      "reason": "学習データの英語偏重により日本語ビジネス語彙への変換が不十分",
+      "good_pattern": "「詳細に分析する」「不可欠な機能を担う」等、文脈に合う日本語語彙に置換する"
+    },
+    {
+      "id": "redundant-predicate",
+      "pattern_hint": "「〜を行うことができる」「〜ということが大切です」等の冗長な文末",
+      "reason": "丁寧さを確保しようとする確率予測の偏りで簡潔性が失われる",
+      "good_pattern": "「〜を実行できます」「〜が推奨されます」等、能動的で簡潔な表現に圧縮する"
+    },
+    {
+      "id": "preview-and-summary-cliche",
+      "pattern_hint": "「重要なのは」「本章では」「ここでは〜について見ていきます」「まとめると」「要するに」「〜に他ならない」等、予告や総括だけで内容を伴わない前置き・締め",
+      "reason": "主張を予告してから書く/内容を繰り返して締める型で、態度の宣言に文量を使ってしまう",
+      "good_pattern": "前置きせずそのまま主張を書く。締めは新しい意味づけがある場合のみ書き、単純な繰り返しは削る",
+      "source": "japanese-tech-writing"
+    },
+    {
+      "id": "empty-adjective",
+      "pattern_hint": "「不可欠」「核心的」「鍵となる」「根本的」「多角的」「包括的」「総合的」等、具体性を伴わない空虚な形容",
+      "reason": "何がどう重要かを説明せず評価語だけで済ませてしまう",
+      "good_pattern": "何がどう重要/中心/包括的なのかを具体的な事実・データで書く",
+      "source": "japanese-tech-writing"
+    },
+    {
+      "id": "empty-verb-llm",
+      "pattern_hint": "「言語化する」等、実際に何をするか特定しない空虚な動詞",
+      "reason": "具体的な行為を書かず抽象的な動詞で済ませてしまう。「触れる」「言及する」は元々このリストに含めていたが、このプロジェクト自身の技術文書で精密な意味で正当に使われており誤検知が実測されたため対象から除外(manual_notesのllm-verb-context-dependentへ)",
+      "good_pattern": "実際に行う動作(説明する/整理する/反論する等)を具体的な動詞で書く",
+      "source": "japanese-tech-writing"
+    },
+    {
+      "id": "weak-hedge-llm",
+      "pattern_hint": "「〜と言えるだろう」「非常に」「極めて」等、根拠なく弱める/誇張する緩和表現",
+      "reason": "確信度を意図的に曖昧にする、または強調語で水増しする癖",
+      "good_pattern": "根拠があるなら言い切る。無いなら弱め方を具体的に書くか、そもそも書かない",
+      "source": "japanese-tech-writing"
+    },
+    {
+      "id": "posture-without-content",
+      "pattern_hint": "「正面から扱う」「正面から回収する」等、姿勢だけを宣言し内容を伴わない表現",
+      "reason": "実際に何を扱うかを書かず取り組み方の姿勢だけを述べてしまう",
+      "good_pattern": "宣言せず、実際に扱っている内容をそのまま書く",
+      "source": "japanese-tech-writing"
+    }
+  ],
+  "aggregate_checks": [
+    {
+      "id": "sentence-ending-monotony",
+      "desc": "文末(ます/です/した等)が3文以上連続(番号付き/箇条書きリストの項目は除外)",
+      "good_pattern": "体言止め・接続の言い換えで変化を付ける"
+    },
+    {
+      "id": "style-mixing",
+      "desc": "敬体(です/ます)と常体(だ/である)が同一文書内で混在",
+      "good_pattern": "文書単位でどちらかに統一する"
+    },
+    {
+      "id": "connector-spam",
+      "desc": "「さらに」「また」「加えて」の合計出現回数が4回以上(過去のpaper-digest下書き等の実データで実測、11件中6件が該当する頻出パターンだった)",
+      "good_pattern": "接続語なしで文をつなげられないか検討する、繰り返しを削る",
+      "source": "japanese-tech-writing"
+    }
+  ],
+  "manual_notes": []
+}
