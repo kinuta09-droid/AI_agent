@@ -1,6 +1,6 @@
 # 夜間の自己評価レーダー (知能の回帰テスト)
 
-> 作成: 2026-08-21 / 状態: 計画のみ (未実装)
+> 作成: 2026-08-21 / 状態: **実装済み (実機での検証待ち)**
 > 参照実装: `9abb931` (gws認証チェック = 定時 silent ジョブ + 異常時のみ Discord 通知)
 
 ## Goal
@@ -225,13 +225,90 @@ py scripts/eval_radar.py --report      # history 2行と推移表を確認
 
 ---
 
-## Open questions (実装前に確認したいこと)
+## Open questions (回答済み・2026-08-21)
 
-1. **日曜 04:00 に Ollama は起動しているか**。手動起動の運用だと、毎週
-   「⚠️ Ollama に接続できません」が届き続けて狼少年になる。常時起動でないなら
-   (a) retrieval を Ollama 起動確認済みの時刻へ移す、(b) `EVAL_RADAR_SKIP_RETRIEVAL=1`
-   で agent 側だけ回す、のどちらかを選ぶ必要がある。
-2. **通知先チャンネル**: 既存のログチャンネル (`DISCORD_LOG_CHANNEL_ID`) でよいか。
-3. **history を git 管理するか**: 現状 `logs/` は gitignore。推移はマシン固有の
-   ローカル資産になり、環境を作り直すと消える。残したいなら `logs/eval/history.jsonl`
-   だけ除外解除する案があるが、Vault パス等は含まないので情報漏洩リスクは低い。
+1. **PC が落ちていた週の扱い** → **次回起動時に繰り越す**。`catch_up=True` に加えて、
+   「測れなかった実行は成功として記録しない」戻り値の契約でこれを実現した
+   (Ollama 停止・予算不足・タイムアウトも同じ扱い = 次回起動時に再挑戦)。
+   ただし失敗直後の再起動連打で Gemini を浪費しないよう、
+   `EVAL_RADAR_RETRY_COOLDOWN_HOURS` (既定6時間) の再試行間隔を設けた
+   (繰り越し自体は維持したまま、実行だけ見送る)。
+2. **通知先** → 既存のログチャンネル (`DISCORD_LOG_CHANNEL_ID`)。
+   `lib.watchdog.notify_discord` を共用する。
+3. **history の git 管理** → しない (現状どおり `logs/` は gitignore)。
+
+---
+
+## 実装結果 (2026-08-21)
+
+| ファイル | 変更 |
+|---|---|
+| `scripts/eval_radar.py` | 新規。純関数 (`evaluate` / `config_key` / `check_staleness` 等) + ジョブ本体 + CLI |
+| `agent_scheduler.py` | `_run_eval_radar` / `_run_eval_staleness` と SCHEDULE 2件 (日曜04:00 / 月曜06:35) |
+| `tests/test_eval_radar.py` | 新規。10グループ 71 チェック |
+| `scripts/run_test_sweep.py` | `PARALLEL_TESTS` に登録 (未分類は sweep テストが赤にする) |
+| `CLAUDE.md` | Commands に `--dry-run` / `--report` を追記 |
+
+計画から変わった点 (実装中に判明):
+- **予算確認は fail-closed にした**。`lib.cost_guard` の import やカウンタ読み取りに
+  失敗したとき `""` (=予算OK) を返すと、日次上限の意味が黙って消える。
+  「確認できなかった」も見送り理由として扱う。静的検査 [9](c) で縛った。
+- **結果 JSON の特定に更新時刻のフォールバックを足した**。両ハーネスのファイル名は
+  分単位 (`%Y%m%d_%H%M`) なので、同じ分に2回走らせると同名を上書きする。
+  「新規ファイルが無い = 測れなかった」と誤判定しないようにした。
+- **通知の重複抑止 (20時間)** を足した。catch_up により測定失敗は起動のたびに
+  再試行されるため、抑止が無いと同じ ⚠️ が再起動のたびに飛ぶ。
+
+### この環境で確認できたこと
+- `py tests/test_eval_radar.py` → **71 PASS / 0 FAIL**
+  (前提不足 exit≠0 / JSON 未生成 / 混合アーム / Tier B 混入 / タイムアウト /
+   全問スキップ / 予算不足 の7経路すべてで「履歴に1行も増えない」ことを実ファイルで確認)
+- `py scripts/run_test_sweep.py --filter eval_radar` → 1/1 緑
+- `py scripts/run_test_sweep.py --filter sweep_runner` → 22/0 緑 (レーン分類の登録漏れなし)
+- `verify_project` の静的検査 (encoding / syntax / undefined / swallowed /
+  machine-locked syspath / hardcoded abs path) を変更4ファイルに対して個別実行 → 指摘なし
+- `py scripts/eval_radar.py --dry-run` / `--report` が API を1回も叩かずに動作
+
+### この環境では確認できていないこと (実機で必要)
+Linux コンテナのため `msvcrt` を import する `lib/file_lock.py` 系
+(= `agent_scheduler` を import するテスト) と、`google.genai` を要するテストが動かない。
+- [ ] `py verify_project.py` (フル)
+- [ ] `py scripts/run_test_sweep.py` (全件)
+- [ ] 下記のブートストラップと故障注入
+
+> 参考: この環境の `verify_project --fast` は `tools/tool_paper_digest.py` を
+> Syntax Error として報告するが、これは Python 3.11 では f-string 内のバックスラッシュが
+> 構文エラーになるため (実機は 3.13 で合法)。今回の変更とは無関係で、当該ファイルは未変更。
+
+### 実機でやること (この順に)
+
+1. **ブートストラップ** (閾値を実測から決める)
+   ```
+   py scripts\eval_radar.py --dry-run     # 見積りと予算の確認
+   py scripts\eval_radar.py               # 初回測定 (ℹ️ ベースライン通知が届く)
+   py scripts\eval_radar.py --report      # 履歴2行を確認
+   ```
+   出た値から `.env` に3つの下限を書く (実測より1問ぶん下を目安に)。
+2. **故障注入で通知経路が生きていることを確認** (1週間待たない)
+   - `EVAL_RADAR_MIN_HIT5` を現状値より上にして実行 → 🔴 通知が届く → 元に戻す
+   - `logs\vault_index.db` を一時リネームして実行 → ⚠️ 通知 + 履歴が増えない
+   - `logs\eval\history.jsonl` の日時を12日前に書き換え →
+     `py scripts\eval_radar.py --staleness` で 🟠 通知 → 元に戻す
+3. **スケジューラ実機**: `Eval Radar (Weekly)` を直近時刻へ一時的にずらして発火させ、
+   正常時に無言であること・`logs\agent_job_state.json` に成功が記録されることを確認 →
+   時刻を戻す。
+
+---
+
+## 残る運用上の注意 (Ollama)
+
+日曜 04:00 に **Ollama が起動していない**場合、検索評価は毎週 ⚠️「測定できませんでした」
+になる。今回の繰り越し設計により、この週の分は**次回のスケジューラ起動時に自動で再挑戦**
+されるので、日中に PC を立ち上げて Ollama が動いていれば拾える (再試行の間隔は
+`EVAL_RADAR_RETRY_COOLDOWN_HOURS`=6時間)。それでも毎週失敗が続くようなら:
+
+- (a) 検索評価だけ止める: `.env` に `EVAL_RADAR_SKIP_RETRIEVAL=1`
+      (エージェント評価は Ollama 不要なので単独で回り続ける)
+- (b) 実行時刻を Ollama が確実に上がっている枠へ移す
+
+初回のブートストラップで `--dry-run` と実測を回せば、この判断はすぐ付く。
