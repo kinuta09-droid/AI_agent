@@ -14,6 +14,7 @@ google-auth-oauthlib
 todoist-api-python
 dateparser
 numpy
+scipy  # scripts/eval_features.py (spearmanr) — pandas_ta 経由でローカルには入っていたが CI 用に明示
 # 論文本文のキャプチャ (docling) はオプション扱い。torch を引き連れて重いため
 # requirements-docling.txt に分離してある。未導入でも Paper Radar/Digest は
 # HTML 抽出にフォールバックして動く (lib/docling_client.py)。
