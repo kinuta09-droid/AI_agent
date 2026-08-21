@@ -92,6 +92,14 @@ except ImportError as _e:
     def distill_daily_memory():
         return f"User Memory: tool_user_memory not available ({_user_memory_err})"
 
+# Note Promotion (optional — Vault Semantic Index と同じ扱い)
+try:
+    from tools.tool_note_promotion import run_note_promotion_job
+except ImportError as _e:
+    _note_promotion_err = str(_e)
+    def run_note_promotion_job(*args, **kwargs):
+        return f"Note Promotion: tool_note_promotion not available ({_note_promotion_err})"
+
 # Vault Insight Watcher (optional — import失敗でスケジューラ全体を壊さない)
 try:
     from tools.tool_vault_watcher import check_vault_insights
@@ -700,6 +708,16 @@ SCHEDULE = [
         "func": _run_agent_feedback_weekly_report,
         "weekday": 6,  # 日曜
         "catch_up": True,
+    },
+    # Note Promotion (Progressive Summarization): 03:15 Vault Semantic Index の
+    # 埋め込みをそのまま読むため、当夜のインデックス更新後に置く。silent=True:
+    # クラスタが無ければ無言 (Inbox Clip Auto-Tagging と同じ「0件でした通知は
+    # スパム」判断)。承認ボタン付き通知は自前で送るため定型通知は抑止する。
+    {
+        "time": "03:45",
+        "name": "Note Promotion (fleeting→evergreen クラスタ提案)",
+        "func": run_note_promotion_job,
+        "silent": True,
     },
     {
         "time": "23:30",

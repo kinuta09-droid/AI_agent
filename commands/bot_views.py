@@ -19,6 +19,9 @@ import discord
 
 from lib.lib_shared import WORK_DIR
 from lib.bot_errors import log_command_error, is_failure_result
+from tools.tool_note_promotion import (
+    NOTE_PROMO_SLOTS, tool_promote_cluster, tool_reject_cluster,
+)
 
 # ---------------------------------------------------------
 # 認可付き基底 View
@@ -325,3 +328,68 @@ class AgentFeedbackView(AllowedUserView):
                 await self.message.edit(view=self)
             except discord.HTTPException:
                 pass
+
+
+# ---------------------------------------------------------
+# ノート昇格パイプライン (承認/却下ボタン)
+# ---------------------------------------------------------
+
+# スロット単位の多重実行防止 (_dive_running と同型)。
+_promo_running: set[int] = set()
+
+
+class NotePromotionView(AllowedUserView):
+    """ノート昇格提案の承認/却下ボタン (夜間ジョブが REST 送信、実処理はここが担う)。
+
+    agent_scheduler (gateway接続を持たない別プロセス) は tool_note_promotion.
+    run_note_promotion_job から custom_id 付きボタンを表示するだけで、実際の
+    クリック処理はここに登録された永続 View (bot プロセス側) が行う
+    (BriefingDeepDiveView/TaskFailureView と同じアーキテクチャ)。
+
+    永続 View は on_ready で一度だけ登録される単一インスタンスを全メッセージが
+    共有するため (RelatedNotesView のような「1メッセージ1インスタンス」にはできない)、
+    ボタンを押下後に disabled 化する処理はしない — 二重クリックは
+    tool_promote_cluster/tool_reject_cluster 側の pending.pop() が既に処理済みの
+    slot を "Error: ..." で弾く冪等性で吸収する。
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        for slot in range(NOTE_PROMO_SLOTS):
+            approve = discord.ui.Button(
+                label="✅ 承認して恒久化", style=discord.ButtonStyle.success,
+                custom_id=f"note_promo_approve:{slot}",
+            )
+            approve.callback = self._make_callback(slot, tool_promote_cluster, "承認")
+            self.add_item(approve)
+
+            reject = discord.ui.Button(
+                label="❌ 却下", style=discord.ButtonStyle.danger,
+                custom_id=f"note_promo_reject:{slot}",
+            )
+            reject.callback = self._make_callback(slot, tool_reject_cluster, "却下")
+            self.add_item(reject)
+
+    def _make_callback(self, slot: int, action_fn, action_label: str):
+        async def callback(interaction: discord.Interaction):
+            if slot in _promo_running:
+                await interaction.response.send_message(
+                    "⏳ この提案は処理中です。", ephemeral=True
+                )
+                return
+            # busy相当のガードは defer() より前に立てる (grill指摘と同じ理由:
+            # 後に立てると2回目のクリックが1回目の defer 中に割り込みチェックをすり抜ける)。
+            _promo_running.add(slot)
+            await interaction.response.defer()
+            try:
+                result = await asyncio.to_thread(action_fn, slot)
+            except Exception as e:
+                result = log_command_error(f"ノート昇格{action_label} (slot={slot})", e)
+            finally:
+                _promo_running.discard(slot)
+
+            icon = "❌" if is_failure_result(result) else "✅"
+            if interaction.channel is not None:
+                await interaction.channel.send(f"{icon} {result}")
+
+        return callback

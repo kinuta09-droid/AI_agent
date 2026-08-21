@@ -545,6 +545,7 @@ async def on_ready():
     bot_views.init_views(_is_allowed_user)
     bot.add_view(bot_views.BriefingDeepDiveView())
     bot.add_view(bot_views.TaskFailureView())
+    bot.add_view(bot_views.NotePromotionView())
     try:
         if GUILD_ID:
             guild = discord.Object(id=int(GUILD_ID))
