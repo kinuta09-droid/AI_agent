@@ -69,3 +69,6 @@ tmp_web_design/
 .claude/settings.local.json
 # Added by code-review-graph
 .code-review-graph/
+# PostToolUseフックが編集のたびに自動再生成するため、追跡すると毎回差分ノイズになる
+docs/codebase-map.html
+docs/codebase-map.json
