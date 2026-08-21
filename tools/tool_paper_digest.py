@@ -640,13 +640,27 @@ def _compile_to_field_wiki(field: str, digest: dict, paper: dict, raw_note_filen
     wiki_filename = f"Papers_{slugify(field)}.md"
     section = _render_wiki_section(digest, paper, raw_note_filename)
 
-    if not find_file_in_vault(wiki_filename):
+    existing_path = find_file_in_vault(wiki_filename)
+    if not existing_path:
         initial_body = f"## {field} の論文まとめ\n\n{section}\n"
         return tool_create_note(
             filename=wiki_filename,
             content=initial_body,
             summary=f"{field} 分野で読んだ論文の継続的なまとめ (自動編纂)",
         )
+
+    # tool_refactor_note は「LLMが返した全文でそのまま上書き」するだけで、
+    # 以前のセクションが本当に残っているかを検証しない。ページに論文が増えるほど
+    # LLMが古いセクションを落とす/要約しすぎるリスクにさらされる回数が増え、
+    # しかも常に "Success: Refactored" を返すため欠落が起きても戻り値からは
+    # 分からない (Known Bug Patterns A の無言の死)。ここで前後の arXiv ID 集合を
+    # 比較し、1件でも消えていれば失敗として扱う (Rawノートは既に保存済みなので
+    # 安全に失敗させられる)。
+    try:
+        with open(existing_path, encoding="utf-8") as f:
+            before_ids = set(re.findall(r"arXiv:([\w.\-]+)", f.read()))
+    except OSError as e:
+        return f"Error: 既存Wikiページの読み込みに失敗しました ({e})"
 
     instructions = f"""以下は新しく読んだ論文の要約セクションです。このノートへ統合してください。
 
@@ -663,7 +677,20 @@ def _compile_to_field_wiki(field: str, digest: dict, paper: dict, raw_note_filen
   両論併記すること。どちらが正しいか判定して一方を消してはいけない。
 - 重複説明は自然な1つの文章に統合してよいが、事実関係(数値・結論)は落とさないこと。
 """
-    return tool_refactor_note(wiki_filename, instructions)
+    result = tool_refactor_note(wiki_filename, instructions)
+    if is_failure_result(result):
+        return result
+
+    try:
+        with open(existing_path, encoding="utf-8") as f:
+            after_ids = set(re.findall(r"arXiv:([\w.\-]+)", f.read()))
+    except OSError as e:
+        return f"Error: リファクタ後のWikiページ読み込みに失敗しました ({e})"
+
+    missing = before_ids - after_ids
+    if missing:
+        return f"Error: Wiki統合でセクション欠落を検出しました (arXiv: {', '.join(sorted(missing))})"
+    return result
 
 
 # ---------------------------------------------------------

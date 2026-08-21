@@ -483,27 +483,71 @@ def test_compile_to_field_wiki_creates_new_page_when_absent():
 
 
 def test_compile_to_field_wiki_merges_into_existing_page():
-    """既存ページがあれば tool_refactor_note に矛盾マーキング指示を渡すこと。"""
+    """既存ページがあれば tool_refactor_note に矛盾マーキング指示を渡し、
+    リファクタ後も既存のarXiv IDがすべて残っていれば成功を返すこと。"""
     import tools.tool_paper_digest as digest
     d = {"one_liner": "要約"}
     paper = _paper("2607.00102", title="T2")
     paper["field"] = "ai_agent"
 
-    captured = {}
-    original_find, original_refactor = digest.find_file_in_vault, digest.tool_refactor_note
-    digest.find_file_in_vault = lambda name: r"D:\vault\30_Main\Papers_ai_agent.md"
-    digest.tool_refactor_note = lambda filename, instructions: (
-        captured.update(filename=filename, instructions=instructions) or "Success: Refactored.")
-    try:
-        result = digest._compile_to_field_wiki("ai_agent", d, paper, "2026-08-19_T2.md")
-    finally:
-        digest.find_file_in_vault, digest.tool_refactor_note = original_find, original_refactor
+    with tempfile.TemporaryDirectory() as tmp:
+        page_path = os.path.join(tmp, "Papers_ai_agent.md")
+        with open(page_path, "w", encoding="utf-8") as f:
+            f.write("## ai_agent の論文まとめ\n\n### 📄 T1 (arXiv:2607.00050, 2026-08-01)\n- ...\n")
+
+        captured = {}
+
+        def _fake_refactor(filename, instructions):
+            captured.update(filename=filename, instructions=instructions)
+            with open(page_path, "a", encoding="utf-8") as f:
+                f.write("\n### 📄 T2 (arXiv:2607.00102, 2026-08-19)\n- ...\n")
+            return "Success: Refactored."
+
+        original_find, original_refactor = digest.find_file_in_vault, digest.tool_refactor_note
+        digest.find_file_in_vault = lambda name: page_path
+        digest.tool_refactor_note = _fake_refactor
+        try:
+            result = digest._compile_to_field_wiki("ai_agent", d, paper, "2026-08-19_T2.md")
+        finally:
+            digest.find_file_in_vault, digest.tool_refactor_note = original_find, original_refactor
 
     assert not is_failure_result(result), result
     assert captured["filename"] == "Papers_ai_agent.md", captured
     assert "⚠️矛盾" in captured["instructions"], captured["instructions"]
     assert "T2" in captured["instructions"], captured["instructions"]
     print("✅ [4c-3] _compile_to_field_wiki: 既存ページはtool_refactor_noteでマージ")
+
+
+def test_compile_to_field_wiki_detects_dropped_section_after_refactor():
+    """tool_refactor_note がリファクタ後に既存論文のarXiv IDを消してしまったら
+    失敗として扱うこと (無言でVaultの知見が欠落するのを防ぐ)。"""
+    import tools.tool_paper_digest as digest
+    d = {"one_liner": "要約"}
+    paper = _paper("2607.00103", title="T3")
+    paper["field"] = "ai_agent"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        page_path = os.path.join(tmp, "Papers_ai_agent.md")
+        with open(page_path, "w", encoding="utf-8") as f:
+            f.write("## ai_agent の論文まとめ\n\n### 📄 T1 (arXiv:2607.00050, 2026-08-01)\n- ...\n")
+
+        def _lossy_refactor(filename, instructions):
+            # LLMが古いセクションを落として新しい論文だけ書いて返したケースを再現
+            with open(page_path, "w", encoding="utf-8") as f:
+                f.write("## ai_agent の論文まとめ\n\n### 📄 T3 (arXiv:2607.00103, 2026-08-19)\n- ...\n")
+            return "Success: Refactored."
+
+        original_find, original_refactor = digest.find_file_in_vault, digest.tool_refactor_note
+        digest.find_file_in_vault = lambda name: page_path
+        digest.tool_refactor_note = _lossy_refactor
+        try:
+            result = digest._compile_to_field_wiki("ai_agent", d, paper, "2026-08-19_T3.md")
+        finally:
+            digest.find_file_in_vault, digest.tool_refactor_note = original_find, original_refactor
+
+    assert is_failure_result(result), result
+    assert "2607.00050" in result, result
+    print("✅ [4c-4] _compile_to_field_wiki: リファクタでセクションが消えたら失敗を返す")
 
 
 # ---------------------------------------------------------
