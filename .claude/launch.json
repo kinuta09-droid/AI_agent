@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "moto3d-preview",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "5178",
+        "--directory",
+        "C:\\AI_agent\\tmp_web_design\\moto3d"
+      ],
+      "port": 5178
+    }
+  ]
+}

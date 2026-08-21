@@ -1,0 +1,116 @@
+{
+  "meta": {
+    "project": "Antigravity AI Agent",
+    "generated_at": "2026-08-07T00:21:28",
+    "git_branch": "master",
+    "git_commit": "5bbf772",
+    "launcher": "py (system Python, not antigravity_env)",
+    "graph_source": "code-review-graph MCP (Tree-sitter, incremental)",
+    "graph_stats": {
+      "files": 191,
+      "total_nodes": 2215,
+      "total_edges": 27433,
+      "languages": ["python", "powershell"],
+      "nodes_by_kind": {"Class": 87, "File": 191, "Function": 1273, "Test": 664},
+      "edges_by_kind": {"CALLS": 17664, "CONTAINS": 2062, "IMPORTS_FROM": 1315, "INHERITS": 19, "REFERENCES": 182, "TESTED_BY": 6191}
+    }
+  },
+  "entry_points": [
+    {"file": "main.py", "role": "Universal launcher (spawns bot/scheduler via sys.executable, always system Python)"},
+    {"file": "bot_discord.py", "role": "Discord bot host"},
+    {"file": "agent_hello.py", "role": "Core agent: Gemini Plan-Execute + ReAct (compatibility bridge)"},
+    {"file": "agent_scheduler.py", "role": "Cron-style scheduler for recurring jobs"},
+    {"file": "engine_plan_execute.py", "role": "Plan/execute engine (tool fan-out, Critic loop)"},
+    {"file": "engine_self_improve.py", "role": "Self-improvement / learning_db feedback loop"},
+    {"file": "agent_receiver.py", "role": "Inbound webhook receiver"},
+    {"file": "agent_trigger.py", "role": "Webhook trigger client"},
+    {"file": "n8n_patrol.py", "role": "n8n workflow health patrol"},
+    {"file": "trigger_daily_news.py", "role": "Daily news job trigger"}
+  ],
+  "directory_map": {
+    "commands/": "Discord slash-command handlers by feature (bot_commands_*.py) + bot_views.py (discord.ui.View)",
+    "lib/": "Core utilities: bot_errors (failure detection), cost_guard, paths (PROJECT_ROOT/ENV_PATH), pid_guard, tool_registry, quant_core, watchdog, verifier, etc.",
+    "tools/": "External API integrations / feature tools (tool_*.py), registered centrally via lib/tool_registry.py",
+    "tests/": "test_*.py — run via scripts/run_test_sweep.py (8-way parallel sweep, same as CI)",
+    "scripts/": "One-off scripts, eval harnesses (eval_agent.py, eval_retrieval.py), launcher batch files (arms.bat)",
+    ".claude/rules/": "known-bug-patterns.md + encoding-safety.md + workflow.md + review-protocol.md, imported by CLAUDE.md",
+    ".claude/skills/": "Per-domain bug pattern skills, auto-loaded when touching matching files (see known_bug_pattern_index below)"
+  },
+  "documented_tools": [
+    {"file": "tool_curator.py", "purpose": "The Explorer v4.0 \"Entropy Injector\" (3-slot curation + Tavily trends)"},
+    {"file": "tool_calendar.py", "purpose": "Google Calendar + Todoist integration (5 tools)"},
+    {"file": "tool_daily_note.py", "purpose": "Daily note auto-generation from template"},
+    {"file": "tool_lora_factory.py", "purpose": "LoRA/ComfyUI image generation"},
+    {"file": "tool_paper_radar.py", "purpose": "arXiv x HF upvote x citation velocity x recency paper detector (zero Gemini cost)"},
+    {"file": "tool_paper_digest.py", "purpose": "docling full-text capture -> summary -> X thread / note article draft"}
+  ],
+  "all_tools": [
+    "tool_activity_index.py", "tool_analytics.py", "tool_audio_automation.py", "tool_bitnet.py",
+    "tool_briefing_manager.py", "tool_browser_use.py", "tool_calendar.py", "tool_client_review.py",
+    "tool_crypto.py", "tool_crypto_stats.py", "tool_crypto_watcher.py", "tool_curator.py",
+    "tool_daily_note.py", "tool_document.py", "tool_document_sidecar.py", "tool_future_search.py",
+    "tool_gmail_manager.py", "tool_lora_factory.py", "tool_obsidian.py", "tool_paper_digest.py",
+    "tool_paper_radar.py", "tool_skill_observer.py", "tool_skill_radar.py", "tool_twitter_post.py",
+    "tool_user_memory.py", "tool_vault_hybrid.py", "tool_vault_index.py", "tool_vault_watcher.py",
+    "tool_web.py", "tool_xtrend.py"
+  ],
+  "hub_nodes": [
+    {"name": "is_failure_result", "file": "lib/bot_errors.py", "total_degree": 105, "note": "Central success/failure classifier — Known Bug Pattern A hinges on this"},
+    {"name": "score_plan", "file": "scripts/eval_agent.py", "total_degree": 86},
+    {"name": "update_vault_index", "file": "tools/tool_vault_index.py", "total_degree": 81},
+    {"name": "tool_analyze_crypto", "file": "tools/tool_crypto.py", "total_degree": 80},
+    {"name": "run_lora_factory", "file": "tools/tool_lora_factory.py", "total_degree": 79},
+    {"name": "read_events", "file": "lib/engagement_log.py", "total_degree": 73},
+    {"name": "check (test helper, 6 files)", "file": "tests/test_*.py", "total_degree": "up to 197", "note": "High test fan-in via shared assertion helper pattern, community 13"}
+  ],
+  "top_execution_flows": [
+    {"entry": "main", "criticality": 0.7997, "node_count": 64},
+    {"entry": "tool_crypto_sweep", "criticality": 0.7859, "node_count": 32},
+    {"entry": "tool_crypto_watch", "criticality": 0.7712, "node_count": 32},
+    {"entry": "main", "criticality": 0.7566, "node_count": 94},
+    {"entry": "tool_audit_predictions", "criticality": 0.7117, "node_count": 12},
+    {"entry": "_run_paper_digest", "criticality": 0.7067, "node_count": 45},
+    {"entry": "tool_crypto_stats", "criticality": 0.7033, "node_count": 15},
+    {"entry": "_tool_future_search_wrapper", "criticality": 0.692, "node_count": 25},
+    {"entry": "_tool_import_document_wrapper", "criticality": 0.6884, "node_count": 32},
+    {"entry": "generate_daily_note", "criticality": 0.6806, "node_count": 16}
+  ],
+  "communities": [
+    {"name": "tests-fake", "size": 1089, "cohesion": 0.2762},
+    {"name": "tools-tool", "size": 302, "cohesion": 0.0867},
+    {"name": "lib-wrapper", "size": 174, "cohesion": 0.0726},
+    {"name": "scripts-cmd", "size": 123, "cohesion": 0.1118},
+    {"name": "commands-cmd", "size": 99, "cohesion": 0.0971},
+    {"name": "ai-agent-cmd", "size": 66, "cohesion": 0.2076},
+    {"name": "ai-agent-plan", "size": 41, "cohesion": 0.1076},
+    {"name": "ai-agent-check", "size": 24, "cohesion": 0.1409},
+    {"name": "ai-agent-vault", "size": 20, "cohesion": 0.1141},
+    {"name": "auto-audio-send", "size": 17, "cohesion": 0.0625}
+  ],
+  "known_bug_pattern_index": [
+    {"id": "A", "title": "表示と実態の食い違い", "gist": "Never judge success by 'no exception thrown'. Route all success/failure display through lib.bot_errors.is_failure_result()/is_partial_result()."},
+    {"id": "B", "title": "環境の固定・絶対パス", "gist": "No hardcoded absolute paths outside lib/paths.py. Production always runs on system `py`, never antigravity_env — optional deps must be installed to the one that's actually used."},
+    {"id": "C", "title": "テストの隔離と課金", "gist": "Live/paid side-effect tests must be opt-in via ARMS_LIVE_TESTS=1, default SKIP+exit 0. Verify gating by diffing counters, not by reading the code."},
+    {"id": "D", "title": "CI とビルド", "gist": "CI runs one job via scripts/run_test_sweep.py (not pytest directly, many check() helpers don't raise). Never sys.exit() at import time."},
+    {"id": "E", "title": "単発", "gist": "Misc: paired link format/resolve functions, stacked-PR --delete-branch ordering, tool_create_note timestamp fallback, todoist-api-python v3+ filter_tasks()."}
+  ],
+  "skills_by_domain": [
+    {"skill": "windows-encoding", "scope": ".bat/.ps1/.vbs, cp932/BOM, launcher startup, subprocess/stdout encoding"},
+    {"skill": "process-lifecycle", "scope": "pid_guard, boot_id, watchdog, Task Scheduler, Windows process termination"},
+    {"skill": "retrieval-tuning", "scope": "Vault hybrid search, rerank (Gemini/Ollama), tool descriptions, eval_retrieval/eval_agent"},
+    {"skill": "crypto-backtest", "scope": "lib/quant_core.py, tools/tool_crypto.py signal/gate logic"},
+    {"skill": "llm-output-safety", "scope": "Verifier, prompt injection defense, judge design, LLM output JSON parsing"},
+    {"skill": "discord-bot-patterns", "scope": "discord.ui.View persistence, interaction tokens, failure-prefix detection"},
+    {"skill": "parallel-execution-safety", "scope": "engine_plan_execute.py fan-out, parallel_safe declarations, side-effect ordering"}
+  ],
+  "quick_commands": [
+    "py verify_project.py",
+    "py scripts\\run_test_sweep.py",
+    "scripts\\arms.bat",
+    "py main.py",
+    "py tools/tool_paper_radar.py --field ai_agent --top 5",
+    "py tools/tool_paper_digest.py --index 1 --mode both",
+    "py bot_discord.py",
+    "py agent_scheduler.py"
+  ]
+}

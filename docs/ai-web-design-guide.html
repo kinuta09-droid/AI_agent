@@ -1,0 +1,319 @@
+<title>AIウェブデザイン制作の仕組みと使い方</title>
+<style>
+  :root {
+    --paper: #eef0f0;
+    --paper-raised: #ffffff;
+    --ink: #1f2426;
+    --ink-soft: #5b6467;
+    --border: #d7dcdc;
+    --accent: #3f5f78;
+    --accent-soft: #dde6ea;
+    --warn: #b5652f;
+    --warn-soft: #f3e3d6;
+    --good: #3f7a5c;
+    --good-soft: #dcece3;
+    --shadow: 0 1px 2px rgba(20,24,26,0.05), 0 10px 28px -16px rgba(20,24,26,0.18);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #14181a;
+      --paper-raised: #1c2224;
+      --ink: #e7ebec;
+      --ink-soft: #9aa5a8;
+      --border: #2b3234;
+      --accent: #86acc6;
+      --accent-soft: #223138;
+      --warn: #e0996a;
+      --warn-soft: #33261c;
+      --good: #7fbfa0;
+      --good-soft: #1d2a23;
+      --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 10px 28px -16px rgba(0,0,0,0.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #14181a; --paper-raised: #1c2224; --ink: #e7ebec; --ink-soft: #9aa5a8;
+    --border: #2b3234; --accent: #86acc6; --accent-soft: #223138;
+    --warn: #e0996a; --warn-soft: #33261c; --good: #7fbfa0; --good-soft: #1d2a23;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 10px 28px -16px rgba(0,0,0,0.6);
+  }
+  :root[data-theme="light"] {
+    --paper: #eef0f0; --paper-raised: #ffffff; --ink: #1f2426; --ink-soft: #5b6467;
+    --border: #d7dcdc; --accent: #3f5f78; --accent-soft: #dde6ea;
+    --warn: #b5652f; --warn-soft: #f3e3d6; --good: #3f7a5c; --good-soft: #dcece3;
+    --shadow: 0 1px 2px rgba(20,24,26,0.05), 0 10px 28px -16px rgba(20,24,26,0.18);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Yu Gothic UI", "Yu Gothic", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+    line-height: 1.85;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 56px 24px 100px; }
+
+  h1, h2, h3 { text-wrap: balance; margin: 0; }
+
+  header { margin-bottom: 40px; }
+  .kicker {
+    font-size: 0.78rem; font-weight: 700; letter-spacing: 0.08em; color: var(--accent);
+    margin-bottom: 12px;
+  }
+  h1 { font-size: clamp(1.5rem, 4vw, 1.9rem); font-weight: 700; letter-spacing: 0.01em; margin-bottom: 14px; }
+  header p.lede { color: var(--ink-soft); font-size: 1rem; max-width: 56ch; margin: 0; }
+
+  .summary-box {
+    margin-top: 28px;
+    background: var(--paper-raised);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 24px;
+    box-shadow: var(--shadow);
+  }
+  .summary-box .label { font-size: 0.74rem; font-weight: 700; letter-spacing: 0.06em; color: var(--ink-soft); margin-bottom: 10px; }
+  .summary-box ul { margin: 0; padding-left: 1.2em; }
+  .summary-box li { margin: 6px 0; }
+  .summary-box code {
+    background: var(--accent-soft); color: var(--accent); padding: 1px 6px; border-radius: 4px;
+    font-size: 0.92em; font-family: inherit;
+  }
+
+  section.block { margin-top: 52px; }
+  .section-num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; border-radius: 50%;
+    background: var(--accent-soft); color: var(--accent);
+    font-size: 0.82rem; font-weight: 700; margin-right: 10px; flex: none;
+  }
+  .section-head { display: flex; align-items: center; margin-bottom: 16px; }
+  h2 { font-size: 1.2rem; font-weight: 700; }
+
+  p { margin: 0 0 14px; }
+  .block > p:last-child { margin-bottom: 0; }
+
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 18px; }
+  .card {
+    background: var(--paper-raised); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 20px; box-shadow: var(--shadow);
+  }
+  .card .card-title { font-weight: 700; font-size: 0.98rem; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .card .card-title .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+  .card p { color: var(--ink-soft); font-size: 0.92rem; margin: 0; }
+
+  .compare {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 18px;
+  }
+  @media (max-width: 560px) { .compare { grid-template-columns: 1fr; } }
+  .compare .col {
+    background: var(--paper-raised); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 20px; box-shadow: var(--shadow);
+  }
+  .compare .col h3 { font-size: 1rem; margin-bottom: 4px; }
+  .compare .col .tagline { color: var(--accent); font-size: 0.82rem; font-weight: 700; margin-bottom: 12px; }
+  .compare dl { margin: 0; }
+  .compare dt { font-size: 0.76rem; color: var(--ink-soft); font-weight: 700; margin-top: 10px; }
+  .compare dt:first-child { margin-top: 0; }
+  .compare dd { margin: 3px 0 0; font-size: 0.9rem; }
+
+  .steps { counter-reset: step; margin-top: 18px; }
+  .step {
+    position: relative; padding: 4px 0 4px 40px; margin-bottom: 20px; border-left: 1px solid var(--border);
+    padding-left: 40px;
+  }
+  .step:last-child { border-left: 1px solid transparent; padding-bottom: 0; margin-bottom: 0; }
+  .step::before {
+    counter-increment: step; content: counter(step);
+    position: absolute; left: -15px; top: 0;
+    width: 30px; height: 30px; border-radius: 50%;
+    background: var(--paper); border: 1px solid var(--accent); color: var(--accent);
+    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.82rem;
+  }
+  .step .step-title { font-weight: 700; margin-bottom: 4px; }
+  .step p { color: var(--ink-soft); font-size: 0.92rem; }
+  .step .say {
+    display: inline-block; margin-top: 8px; background: var(--accent-soft); color: var(--accent);
+    padding: 6px 12px; border-radius: 6px; font-size: 0.86rem;
+  }
+
+  .callout {
+    display: flex; gap: 12px; margin-top: 18px; padding: 16px 18px; border-radius: 10px;
+    background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  }
+  .callout.good { background: var(--good-soft); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+  .callout .icon { flex: none; font-size: 1.1rem; line-height: 1.6; }
+  .callout .body { font-size: 0.92rem; color: var(--ink); }
+  .callout .body b { color: var(--warn); }
+  .callout.good .body b { color: var(--good); }
+
+  table.faq { width: 100%; border-collapse: collapse; margin-top: 18px; }
+  table.faq th { display: none; }
+  table.faq td { padding: 14px 0; border-top: 1px solid var(--border); vertical-align: top; }
+  table.faq td:first-child { font-weight: 700; width: 34%; padding-right: 16px; }
+  table.faq td:last-child { color: var(--ink-soft); font-size: 0.92rem; }
+  table.faq tr:first-child td { border-top: none; }
+  @media (max-width: 560px) {
+    table.faq, table.faq tbody, table.faq tr, table.faq td { display: block; width: 100%; }
+    table.faq td:first-child { padding-right: 0; padding-bottom: 4px; border-top: 1px solid var(--border); }
+    table.faq tr:first-child td:first-child { border-top: none; }
+    table.faq td:last-child { padding-top: 0; padding-bottom: 14px; border-top: none; }
+  }
+
+  footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--ink-soft); }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="kicker">利用ガイド・非エンジニア向け</div>
+    <h1>AIウェブデザイン制作の仕組みと使い方</h1>
+    <p class="lede">
+      Claude Codeに組み込んだ「AIにウェブサイトのデザイン案を作ってもらう仕組み」の説明書です。
+      コードの知識がなくても、会話でお願いするだけで使えます。
+    </p>
+    <div class="summary-box">
+      <div class="label">3行でいうと</div>
+      <ul>
+        <li>「AIでサイトを作って」のように<b>話しかけるだけ</b>で、5つの工程を順番に進めてくれます</li>
+        <li>お金がかかる作業(画像・動画の自動生成)の前には<b>必ず一言確認</b>が入ります</li>
+        <li>できあがったものは<code>.html</code>という1つのファイルで、ブラウザで開けばそのまま見られます</li>
+      </ul>
+    </div>
+  </header>
+
+  <section class="block">
+    <div class="section-head"><span class="section-num">1</span><h2>これは何をする仕組みですか</h2></div>
+    <p>
+      ウェブサイトのデザインを一から自分で考えるのではなく、「気に入った参考サイトを集める」「背景やレイアウトの
+      素材をAIに作らせる」「実際に動くコードに仕上げる」という一連の作業を、決まった手順(SOP)に沿って
+      進められるようにしたものです。人が判断すべき部分(センスが要る部分)と、AIに任せてよい部分を
+      あらかじめ分けてあります。
+    </p>
+    <div class="card-grid">
+      <div class="card">
+        <div class="card-title"><span class="dot"></span>人が決めること</div>
+        <p>どんな雰囲気のサイトにしたいか、どのデザイン案が良いか、最終的な見た目が「らしいか」の判断</p>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="dot"></span>AIに任せること</div>
+        <p>背景画像の生成、コードの実装、動きのある演出の作り込み、フォントの読み込みなどの実作業</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="section-head"><span class="section-num">2</span><h2>何ができるのか(5つの工程)</h2></div>
+    <div class="steps">
+      <div class="step">
+        <div class="step-title">① 参考デザインを集める</div>
+        <p>「こんな雰囲気にしたい」という参考サイトを、人が見て集めます。AIは記録の整理を手伝います。</p>
+      </div>
+      <div class="step">
+        <div class="step-title">② 背景素材を自動生成する</div>
+        <p>集めた参考をもとに、AIが「背景だけの画像」と「文字やボタンの配置図」を分けて2枚生成します。
+        1回あたり1円未満〜数円程度の非常に安いAIサービスを使います。</p>
+      </div>
+      <div class="step">
+        <div class="step-title">③ 実際に動くページとして組み立てる</div>
+        <p>フォントや配色を具体的に決め、スマートフォンでも崩れないコードに仕上げます。ここはAIが担当します。</p>
+      </div>
+      <div class="step">
+        <div class="step-title">④ 背景に動きをつける(お好みで)</div>
+        <p>静止画のままでも構いませんが、動きのある背景にする場合は2つの方法から選べます(次の章で説明)。</p>
+      </div>
+      <div class="step">
+        <div class="step-title">⑤ 最後の仕上げ</div>
+        <p>「いかにもAIが作った感じ」を消すための微調整(余白、装飾の整理など)です。ここは省略できません
+        — 手を抜くと一目でAI製だとバレる、という前提で作られています。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="section-head"><span class="section-num">3</span><h2>動きのある背景、どちらを選ぶ?</h2></div>
+    <p>④の工程では、2つの方法のどちらかを選びます。どちらが良いというものではなく、目的に応じて選びます。</p>
+    <div class="compare">
+      <div class="col">
+        <h3>方法A: 短い動画をループさせる</h3>
+        <div class="tagline">雰囲気重視・手間が少ない</div>
+        <dl>
+          <dt>向いている場面</dt>
+          <dd>とにかく早く、雰囲気の良い動く背景が欲しいとき</dd>
+          <dt>費用感</dt>
+          <dd>1本あたり動画生成サービスの利用料がかかる(画像より高め)</dd>
+          <dt>注意点</dt>
+          <dd>「クリックしても反応しない」ただの動画。作り直すたびに費用と時間がかかる</dd>
+        </dl>
+      </div>
+      <div class="col">
+        <h3>方法B: プログラムでその場で描く</h3>
+        <div class="tagline">操作に反応する・比較しやすい</div>
+        <dl>
+          <dt>向いている場面</dt>
+          <dd>カーソルを動かすと反応する演出が欲しいとき、複数の見た目を並べて比較したいとき</dd>
+          <dt>費用感</dt>
+          <dd>追加の生成費用はかからない(コードとして描画するため)</dd>
+          <dt>注意点</dt>
+          <dd>見た目を細かく調整するには方法Aより手間がかかる</dd>
+        </dl>
+      </div>
+    </div>
+    <div class="callout good">
+      <div class="icon">💡</div>
+      <div class="body">
+        方法Bは複数の見た目のパターンを<b>その場で切り替えて比較</b>できます。
+        「候補を3つくらい見てから決めたい」という場合は方法Bから試すのがおすすめです。
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="section-head"><span class="section-num">4</span><h2>実際の使い方</h2></div>
+    <p>特別な操作は不要です。Claude Codeとの会話の中で、以下のように話しかけるだけで始まります。</p>
+    <div class="steps">
+      <div class="step">
+        <div class="step-title">話しかける</div>
+        <p>思いついた言葉で構いません。</p>
+        <span class="say">「AIでサイトを作って」「ウェブデザインのワークフローで進めて」</span>
+      </div>
+      <div class="step">
+        <div class="step-title">何のサイトかを伝える</div>
+        <p>題材(ポートフォリオ、お店の紹介ページ、イベント告知など)を伝えます。</p>
+      </div>
+      <div class="step">
+        <div class="step-title">工程ごとに進捗が共有される</div>
+        <p>各工程が終わるたびに、何をしたか・次に何をするかの報告があります。</p>
+      </div>
+      <div class="step">
+        <div class="step-title">お金がかかる作業の前に確認が入る</div>
+        <p>背景画像・動画の生成のように外部の有料サービスを使う工程では、必ず実行前に一言確認があります。
+        承諾しない限り課金は発生しません。</p>
+      </div>
+      <div class="step">
+        <div class="step-title">できあがったファイルを確認する</div>
+        <p>1つの<code>.html</code>ファイルが出来上がります。ダブルクリックしてブラウザで開けば、
+        そのまま見た目を確認できます(インストール等は不要)。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="section-head"><span class="section-num">5</span><h2>よくある質問</h2></div>
+    <table class="faq">
+      <tr><td>プログラミングの知識は要りますか</td><td>不要です。日本語で話しかけるだけで進みます。</td></tr>
+      <tr><td>お金はどれくらいかかりますか</td><td>画像生成は1枚あたり1円未満〜数円、動画生成はそれより高めです。
+        いずれも実行前に確認が入るので、想定外に課金されることはありません。</td></tr>
+      <tr><td>途中でやめられますか</td><td>いつでも「ここまでにして」と伝えれば、その時点で止まります。</td></tr>
+      <tr><td>仕上がりの質はどれくらいですか</td><td>⑤の仕上げ工程を省略しない前提で作られているため、
+        AI任せの平坦な見た目にならないよう調整が入ります。ただし最終判断は人の目で行うことを前提にしています。</td></tr>
+      <tr><td>まだ確認できていないことはありますか</td><td>あります。動画のループの継ぎ目を完璧に滑らかにする
+        一部の機能は、費用のかかる実験を伴うため、まだ実際には試せていません。正直な状態として記録してあります。</td></tr>
+    </table>
+  </section>
+
+  <footer>
+    このガイドは「AI駆動型ウェブデザイン・量産プロセス標準化マニュアル」を元に、Claude Codeに実装した
+    仕組み(<code>ai-web-design-workflow</code>)の使い方をまとめたものです。技術的な詳細を知りたい場合は、
+    実装担当者に本ガイドと合わせて手順書(SKILL.md)の共有を依頼してください。
+  </footer>
+</div>
