@@ -257,6 +257,31 @@ def _run_gws_auth_health_check() -> str:
     return ""
 
 
+def _run_eval_radar() -> str:
+    """週次の自己評価レーダー (検索品質 + エージェント計画品質の回帰テスト)。
+
+    eval は本来「壊れたことに気付くための仕組み」なのに、手動実行しか無いと
+    測った記録すら残らない。ここで週次に固定し、閾値割れのときだけ通知する。
+    silent=True なので正常時は無言 (通知は scripts/eval_radar.py が自前で行う)。
+
+    測れなかったとき (Ollama 停止・予算不足・タイムアウト) は "Error: ..." が
+    返る。_execute_task は失敗を catch_up に記録しないので、PC が落ちていた週と
+    同じく**次回のスケジューラ起動時に繰り越される**。
+    """
+    from scripts.eval_radar import run_eval_radar
+    return run_eval_radar()
+
+
+def _run_eval_staleness() -> str:
+    """レーダー自体が止まっていないかを見る (API 呼び出しゼロ)。
+
+    ジョブが発火しなくなった / 毎回スキップされ続けた場合、上のジョブは何も
+    通知しないので「静かに監視が消える」。それを検知する唯一の口。
+    """
+    from scripts.eval_radar import run_eval_staleness
+    return run_eval_staleness()
+
+
 # Vault NotebookLM Sync (optional — import失敗でスケジューラ全体を壊さない)
 try:
     from tools.tool_notebooklm import sync_vault_export, VAULT_SYNC_GENRE as _VAULT_SYNC_GENRE
@@ -502,6 +527,28 @@ SCHEDULE = [
         "time": "06:40",
         "name": "gws Auth Health Check",
         "func": _run_gws_auth_health_check,
+        "silent": True,
+        "catch_up": True,
+    },
+    # 自己評価レーダー (週次): 夜間チェーン(03:20〜03:40)の後・朝チェーン(06:00)の前。
+    # 日付が変わって cost_guard の日次カウンタがリセットされた直後の枠を使う。
+    # catch_up=True: PC が日曜に落ちていた週は次回起動時に繰り越して実行する。
+    # silent=True: 正常時は無言 — 閾値割れ/測定不能のときだけ自前で通知する。
+    {
+        "time": "04:00",
+        "name": "Eval Radar (Weekly)",
+        "func": _run_eval_radar,
+        "weekday": 6,  # 日曜
+        "silent": True,
+        "catch_up": True,
+    },
+    # ↑のジョブが止まったこと自体を検知する (API 0回)。これが無いと
+    # 「発火しなくなった」「毎回スキップされ続けた」に気付けず、監視が静かに消える。
+    {
+        "time": "06:35",
+        "name": "Eval Radar Staleness",
+        "func": _run_eval_staleness,
+        "weekday": 0,  # 月曜
         "silent": True,
         "catch_up": True,
     },

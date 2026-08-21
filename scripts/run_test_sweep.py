@@ -122,6 +122,7 @@ PARALLEL_TESTS = frozenset({
     "test_engagement_log.py",
     "test_error_logging.py",
     "test_eval_agent.py",
+    "test_eval_radar.py",
     "test_eval_retrieval.py",
     "test_file_lock.py",
     "test_folder_create.py",
