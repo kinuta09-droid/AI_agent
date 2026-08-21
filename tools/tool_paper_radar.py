@@ -134,12 +134,17 @@ def _days_between(newer: datetime.datetime, older: datetime.datetime) -> float:
     return max((newer - older).total_seconds() / 86400.0, 0.0)
 
 
-def score_paper(paper: dict, now: datetime.datetime, interests=()) -> dict:
+def score_paper(paper: dict, now: datetime.datetime, interests=(),
+                keyword_weights: dict = None) -> dict:
     """1本の論文を採点する純関数。{"score": float, "breakdown": {...}} を返す。
 
     指標が欠けている場合 (HF に載っていない・S2 が未収録) は 0 として扱い、
     **その論文を落とさない**。落とすと「新しすぎて指標が付いていない良い論文」が
     構造的に選ばれなくなる。欠損は breakdown で可視化する。
+
+    keyword_weights: パーソナライズ Phase2 (lib/preference_weights.keyword_affinity)。
+    実測エンゲージメントで重み付けされた一致キーワードほど加点が強くなる。
+    未指定 (None) なら全キーワード均等 1.0 = 従来の `len(matched)` と同じ値。
     """
     published = paper.get("published_dt") or now
     age_days = _days_between(now, published)
@@ -157,7 +162,8 @@ def score_paper(paper: dict, now: datetime.datetime, interests=()) -> dict:
 
     text = f"{paper.get('title', '')} {paper.get('abstract', '')}".lower()
     matched = sorted({kw for kw in interests if kw and kw.lower() in text})
-    interest_hits = len(matched)
+    weights = keyword_weights or {}
+    interest_hits = sum(weights.get(kw, 1.0) for kw in matched)
 
     breakdown = {
         "hf_upvotes": round(WEIGHTS["hf_upvotes"] * math.log1p(upvotes), 3),
@@ -176,7 +182,7 @@ def score_paper(paper: dict, now: datetime.datetime, interests=()) -> dict:
 
 
 def rank_papers(papers: list, now: datetime.datetime, top_k: int = 5,
-                interests=(), exclude_ids=()) -> list:
+                interests=(), exclude_ids=(), keyword_weights: dict = None) -> list:
     """採点して降順に並べ、上位 top_k を返す。exclude_ids は既出論文の除外用。
 
     同点時は arxiv_id で決める (実行ごとに順番が入れ替わると、レポートの
@@ -188,7 +194,7 @@ def rank_papers(papers: list, now: datetime.datetime, top_k: int = 5,
         if p.get("arxiv_id") in excluded:
             continue
         enriched = dict(p)
-        enriched.update(score_paper(p, now, interests))
+        enriched.update(score_paper(p, now, interests, keyword_weights))
         ranked.append(enriched)
     ranked.sort(key=lambda x: (-x["score"], x.get("arxiv_id", "")))
     return ranked[:top_k]
@@ -630,8 +636,11 @@ def run_paper_radar(field: str = "", top_k: int = 5, days: int = 7,
                 f"(fields={fields})。days を伸ばすか分野指定を見直してください")
 
     interests = read_interest_keywords()
+    from lib.preference_weights import keyword_affinity  # 遅延import (Phase2)
+    keyword_weights = keyword_affinity(interests)
     exclude = [] if include_seen else load_seen_ids()
-    ranked = rank_papers(papers, now, top_k=top_k, interests=interests, exclude_ids=exclude)
+    ranked = rank_papers(papers, now, top_k=top_k, interests=interests,
+                        exclude_ids=exclude, keyword_weights=keyword_weights)
     if not ranked:
         return (f"Paper Radar: 候補{len(papers)}件はすべて記事化済みでした "
                 f"(include_seen=True で既出も出せます)")
@@ -651,6 +660,8 @@ def run_paper_radar_grouped(groups: list, days: int = 7, save: bool = True,
     print("[Tool] 📡 Paper Radar (grouped) 起動中...")
     now = datetime.datetime.now()
     interests = read_interest_keywords()
+    from lib.preference_weights import keyword_affinity  # 遅延import (Phase2)
+    keyword_weights = keyword_affinity(interests)
     exclude = set(normalize_arxiv_id(x) for x in ([] if include_seen else load_seen_ids()))
 
     # 検索はグループ単位 (top_k をグループごとに確保するため)。HF/S2 指標付けは
@@ -674,7 +685,8 @@ def run_paper_radar_grouped(groups: list, days: int = 7, save: bool = True,
 
     ranked_all = []
     for top_k, papers in group_pool:
-        ranked = rank_papers(papers, now, top_k=top_k, interests=interests, exclude_ids=exclude)
+        ranked = rank_papers(papers, now, top_k=top_k, interests=interests,
+                            exclude_ids=exclude, keyword_weights=keyword_weights)
         exclude.update(normalize_arxiv_id(p["arxiv_id"]) for p in ranked)
         ranked_all.extend(ranked)
 

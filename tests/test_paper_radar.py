@@ -118,6 +118,25 @@ def test_score_monotonic_in_upvotes_and_interest():
     print("✅ [2] score_paper: upvote / 興味一致で単調に増える")
 
 
+def test_score_keyword_weights_backward_compatible_and_scales():
+    """パーソナライズ Phase2: keyword_weights 未指定時は従来の len(matched) と同じ値。
+
+    指定時は測定された重み (lib.preference_weights.keyword_affinity) 分だけ
+    interest breakdown が変わること。シグネチャ変更の後方互換の回帰テスト。
+    """
+    p = _paper("2607.00004", days_ago=2, upvotes=0)
+
+    default = radar.score_paper(p, NOW, interests=["agents"])
+    explicit_none = radar.score_paper(p, NOW, interests=["agents"], keyword_weights=None)
+    assert default["breakdown"] == explicit_none["breakdown"], (
+        f"keyword_weights 未指定は None と同じ挙動のはず: {default} vs {explicit_none}")
+
+    boosted = radar.score_paper(p, NOW, interests=["agents"], keyword_weights={"agents": 2.0})
+    assert boosted["breakdown"]["interest"] > default["breakdown"]["interest"], (
+        f"重み2.0なら interest 加点が増えるはず: {boosted} vs {default}")
+    print("✅ [2] score_paper: keyword_weights は後方互換かつ加点をスケールする")
+
+
 # ---------------------------------------------------------
 # [3] ランキング
 # ---------------------------------------------------------

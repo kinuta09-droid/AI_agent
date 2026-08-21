@@ -88,6 +88,18 @@ def read_main_context(max_tokens: int = 30000) -> str:
     except ImportError:
         pass
 
+    # 2c. 実測エンゲージメント（パーソナライズ Phase2、存在すれば含める）
+    # 「宣言された興味」ではなく「実際に開いた/クリックしたもの」を反映する。
+    # データが無ければ空文字が返り、既存のコンテキスト形は変わらない。
+    try:
+        from lib.preference_weights import engagement_context_block
+        engagement = engagement_context_block()
+        if engagement:
+            context_parts.append(f"## 実測エンゲージメント（直近30日）\n{engagement}\n")
+            char_count += len(engagement)
+    except ImportError:
+        pass
+
     # 3. ファイル収集: KB優先、次に30_Main
     file_list = []  # (path, mtime, source)
 
@@ -316,6 +328,7 @@ def get_curation_suggestions(context: str, mode: str = "normal",
 - 【ジャンル分散・最重要】3つのトピックは必ず異なるジャンルから選ぶこと。AI/テクノロジーに偏禁止。ユーザーの興味リストにある全カテゴリー（政治、社会、介護、歴史、文化など）から均等に提案する。既存Knowledge_Baseでカバーが薄いジャンルを優先する
 - source_note は Knowledge_Base にある派生元のノート名（拡張子なし）。なければ空文字
 - search_query はTavily Web検索に最適化（英語推奨）
+- contextに「実測エンゲージメント」セクションがあれば、スロット内のトピック選定の参考にする（ただし上記のジャンル分散ルールは維持し、実測ジャンルに偏らせすぎない）
 - reasoning は Slot 3 (Entropy) で必須: なぜこの異分野への飛躍が構造的・哲学的に妥当なのかを3〜5文で詳細に説明する。Slot 1 (Consistent) は空文字、Slot 2 (Bridge) はどのトレンドとどの興味を掛け合わせたか簡潔に記載
 {ab_instruction}
 """
