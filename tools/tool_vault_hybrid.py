@@ -45,6 +45,7 @@ import するため、同居させると numpy 欠落環境で検索ツールが
 (cost_guard の日次上限を共有する)。backend=ollama なら課金ゼロ。
 """
 
+import datetime
 import json
 import os
 import re
@@ -52,10 +53,20 @@ import time
 
 from lib.concurrency import ollama_slot
 from lib.lib_obsidian_utils import format_source_ref
+from lib.paths import LOGS_DIR
 from tools.tool_obsidian import _keyword_hits
 
 RRF_K = 60
 NOT_FOUND = "Vault内に見つかりませんでした。"
+
+# tools/tool_reference_promotion.py (週次「よく参照されるノート」検出) が読む検索ログ。
+# 末尾追記のみ (read-modify-write が無い) なので FileLock は不要 — 壊れた行は読み手側で
+# スキップする前提 (note_promotion 等の pending.json とは性質が違う)。
+# ponytail: ローテーション無し、無期限に育つ (logs/vault_insight_log.jsonl と同じ既知の
+# 簡略化)。1行あたり数十〜数百バイトで検索1回につき1行なので実害が出るまでは数年掛かる
+# 想定。実際に肥大化が問題になったら learning_db.json 方式 (max_entries超過分を
+# 別ファイルへ退避してtrim) に格上げする。
+SEARCH_LOG_PATH = os.path.join(LOGS_DIR, "vault_search_log.jsonl")
 
 # 原クエリに追加する言い換えの本数 (計 1 + MULTIQUERY_VARIANTS 本を検索する)
 MULTIQUERY_VARIANTS = 2
@@ -1174,19 +1185,39 @@ def _format_hit(h: dict) -> str:
     return f"- File: {link} ({', '.join(detail)})\n  Snippet:\n{h['snippet']}\n..."
 
 
+def _log_search(query: str, hits: list, log_path: str = SEARCH_LOG_PATH) -> None:
+    """検索ログを1行追記する (tools/tool_reference_promotion.py が集計に使う)。
+
+    行動ログヒット (source != "vault") はVaultノートではなくMOC昇格の対象になり
+    得ないため除外する。書き込み失敗は検索結果自体を壊さないよう握りつぶす
+    (ログは付随的な副作用であり、検索の成否とは切り離す)。
+    """
+    rel_paths = [h["rel_path"] for h in hits if h.get("source") == "vault"]
+    if not rel_paths:
+        return
+    entry = {"at": datetime.datetime.now().isoformat(), "query": str(query)[:200], "hits": rel_paths}
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"[Tool] ⚠️ 検索ログ書き込み失敗: {e}")
+
+
 def tool_vault_hybrid_search(query: str, top_k: int = 5,
                              keyword_fn=_keyword_hits,
                              semantic_fn=None, llm_fn=None,
                              multiquery=None, rerank=None,
                              rerank_backend=None,
                              activity_keyword_fn=None,
-                             link_expand=None, link_fn=None) -> str:
+                             link_expand=None, link_fn=None,
+                             log_fn=_log_search) -> str:
     """Vault内をキーワード+意味検索のハイブリッド (RRF) で検索する。
 
     出力形式は tool_vault_search / tool_vault_semantic_search と揃える
     (`- File: [[name#heading]]\\n  Snippet:` — プランナー側の扱いを変えないため)。
     keyword_fn / semantic_fn / llm_fn はテスト注入用 (embed_fn 注入と同じパターン)。
     multiquery / rerank / link_expand は計測・デバッグ用の上書き (None なら .env)。
+    log_fn はテスト注入用 (既定で logs/vault_search_log.jsonl に追記)。
     レジストリの usage は `(query, top_k=5)` のままなので Planner には見えない。
     """
     if not query or not str(query).strip():
@@ -1202,6 +1233,7 @@ def tool_vault_hybrid_search(query: str, top_k: int = 5,
         multiquery=multiquery, rerank=rerank, rerank_backend=rerank_backend,
         activity_keyword_fn=activity_keyword_fn,
         link_expand=link_expand, link_fn=link_fn)
+    log_fn(query, hits)
 
     if len(queries) > 1:
         # 何で引いた結果なのかを常に残す。ヒットが的外れなときに

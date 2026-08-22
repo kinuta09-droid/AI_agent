@@ -33,6 +33,12 @@
   [20] run_note_promotion_job: 本文が全ノート空ならGeminiを呼ばずスキップする
        (grill指摘: 空本文でも下書き生成すると、ファイル名だけから内容を
        捏造した下書きが本文要約の体で出力される実害が実機確認で見つかった)
+  [21] _prioritize_by_reference: freq_counts が空ならクラスタ順序は変わらない
+       (tools/tool_reference_promotion.py 未配線時の後方互換)
+  [22] _prioritize_by_reference: 検索ログ高頻度ノートを含むクラスタが
+       サイズに関わらず優先される (ロードマップ項目8: 参照実績を統合優先度に反映)
+  [23] run_note_promotion_job: freq_lookup_fn を実際に通しても、優先クラスタが
+       先に空きスロットへ入る (単体テストだけでなく実経路での確認)
 
 本番Vault・logs/vault_index.db・logs/note_promotion_*.json には一切触れない
 (tempfile 配下のDB/Vault/JSONパスを関数の引数として渡すだけで完全に隔離できる —
@@ -412,6 +418,7 @@ def test_run_job_silent_when_no_clusters():
             pending_path=os.path.join(tmp, "pending.json"),
             seen_path=os.path.join(tmp, "seen.json"),
             notify_fn=lambda msg, components=None: notified.append(msg),
+            freq_lookup_fn=lambda: {},
         )
         check("[17] クラスタ0件では通知しない", notified == [], notified)
         check("[17] 戻り値にクラスタなしと分かる文言", "クラスタなし" in result, result)
@@ -442,6 +449,7 @@ def test_run_job_respects_free_slots():
         result = promo.run_note_promotion_job(
             db_path=db, pending_path=pending_path, seen_path=seen_path, work_dir=tmp,
             gen_fn=gen_fn, notify_fn=lambda msg, components=None: notified.append(msg),
+            freq_lookup_fn=lambda: {},
         )
         check("[18] 通知は空きスロット数(5)まで", len(notified) == promo.NOTE_PROMO_SLOTS, len(notified))
         pending_after = promo._load_pending(pending_path)
@@ -472,6 +480,7 @@ def test_end_to_end_detect_to_promote():
         job_result = promo.run_note_promotion_job(
             db_path=db, pending_path=pending_path, seen_path=seen_path, work_dir=root,
             gen_fn=gen_fn, notify_fn=lambda msg, components=None: None,
+            freq_lookup_fn=lambda: {},
         )
         check("[19] ジョブが1件通知したと報告する", "1件通知" in job_result, job_result)
 
@@ -512,10 +521,85 @@ def test_run_job_skips_draft_when_all_bodies_empty():
             db_path=db, pending_path=os.path.join(root, "pending.json"),
             seen_path=os.path.join(root, "seen.json"), work_dir=root,
             gen_fn=gen_fn, notify_fn=lambda msg, components=None: None,
+            freq_lookup_fn=lambda: {},
         )
         check("[20] 本文が全て空ならGeminiを呼ばない", gen_called == [], gen_called)
         check("[20] 戻り値がErrorになる (下書き生成扱いで失敗)", result.startswith("Error"), result)
     print("--- [20] done ---")
+
+
+# ---------------------------------------------------------
+# [21]-[23] freq_lookup_fn によるノート統合優先度反映 (ロードマップ項目8)
+# ---------------------------------------------------------
+
+def test_prioritize_by_reference_preserves_order_when_empty():
+    clusters = [
+        {"cluster_id": "big", "filenames": ["00_inbox/a.md", "00_inbox/b.md", "00_inbox/c.md"]},
+        {"cluster_id": "small", "filenames": ["00_inbox/x.md", "00_inbox/y.md", "00_inbox/z.md"]},
+    ]
+    result = promo._prioritize_by_reference(clusters, {})
+    check("[21] freq_counts空なら元の順序を維持 (後方互換)", result == clusters, result)
+
+
+def test_prioritize_by_reference_promotes_hot_cluster():
+    clusters = [
+        {"cluster_id": "cold", "filenames": ["00_inbox/a.md", "00_inbox/b.md", "00_inbox/c.md"]},
+        {"cluster_id": "hot", "filenames": ["00_inbox/x.md", "00_inbox/y.md"]},
+    ]
+    freq_counts = {"00_inbox/x.md": 5}  # 閾値(既定3)以上
+    result = promo._prioritize_by_reference(clusters, freq_counts)
+    check("[22] 高頻度ノートを含むクラスタが先頭に来る", result[0]["cluster_id"] == "hot", result)
+
+
+def test_run_job_prioritizes_hot_cluster_end_to_end():
+    """サイズ4クラスタとサイズ3クラスタがあるとき、freq_lookup_fn無しではサイズ4が
+    slot0に入るが、サイズ3側に検索ログ高頻度ノートがあればそちらがslot0に入ること。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "index.db")
+        group_sizes = {0: 3, 1: 4}  # group0=小 (優先させたい方), group1=大 (デフォルト首位)
+        entries = []
+        filenames_by_group = {}
+        for g, size in group_sizes.items():
+            base = [1.0 if k == g else 0.0 for k in range(2)]
+            fns = []
+            for i in range(size):
+                vec = list(base)
+                vec[g] += 0.01 * i
+                fn = f"00_inbox/g{g}_{i}.md"
+                entries.append((fn, vec, SOURCE_VAULT))
+                fns.append(fn)
+            filenames_by_group[g] = fns
+        _make_db(db, entries)
+        all_filenames = [fn for fns in filenames_by_group.values() for fn in fns]
+        _make_vault_with_fleeting(tmp, all_filenames)
+
+        gen_fn = lambda prompt: '{"title": "T", "summary": "S", "body": "B"}'
+
+        # freq_lookup_fn無し (既定と同じ挙動): サイズの大きいgroup1がslot0に入る
+        default_result = promo.run_note_promotion_job(
+            db_path=db, pending_path=os.path.join(tmp, "pending_default.json"),
+            seen_path=os.path.join(tmp, "seen_default.json"), work_dir=tmp,
+            gen_fn=gen_fn, notify_fn=lambda msg, components=None: None,
+            freq_lookup_fn=lambda: {},
+        )
+        pending_default = promo._load_pending(os.path.join(tmp, "pending_default.json"))
+        check("[23] freq無しではサイズ4クラスタ(group1)がslot0",
+              set(pending_default.get("0", {}).get("filenames", [])) == set(filenames_by_group[1]),
+              pending_default)
+
+        # freq_lookup_fnでgroup0の1ノートを高頻度扱いにする: group0(サイズ3)がslot0に来る
+        hot_note = filenames_by_group[0][0]
+        boosted_result = promo.run_note_promotion_job(
+            db_path=db, pending_path=os.path.join(tmp, "pending_boosted.json"),
+            seen_path=os.path.join(tmp, "seen_boosted.json"), work_dir=tmp,
+            gen_fn=gen_fn, notify_fn=lambda msg, components=None: None,
+            freq_lookup_fn=lambda: {hot_note: 5},
+        )
+        pending_boosted = promo._load_pending(os.path.join(tmp, "pending_boosted.json"))
+        check("[23] freq有りではサイズ3クラスタ(group0)がslot0に優先される",
+              set(pending_boosted.get("0", {}).get("filenames", [])) == set(filenames_by_group[0]),
+              pending_boosted)
+    print("--- [23] done ---")
 
 
 if __name__ == "__main__":
@@ -540,6 +624,9 @@ if __name__ == "__main__":
     test_run_job_respects_free_slots()
     test_end_to_end_detect_to_promote()
     test_run_job_skips_draft_when_all_bodies_empty()
+    test_prioritize_by_reference_preserves_order_when_empty()
+    test_prioritize_by_reference_promotes_hot_cluster()
+    test_run_job_prioritizes_hot_cluster_end_to_end()
 
     print(f"\n{len(_PASS)} passed, {len(_FAIL)} failed")
     if _FAIL:

@@ -124,6 +124,14 @@ except ImportError as _e:
     def run_weekly_orphan_relink_job(*args, **kwargs):
         return f"Orphan Relink: tool_orphan_relink not available ({_orphan_relink_err})"
 
+# Reference Promotion (optional — Vault Semantic Index と同じ扱い)
+try:
+    from tools.tool_reference_promotion import run_reference_promotion_job
+except ImportError as _e:
+    _reference_promotion_err = str(_e)
+    def run_reference_promotion_job(*args, **kwargs):
+        return f"Reference Promotion: tool_reference_promotion not available ({_reference_promotion_err})"
+
 # ボタンの custom_id は bot プロセス側の永続 View (commands/bot_views.py) と
 # 一致させる必要があるため定数を直接 import する (discord.Client は起動しない)
 from commands.bot_views import DIVE_CUSTOM_IDS, SCHEDULER_LOG_CUSTOM_ID
@@ -735,6 +743,17 @@ SCHEDULE = [
         "time": "03:50",
         "name": "Orphan Relink (被リンク0件ノートの関連付け提案)",
         "func": run_weekly_orphan_relink_job,
+        "weekday": 6,  # 日曜
+        "silent": True,
+    },
+    # Reference Promotion (教訓の自動昇格 Vault版): ノート系夜間ジョブの末尾。検索ログの
+    # 集計は当夜のVault Semantic Indexと無関係に独立して動くが、並びとしてここにまとめる。
+    # weekday指定・catch_upなしはOrphan Relinkと同じ判断 (1週遅れても実害が小さく、
+    # catch_up追加はpending二重生成リスクを増やすだけ)。
+    {
+        "time": "03:55",
+        "name": "Reference Promotion (よく参照されるノートのMOC昇格提案)",
+        "func": run_reference_promotion_job,
         "weekday": 6,  # 日曜
         "silent": True,
     },

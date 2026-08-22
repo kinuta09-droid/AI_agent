@@ -77,8 +77,15 @@ def _kw_hit(rel_path, score, snippet="body"):
 
 
 def _search(*args, **kwargs):
-    """activity 経路を必ず無効化して検索を呼ぶ (test_hybrid_search.py と同じ理由)。"""
+    """activity 経路を必ず無効化して検索を呼ぶ (test_hybrid_search.py と同じ理由)。
+
+    log_fn も既定で無効化する: link_fn フィクスチャが source="vault" の
+    fabricated ヒット (例 "neighbor.md") を返すテストがあり、実装側の既定
+    log_fn (logs/vault_search_log.jsonl への実書き込み) のままだと存在しない
+    ファイル名で本番ログを汚染してしまう (Known Bug Pattern C と同型)。
+    """
     kwargs.setdefault("activity_keyword_fn", lambda q, k=None: [])
+    kwargs.setdefault("log_fn", lambda query, hits: None)
     return tool_vault_hybrid_search(*args, **kwargs)
 
 

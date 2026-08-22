@@ -220,6 +220,39 @@ def _filter_new_clusters(clusters: list, pending: dict, seen: dict,
     return fresh
 
 
+# tool_reference_promotion.REFERENCE_HIT_THRESHOLD と同じ既定値・同じ env var 名 (「3回以上
+# 参照」)。直接 import せず独立させる — tool_reference_promotion.py を削除/未配線にしても
+# この定数は生き残り、_default_freq_lookup が {} を返せば現状と同じサイズ降順に戻るだけで
+# import エラーにはならない (ロールバックの安全側デフォルト)。
+NOTE_PROMO_REFERENCE_THRESHOLD = int(os.getenv("REFERENCE_PROMOTION_THRESHOLD", "3"))
+
+
+def _default_freq_lookup() -> dict:
+    """検索ログの直近ウィンドウ集計を tools/tool_reference_promotion.py に委譲する。
+    循環import回避のため関数内import (_default_notify の agent_scheduler 遅延importと
+    同じ流儀)。未配線/削除時は空dictに落ちる。"""
+    try:
+        from tools.tool_reference_promotion import _count_note_hits, _load_search_log
+    except ImportError:
+        return {}
+    return _count_note_hits(_load_search_log())
+
+
+def _prioritize_by_reference(clusters: list, freq_counts: dict,
+                              threshold: int = NOTE_PROMO_REFERENCE_THRESHOLD) -> list:
+    """クラスタ内に検索ログ高頻度ノート(閾値以上)を含むクラスタを優先する
+    (ロードマップ項目8: 「よく参照される知識」をノート統合の優先度に反映する)。
+
+    sorted() は安定ソートなので、「ハブ内含有」が同値のクラスタ同士は
+    detect_fleeting_clusters が確定させたサイズ降順の順序を保つ。freq_counts が空
+    (tool_reference_promotion 未配線・検索ログが空) なら全クラスタが同値になり、
+    実質的に現状と同じサイズ降順のまま (後方互換)。
+    """
+    def _has_hot_note(cluster: dict) -> bool:
+        return any(freq_counts.get(fn, 0) >= threshold for fn in cluster["filenames"])
+    return sorted(clusters, key=lambda c: not _has_hot_note(c))
+
+
 # ---------------------------------------------------------
 # Gemini ドラフト生成 (純関数のプロンプト組み立て + 呼び出し部を分離)
 # ---------------------------------------------------------
@@ -321,7 +354,8 @@ def _notify_cluster(slot: int, cluster: dict, draft: dict, notify_fn) -> None:
 def run_note_promotion_job(target_dir: str = "00_inbox", db_path: str = DB_PATH,
                             pending_path: str = PENDING_PATH, seen_path: str = SEEN_PATH,
                             work_dir: str = WORK_DIR,
-                            gen_fn=_default_generate, notify_fn=_default_notify) -> str:
+                            gen_fn=_default_generate, notify_fn=_default_notify,
+                            freq_lookup_fn=_default_freq_lookup) -> str:
     """夜間ジョブ本体。検出→pending/seenでフィルタ→空きスロット分だけ下書き生成→Discord通知。
 
     silentタスク前提 (agent_scheduler側の定型✅/❌通知を経由しない) — クラスタが
@@ -341,6 +375,7 @@ def run_note_promotion_job(target_dir: str = "00_inbox", db_path: str = DB_PATH,
         fresh = _filter_new_clusters(clusters, pending, seen)
         if not fresh:
             return "Note Promotion: 新規クラスタなし (審議中/cooldown中のみ)"
+        fresh = _prioritize_by_reference(fresh, freq_lookup_fn())
 
         used_slots = {int(k) for k in pending}
         free_slots = [i for i in range(NOTE_PROMO_SLOTS) if i not in used_slots]

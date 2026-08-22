@@ -548,6 +548,7 @@ async def on_ready():
     bot.add_view(bot_views.NotePromotionView())
     bot.add_view(bot_views.ContradictionResolutionView())
     bot.add_view(bot_views.OrphanRelinkView())
+    bot.add_view(bot_views.ReferencePromotionView())
     try:
         if GUILD_ID:
             guild = discord.Object(id=int(GUILD_ID))

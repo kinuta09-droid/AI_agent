@@ -44,6 +44,10 @@ def _search(*args, **kwargs):
     tests/test_activity_corpus.py が受け持つ。
     """
     kwargs.setdefault("activity_keyword_fn", lambda q, k=None: [])
+    # 本番 logs/vault_search_log.jsonl を汚染しないよう、テストは既定で書き込みを無効化する
+    # (test_vault_links.py の _search と同じ理由: フィクスチャが source="vault" の
+    # fabricated ヒットを返しうる)。
+    kwargs.setdefault("log_fn", lambda query, hits: None)
     return tool_vault_hybrid_search(*args, **kwargs)
 
 

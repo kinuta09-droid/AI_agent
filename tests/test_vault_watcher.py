@@ -9,6 +9,8 @@
   [5]  通知判定プロンプトに <own_note>/<search_hits> タグと注入対策文言が入っている
   [6]  存在するが破損した (不正JSON) キャッシュは「初回実行」と同じ安全弁 (シードのみ) に倒れる
   [7]  ロック取得済みの状態で呼ぶと、クラッシュ・キャッシュ破壊せずにエラー文字列を返す
+  [9]  _default_search: 本番検索呼び出しに log_fn=no-op を渡し、Watcherの内部検索が
+       logs/vault_search_log.jsonl を自己言及的に汚染しない (2026-08-22 grill発見の回帰)
 
 本番 Vault・logs/gemini_daily_calls.json には一切触れない
 (SCAN_DIR/SEEN_MTIMES_CACHE/INSIGHT_LOG をテスト毎に tempfile へ差し替える)。
@@ -492,6 +494,36 @@ def test_wikilink_split_heading_roundtrip_for_related_note_with_anchor():
     assert (name, heading) == ("Existing.md", "背景"), (name, heading)
     assert format_wikilink(name, heading) == "[[Existing.md#背景]]"
     print("✅ [8g] format_wikilink/split_heading_anchor の対応関係")
+
+
+def test_default_search_disables_search_log_write():
+    """_default_search は本番の tool_vault_hybrid_search を呼ぶ際 log_fn=no-op を渡すこと。
+
+    渡し忘れると、Watcherが毎晩自動発行する内部検索が logs/vault_search_log.jsonl に
+    記録され、tools/tool_reference_promotion.py の「よく参照されるノート」判定を
+    自動化ジョブ自身の内部検索で水増ししてしまう (2026-08-22 grillレビューで発見・修正、
+    known-bug-patterns.md/retrieval-tuning skill 記載の回帰)。
+    """
+    import tools.tool_vault_hybrid as hybrid
+
+    captured = {}
+
+    def fake_search(query, top_k=5, **kwargs):
+        captured.update(kwargs)
+        return "dummy result"
+
+    orig = hybrid.tool_vault_hybrid_search
+    hybrid.tool_vault_hybrid_search = fake_search
+    try:
+        result = watcher._default_search("query", top_k=5)
+    finally:
+        hybrid.tool_vault_hybrid_search = orig
+
+    assert result == "dummy result", result
+    assert "log_fn" in captured, "log_fn が渡されていない (検索ログ汚染の回帰)"
+    # no-opであること (実際に呼んでも例外にならず、何も起きない)
+    captured["log_fn"]("q", [{"rel_path": "x.md", "source": "vault"}])
+    print("✅ [9] _default_search は log_fn=no-op を渡し、検索ログを汚染しない")
 
 
 if __name__ == "__main__":

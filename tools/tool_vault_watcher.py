@@ -188,7 +188,13 @@ def _call_gemini_notice(prompt: str) -> dict:
 
 def _default_search(query: str, top_k: int = 5) -> str:
     from tools.tool_vault_hybrid import tool_vault_hybrid_search
-    return tool_vault_hybrid_search(query, top_k=top_k)
+    # log_fn=no-op: これは「ユーザーの検索」ではなく Vault Insight Watcher 自身が
+    # 変更ノートごとに自動発行する内部検索。tools/tool_reference_promotion.py の
+    # 検索ログに記録すると、変更検知のたびに機械的に流れるクエリが「よく参照される
+    # ノート」の判定に混ざり、本来の目的 (人間/エージェントの実際の参照実績) を
+    # 自己言及的なノイズで水増ししてしまう (tool_find_related_notes を検索ログの
+    # 記録対象から除外しているのと同じ理由)。
+    return tool_vault_hybrid_search(query, top_k=top_k, log_fn=lambda query, hits: None)
 
 
 def _default_notify(message: str) -> None:
