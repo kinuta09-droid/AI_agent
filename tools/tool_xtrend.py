@@ -41,6 +41,7 @@ from lib.lib_shared import (
     WORK_DIR,
     retry,
 )
+from lib.engagement_log import log_impressions
 
 import requests
 
@@ -272,6 +273,13 @@ def analyze_posts(posts: list[dict], batch_size: int = 30) -> list[dict]:
 
     # 重複排除: feature_name を正規化して同一技術をまとめる（engagement_score 最大を残す）
     analyzed = _deduplicate_features(analyzed)
+
+    # post_url から元クエリを逆引きして付与する (項目9: 収集クエリの動的チューニング用)。
+    # Gemini には post_url をそのまま出力させているので、新しいフィールドを
+    # 生成させずにコード側だけで紐付けられる。
+    url_to_query = {p["url"]: p["query"] for p in posts if p.get("url")}
+    for f in analyzed:
+        f["source_query"] = url_to_query.get(f.get("post_url", ""), "")
 
     # ARMS親和性降順でソート
     analyzed.sort(key=lambda x: (x.get("arms_affinity", 0), x.get("engagement_score", 0)), reverse=True)
@@ -551,6 +559,10 @@ def run(
     features = analyze_posts(posts)
 
     print_results(features)
+
+    # 項目9 (収集クエリの動的チューニング) Phase 0: クエリごとの提示実績を記録するだけ。
+    # 自動反映はしない。log_impressions は失敗を握りつぶす設計なのでここでは無視してよい。
+    log_impressions(features, source="xtrend", item_type="feature")
 
     if not no_save:
         save_to_obsidian(features, queries)

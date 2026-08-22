@@ -14,6 +14,7 @@ from tools.tool_gmail_manager import get_gmail_summary as tool_gmail_check
 from tools.tool_vault_watcher import check_vault_insights
 
 from lib.bot_errors import log_command_error
+from lib.engagement_log import log_event
 from lib.discord_response import (
     format_discord_content as _format_discord_content,
     make_discord_file as _make_discord_file,
@@ -292,6 +293,10 @@ async def cmd_xtrend_prompt(interaction: discord.Interaction, index: int = 1):
         if not feature:
             result = f"⚠️ Feature {index} が見つかりません。先に `/xtrend` を実行してください。"
         else:
+            # 項目9 (収集クエリの動的チューニング) Phase 0: どのクエリの候補が
+            # 実際に深掘りされたかを記録するだけ。自動反映はしない。
+            log_event("click", item=feature.get("feature_name", ""), source="xtrend",
+                      meta={"source_query": feature.get("source_query", "")})
             prompt_text = await asyncio.to_thread(generate_claude_prompt, feature, True)
             name = feature.get("feature_name", "?")
             result = f"**実装指示書生成完了: {name}**\n\n{prompt_text}"

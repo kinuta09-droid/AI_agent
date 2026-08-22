@@ -57,6 +57,7 @@ from dotenv import load_dotenv
 load_dotenv(ENV_PATH)
 
 from lib.lib_shared import MODEL_NAME, client, safe_json_loads
+from lib.engagement_log import log_impressions
 
 # ---------------------------------------------------------
 # CONFIGURATION
@@ -91,6 +92,10 @@ FIELD_PRESETS = {
     "ai_jobs": 'cat:econ.GN AND (abs:"labor market" OR abs:"automation") AND abs:"AI"',
     "astro_jwst": 'cat:astro-ph.GA AND (abs:"JWST" OR abs:"black hole" OR abs:"dark matter")',
 }
+
+# 実績(ヒット数)が少なくても意図的に残している分野。項目9(収集クエリの動的チューニング)の
+# クエリ別サマリで「件数だけで判断しないこと」という注記の対象になる。
+PROTECTED_FIELDS = {"astro_jwst"}
 
 # .env で既定の監視分野を変えられる (カンマ区切り。プリセット名か生クエリ)
 DEFAULT_FIELDS = [
@@ -592,6 +597,10 @@ def _finalize_report(ranked: list, fields: list, now: datetime.datetime,
         save_latest_candidates(ranked, fields)
     except Exception as e:
         print(f"[PaperRadar] ⚠️ 候補JSON保存に失敗 ({e}) — digest の番号指定が使えません")
+
+    # 項目9 (収集クエリの動的チューニング) Phase 0: クエリ(field)ごとの提示実績を記録するだけ。
+    # 自動反映はしない。log_impressions は失敗を握りつぶす設計なのでここでは無視してよい。
+    log_impressions(ranked, source="paper_radar", item_type="paper")
 
     saved_path = ""
     if save:

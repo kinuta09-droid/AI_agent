@@ -421,6 +421,7 @@ def test_grouped_partial_failure_keeps_success_group_and_is_marked():
     orig_search = radar._search_fields
     orig_enrich = radar._enrich_with_metrics
     orig_latest = radar.LATEST_JSON
+    orig_log_impressions = radar.log_impressions
 
     def _fake_search(fields, days=7, max_per_field=radar.MAX_FETCH_PER_QUERY):
         if fields == ["broken"]:
@@ -431,6 +432,10 @@ def test_grouped_partial_failure_keeps_success_group_and_is_marked():
         radar._search_fields = _fake_search
         radar._enrich_with_metrics = lambda papers, days=7: papers
         radar.LATEST_JSON = os.path.join(tmp, "paper_radar_latest.json")
+        # 項目9 (収集クエリの動的チューニング) で追加した impression 記録が
+        # 本番 logs/engagement.jsonl を汚染しないよう無効化する
+        # (Known Bug Patterns C: 新しい書き込み処理は既存テストの隔離漏れになりやすい)
+        radar.log_impressions = lambda *a, **k: ""
         try:
             msg = radar.run_paper_radar_grouped(
                 groups=[("broken", 3), ("ai_agent", 2)], days=3, save=False, translate=False,
@@ -439,6 +444,7 @@ def test_grouped_partial_failure_keeps_success_group_and_is_marked():
             radar._search_fields = orig_search
             radar._enrich_with_metrics = orig_enrich
             radar.LATEST_JSON = orig_latest
+            radar.log_impressions = orig_log_impressions
 
     assert not is_failure_result(msg), f"部分失敗をErrorにしてはいけない: {msg!r}"
     assert is_partial_result(msg), f"部分失敗の印が付いていない: {msg!r}"

@@ -16,7 +16,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from lib.engagement_log import (
-    log_event, log_impressions, read_events, summarize,
+    log_event, log_impressions, read_events, summarize, summarize_by_query,
     snapshot_open_files, diff_open_files, make_src_id, existing_src_ids,
     parse_command_meta,
 )
@@ -464,6 +464,53 @@ def test_backfill_meta_parity():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---------------------------------------------------------
+# 10. summarize_by_query (項目9: 収集クエリの動的チューニング Phase 0)
+# ---------------------------------------------------------
+
+def test_summarize_by_query():
+    print("\n[10] summarize_by_query のクエリ別CTR集計")
+    tmp = tempfile.mkdtemp()
+    try:
+        log_path = os.path.join(tmp, "engagement.jsonl")
+        check("空ログでも落ちない",
+              "エントリがありません" in summarize_by_query("paper_radar", log_path=log_path))
+
+        # Paper Radar 形式: dict の "field" キーを拾う
+        papers = [
+            {"title": "論文A", "field": "ai_agent"},
+            {"title": "論文B", "field": "ai_agent"},
+            {"title": "論文C", "field": "astro_jwst"},
+        ]
+        log_impressions(papers, "paper_radar", item_type="paper", log_path=log_path)
+        log_event("click", "論文A", "paper_radar", meta={"field": "ai_agent"}, log_path=log_path)
+
+        # XTrend 形式: dict の "source_query" キーを拾う (feature_name をタイトル代わりに)
+        features = [
+            {"feature_name": "機能X", "source_query": "MCP model context protocol"},
+        ]
+        log_impressions(features, "xtrend", item_type="feature", log_path=log_path)
+
+        text = summarize_by_query("paper_radar", log_path=log_path)
+        check("ai_agent の CTR 1/2 = 50%", "ai_agent: 1/2 = 50%" in text, text)
+        check("astro_jwst は 0/1 = 0%", "astro_jwst: 0/1 = 0%" in text, text)
+        check("xtrend のクエリが混ざらない", "MCP" not in text, text)
+        check("protected 未指定では注記が出ない", "意図的に低頻度" not in text, text)
+
+        xtrend_text = summarize_by_query("xtrend", log_path=log_path)
+        check("xtrend は source_query で集計される",
+              "MCP model context protocol: 0/1 = 0%" in xtrend_text, xtrend_text)
+
+        protected_text = summarize_by_query("paper_radar", log_path=log_path,
+                                            protected={"astro_jwst"})
+        check("protected 指定時は該当分野にのみ注記が付く",
+              "astro_jwst: 0/1 = 0% (impression 1 / click 0) ※意図的に低頻度" in protected_text
+              and "ai_agent: 1/2 = 50% (impression 2 / click 1)\n" in protected_text + "\n",
+              protected_text)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     print("=== test_engagement_log ===")
     test_roundtrip()
@@ -475,6 +522,7 @@ if __name__ == "__main__":
     test_backfill()
     test_grill_regressions()
     test_backfill_meta_parity()
+    test_summarize_by_query()
 
     print(f"\n=== 結果: {len(_PASS)} passed / {len(_FAIL)} failed ===")
     if _FAIL:

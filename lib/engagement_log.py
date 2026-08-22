@@ -20,10 +20,12 @@ Engagement Signal Log — パーソナライズ改善 Phase 1 (収集のみ)
   snapshot_open_files(vault_root=None)       → 実行結果テキスト (スケジューラ用)
   read_events(days=None)                     → list[dict]
   summarize(days=30)                         → 集計テキスト (CLI 確認用)
+  summarize_by_query(source, days=30)        → クエリ/分野別 CTR (項目9: 収集クエリ動的チューニングの手動判断用)
 
 CLI:
   py lib/engagement_log.py            # 直近30日のサマリを表示
   py lib/engagement_log.py 90         # 直近90日
+  py lib/engagement_log.py --by-query paper_radar 30   # paper_radar のクエリ別CTR
 """
 
 import os
@@ -184,8 +186,8 @@ def log_impressions(items: list, source: str, meta: dict = None,
         item_meta = dict(meta or {})
         item_meta["index"] = i
         if isinstance(item, dict):
-            title = item.get("title", "")
-            for k in ("branch", "source_note"):
+            title = item.get("title") or item.get("feature_name", "")
+            for k in ("branch", "source_note", "field", "query", "source_query"):
                 if item.get(k):
                     item_meta[k] = item[k]
         else:
@@ -386,6 +388,61 @@ def summarize(days: int = 30, log_path: str = LOG_PATH) -> str:
     return "\n".join(lines)
 
 
+def _query_key(meta: dict) -> str:
+    """meta からクエリ/分野識別子を取り出す (field=Paper Radar, query/source_query=XTrend)。"""
+    return meta.get("field") or meta.get("query") or meta.get("source_query") or "(不明)"
+
+
+def summarize_by_query(source: str, days: int = 30, log_path: str = LOG_PATH,
+                        protected: set = frozenset()) -> str:
+    """収集ツール1本について、クエリ/分野ごとの impression・click・CTR を集計する。
+
+    項目9 (収集クエリの動的チューニング) の Phase 0: 自動反映はせず、
+    月次で人間が読んで判断するためのレポートを返すだけ。
+
+    protected: 意図的に低頻度で残しているクエリ/分野の集合 (例: Paper Radar の
+    PROTECTED_FIELDS)。ここに循環 import を避けるため呼び出し元から渡してもらう
+    (engagement_log は各収集ツールから import される共通基盤なので、
+    逆方向に tool_paper_radar 等を import できない)。
+    """
+    events = [e for e in read_events(days=days, log_path=log_path) if e.get("source") == source]
+    if not events:
+        return f"## {source} クエリ別サマリ (直近{days}日)\n\nエントリがありません"
+
+    impressions = {}
+    clicks = {}
+    for e in events:
+        key = _query_key(e.get("meta", {}))
+        if e.get("event") == "impression":
+            impressions[key] = impressions.get(key, 0) + 1
+        elif e.get("event") == "click":
+            clicks[key] = clicks.get(key, 0) + 1
+
+    lines = [f"## {source} クエリ別サマリ (直近{days}日)\n"]
+    for key, imp in sorted(impressions.items(), key=lambda x: -x[1]):
+        clk = clicks.get(key, 0)
+        note = " ※意図的に低頻度で残している分野。件数だけで判断しないこと" if key in protected else ""
+        lines.append(f"- {key}: {clk}/{imp} = {clk / imp * 100:.0f}% (impression {imp} / click {clk}){note}")
+    # impression が無いのに click だけあるキー (index範囲外の手動指定等) も漏らさず出す
+    for key, clk in clicks.items():
+        if key not in impressions:
+            lines.append(f"- {key}: click {clk} (impression 記録なし)")
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
-    _days = int(sys.argv[1]) if len(sys.argv) > 1 else 30
-    print(summarize(days=_days))
+    if "--by-query" in sys.argv:
+        i = sys.argv.index("--by-query")
+        _source = sys.argv[i + 1]
+        _days = int(sys.argv[i + 2]) if len(sys.argv) > i + 2 else 30
+        _protected = set()
+        if _source == "paper_radar":
+            try:
+                from tools.tool_paper_radar import PROTECTED_FIELDS
+                _protected = PROTECTED_FIELDS
+            except Exception:
+                pass
+        print(summarize_by_query(_source, days=_days, protected=_protected))
+    else:
+        _days = int(sys.argv[1]) if len(sys.argv) > 1 else 30
+        print(summarize(days=_days))

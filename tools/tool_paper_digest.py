@@ -49,6 +49,7 @@ load_dotenv(ENV_PATH)
 
 from lib.bot_errors import is_failure_result
 from lib.docling_client import CaptureError, capture_document, docling_import_error, is_available
+from lib.engagement_log import log_event
 from lib.ja_style_guard import enforce_style
 from lib.lib_shared import (
     EDITORIAL_STYLE_RULES,
@@ -430,7 +431,12 @@ def _resolve_paper(index: int = 1, arxiv_id: str = "", field: str = "") -> dict:
         raise ValueError(f"候補論文がありません — Paper Radar の結果: {radar_msg or '(未実行)'}")
     if index < 1 or index > len(candidates):
         raise ValueError(f"index は 1〜{len(candidates)} の範囲で指定してください (指定: {index})")
-    return candidates[index - 1]
+    paper = candidates[index - 1]
+    # 項目9 (収集クエリの動的チューニング) Phase 0: どのクエリ(field)の候補が
+    # 実際に digest まで深掘りされたかを記録するだけ。自動反映はしない。
+    log_event("click", item=paper.get("title", ""), source="paper_radar",
+              meta={"field": paper.get("field", ""), "arxiv_id": paper.get("arxiv_id", "")})
+    return paper
 
 
 def capture_paper(paper: dict, use_docling: bool = True) -> dict:
