@@ -70,7 +70,13 @@ STATE_PATH = os.path.join(EVAL_DIR, "radar_state.json")
 _SCRIPTS = {
     "retrieval": {
         "script": os.path.join("scripts", "eval_retrieval.py"),
-        "args": ["--label", "radar"],
+        # eval_retrieval.py の --multiquery 既定は "on" だが、これは手動A/B比較用の
+        # CLI既定であって本番既定 (tool_vault_hybrid.MULTIQUERY_DEFAULT=False) とは違う。
+        # multiquery は毎回 Gemini でクエリを言い換えるため実行ごとに候補集合が揺れ、
+        # 本番では出ない順位の乱高下が radar の測定値にだけ混入する
+        # (2026-08-22, mrr@10 が同一config・同一Vaultで 0.5706→0.4892 に落ちて誤検知した実例)。
+        # radar は「本番が今出している品質」を測る役目なので本番既定に合わせる。
+        "args": ["--label", "radar", "--multiquery", "off"],
         "prefix": "retrieval_",
         "timeout": 1800,
     },
