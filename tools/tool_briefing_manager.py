@@ -24,6 +24,8 @@ except ImportError:
     def _get_memory_block(*args, **kwargs):
         return ""
 
+from tools.tool_resurfacing import _build_resurfacing_section
+
 
 # ---------------------------------------------------------
 # Provider Registry
@@ -261,6 +263,7 @@ def tool_generate_briefing(include_content: bool = False) -> str:
         filepath = os.path.join(output_dir, filename)
 
     xtrend_section = _build_xtrend_section(top_n=3)
+    resurfacing_section = _build_resurfacing_section()
 
     report = f"""---
 up: "[[10_MOCs/Dashboard]]"
@@ -272,6 +275,7 @@ type: briefing
 
 {briefing_text}
 {xtrend_section}
+{resurfacing_section}
 
 ---
 
@@ -287,7 +291,7 @@ type: briefing
 
     if include_content:
         return (
-            f"{briefing_text}\n{xtrend_section}\n\n"
+            f"{briefing_text}\n{xtrend_section}\n{resurfacing_section}\n\n"
             f"(Path: {filepath})"
         )
 
