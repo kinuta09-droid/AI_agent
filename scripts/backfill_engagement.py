@@ -193,6 +193,10 @@ def collect_open_seed(vault_root: str, log_path: str = LOG_PATH) -> list:
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     entries = []
     for i, item in enumerate(files):
+        # snapshot_open_files と同じフィルタ (lib/engagement_log.py 参照):
+        # フォルダ/非ノートを個人化の学習信号に混ぜない。
+        if not str(item).lower().endswith(".md"):
+            continue
         entries.append(build_entry(
             "open", item, "obsidian",
             meta={"seed": True, "approx_ts": True, "mru_index": i,

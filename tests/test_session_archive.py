@@ -11,6 +11,9 @@
       frontmatter (type: session)・タイトル見出し・会話ログが本文に含まれる
   [4] title に禁止文字 (\\ / : * ? " < > |) を含むとき、生成されるファイル名から
       それらの文字が除去される
+  [6] MOC判定 (_determine_parent_moc) が名前を返したとき、up: フロントマターに
+      その名前が反映される (tool_create_note/tag_untagged_clipsと同じ流儀)
+  [7] MOC判定が None を返したとき、up: は "[[00_Inbox]]" にフォールバックする
 
 本番Vault (D:\\マイドライブ\\Obsidian) 配下の 40_Report/Sessions/ には一切触れない。
 tool_session_archive.SESSION_DIR を tempfile.mkdtemp() の一時ディレクトリへ差し替え、
@@ -173,12 +176,53 @@ def test_filename_sanitizes_forbidden_characters():
     print("--- [4] done ---")
 
 
+# ---------------------------------------------------------
+# [6][7] MOC分類 (項目5改善: tool_create_note/tag_untagged_clipsと同じup:フロントマター)
+# ---------------------------------------------------------
+
+def test_moc_determined_sets_up_frontmatter():
+    with _SessionDir() as sd:
+        with mock.patch.object(tsa.client.models, "generate_content") as m, \
+             mock.patch("tools.tool_bitnet.generate_note_tags", return_value=[]), \
+             mock.patch("tools.tool_obsidian._determine_parent_moc", return_value="MOC_AI") as moc_m:
+            m.return_value = _resp(
+                '{"should_save": true, "title": "テストセッション", "summary": "要約テキスト"}')
+            result = tsa.archive_chat_session(_history(2))
+        check("[6] Success接頭辞", result.startswith("Success:"), result)
+        check("[6] MOC判定が呼ばれる", moc_m.called, moc_m.call_args_list)
+        files = sd.files()
+        if files:
+            with open(files[0], encoding="utf-8") as f:
+                content = f.read()
+            check("[6] up:に判定されたMOCが反映される", 'up: "[[MOC_AI]]"' in content, content)
+    print("--- [6] done ---")
+
+
+def test_moc_not_determined_falls_back_to_inbox():
+    with _SessionDir() as sd:
+        with mock.patch.object(tsa.client.models, "generate_content") as m, \
+             mock.patch("tools.tool_bitnet.generate_note_tags", return_value=[]), \
+             mock.patch("tools.tool_obsidian._determine_parent_moc", return_value=None):
+            m.return_value = _resp(
+                '{"should_save": true, "title": "テストセッション2", "summary": "要約テキスト"}')
+            result = tsa.archive_chat_session(_history(2))
+        check("[7] Success接頭辞", result.startswith("Success:"), result)
+        files = sd.files()
+        if files:
+            with open(files[0], encoding="utf-8") as f:
+                content = f.read()
+            check("[7] up:は00_Inboxにフォールバックする", 'up: "[[00_Inbox]]"' in content, content)
+    print("--- [7] done ---")
+
+
 if __name__ == "__main__":
     test_below_threshold_skips_without_llm_call()
     test_should_save_false_skips_and_creates_no_file()
     test_save_success_writes_expected_content()
     test_llm_call_failure_returns_error_string()
     test_filename_sanitizes_forbidden_characters()
+    test_moc_determined_sets_up_frontmatter()
+    test_moc_not_determined_falls_back_to_inbox()
 
     print(f"\n{len(_PASS)} passed, {len(_FAIL)} failed")
     if _FAIL:

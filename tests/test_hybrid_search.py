@@ -129,8 +129,8 @@ def test_semantic_chunks_dedup():
 # (tests/test_idea_brainstorm.py と同じtry/finallyパターン)。
 # ---------------------------------------------------------
 
-def _rel_hit(filename, rel_path=None):
-    return {"filename": filename, "rel_path": rel_path or f"30_Main/{filename}"}
+def _rel_hit(filename, rel_path=None, source="vault"):
+    return {"filename": filename, "rel_path": rel_path or f"30_Main/{filename}", "source": source}
 
 
 def test_find_related_notes_excludes_self_case_insensitive():
@@ -187,6 +187,25 @@ def test_find_related_notes_top_k_limit():
         vh_mod._hybrid_hits = orig
     assert len(result) == 2, f"top_k=2を超えて返っている: {result}"
     print("✅ find_related_notes: top_k件に絞る")
+
+
+def test_find_related_notes_excludes_non_vault_source():
+    """行動ログ(_activity)由来のヒットはfind_file_in_vaultで解決できないため除外する
+    (実測: 孤児ノート一括処理でrollup-failure-00等が候補に頻出し、リンクできない
+    まま通知枠を消費していた)。"""
+    hits = [
+        _rel_hit("rollup-failure-00", source="activity"),
+        _rel_hit("real_note.md", source="vault"),
+    ]
+    orig = vh_mod._hybrid_hits
+    try:
+        vh_mod._hybrid_hits = lambda q, top_k: (hits, [], [q])
+        result = tool_find_related_notes("query", top_k=5)
+    finally:
+        vh_mod._hybrid_hits = orig
+    names = [r["filename"] for r in result]
+    assert names == ["real_note.md"], f"activity由来が除外されていない: {names}"
+    print("✅ find_related_notes: source!=vault (行動ログ等) は除外する")
 
 
 def test_find_related_notes_dedup_same_filename():

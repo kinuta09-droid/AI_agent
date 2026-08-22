@@ -63,6 +63,20 @@ def archive_chat_session(history: list) -> str:
         except Exception as e:
             print(f"[SessionArchive] タグ生成失敗: {e}")
 
+        # tool_create_note / tag_untagged_clips と同じMOC分類 (up: フロントマター)。
+        # 注意: これは Obsidian のパンくず/グラフビュー上のナビゲーション用であり、
+        # tools/tool_orphan_relink.py が判定する「被リンク0件」は解消しない
+        # (up: は本ノート→MOC方向の発リンクで、本ノートへの着信リンクにはならない。
+        # 実測: up:を持つ既存ノート90件中67件が依然として孤児だった)。孤児解消は
+        # 週次のOrphan Relinkジョブ (40_Report/Sessions/ も対象範囲) に委ねる。
+        parent_moc = None
+        try:
+            from tools.tool_obsidian import _determine_parent_moc
+            parent_moc = _determine_parent_moc(f"{summary}\n{convo_text}"[:3000])
+        except Exception as e:
+            print(f"[SessionArchive] MOC判定失敗: {e}")
+        up_link = f"[[{parent_moc}]]" if parent_moc else "[[00_Inbox]]"
+
         os.makedirs(SESSION_DIR, exist_ok=True)
         filename, save_path = _resolve_unique_path(SESSION_DIR, filename)
 
@@ -71,7 +85,8 @@ def archive_chat_session(history: list) -> str:
         body = f"""---
 type: session
 created: "{today_iso}"
-turns: {len(history) // 2}{tags_line}
+turns: {len(history) // 2}
+up: "{up_link}"{tags_line}
 ---
 
 # {title}

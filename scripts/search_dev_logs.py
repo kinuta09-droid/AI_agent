@@ -17,8 +17,7 @@ search_dev_logs.py — Dev_Logs から Vault 移行前後の記録を掘り起�
 読み取り専用。Vault へは一切書き込まない (--out はプロジェクト側にのみ出力)。
 
 日付の扱い:
-  Google ドライブは再ダウンロード時に mtime を現在時刻へ書き換える
-  (tools/tool_obsidian.py:_date_of_file と同じ既知の罠)。よって
+  Google ドライブは再ダウンロード時に mtime を現在時刻へ書き換える既知の罠がある。よって
   「ファイル名の日付 > mtime」の優先順で日付を決め、どちらを使ったかを必ず表示する。
 
 実行例:

@@ -423,7 +423,7 @@ def tool_promote_cluster(slot: int, pending_path: str = PENDING_PATH, seen_path:
                           create_note_fn=tool_create_note) -> str:
     """承認ボタンから呼ぶ。evergreenノート作成→元Fleetingノートにタグ付け→アーカイブ移動の順。
 
-    タグ付け→移動の順序厳守 (tool_merge_weekly_reports の「移動が真実の源」原則の裏返し:
+    タグ付け→移動の順序厳守 (「移動が真実の源」原則の裏返し:
     移動後に何かを書くのではなく、移動前に元ファイルへ書き切ってから動かす)。
 
     pending からの pop 確定を FileLock で保護する (grill指摘: 排他無しだと、

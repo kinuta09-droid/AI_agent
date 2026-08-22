@@ -115,7 +115,6 @@ EXPECTED_PARALLEL_SAFE = {
 # 「集合が一致すること」だけだと、期待値の側を一緒に書き換えた変更が素通りする。
 MUST_NOT_BE_PARALLEL_SAFE = {
     "tool_create_note", "tool_update_note", "tool_move_note", "tool_refactor_note",
-    "tool_merge_weekly_reports", "tool_merge_all_weekly_reports",
     "tool_sync_to_daily_note", "tool_fetch_daily_news",
     "tool_analyze_crypto", "tool_scan_crypto_market", "tool_audit_predictions",
     "tool_crypto_stats",     # 03_Crypto にレポートを保存する

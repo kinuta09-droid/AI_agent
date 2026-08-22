@@ -58,7 +58,7 @@ from tools.tool_web import tool_fetch_daily_news
 # 理由と再開条件は下の SCHEDULE 内のコメントを参照。
 from engine_plan_execute import generate_performance_dashboard, low_reliability_tool_lines
 from lib.agent_feedback import summarize_feedback
-from tools.tool_obsidian import tool_merge_all_weekly_reports, tag_untagged_clips
+from tools.tool_obsidian import tag_untagged_clips
 
 # Vault Semantic Index (optional — import失敗でスケジューラ全体を壊さない)
 try:
@@ -757,13 +757,12 @@ SCHEDULE = [
         "weekday": 6,  # 日曜
         "silent": True,
     },
-    {
-        "time": "23:30",
-        "name": "Weekly Archive (daily folders → 50_Archive)",
-        "func": tool_merge_all_weekly_reports,  # 30_Main + 02_News + 03_Crypto + 40_Report/XTrend
-        "weekday": 6,  # 日曜日のみ (0=月, 6=日)
-        "catch_up": True,  # 起動時に取りこぼしを追いかけ実行
-    },
+    # Weekly Archive (daily folders → 50_Archive) は2026-08-22廃止。
+    # Discord横断検索(hybrid search)が主な導線になった今、Weekly_Summaryが
+    # 「その週の全ノートを生本文のまま連結する」設計のため検索ハブに汚染源と
+    # 化していた(孤児ノート一括処理で候補が常にWeekly_Summaryへ収束する実害を確認)。
+    # フォルダ閲覧のための整理という当初の目的自体が薄れたため、移動/要約生成を
+    # やめる方針にした。関数本体は tools/tool_obsidian.py から削除済み。
 ]
 
 # ---------------------------------------------------------

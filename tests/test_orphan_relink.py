@@ -35,6 +35,30 @@
   [18] 統合: _compute_orphan_notes → run_weekly_orphan_relink_job → tool_approve_
        orphan_relink を実際に繋いだ経路で通しで実行し、pending生成→承認→seen
        記録までの一連の状態遷移が壊れていないことを確認する
+  [19] run_weekly_orphan_relink_job (項目4改善): 最上位候補が複数の検索方式で
+       一致(sources>=2)していれば承認/却下ボタンを介さずconfirm_fnを直接呼び、
+       ボタン無しの通知1件・seenへauto=True付きでlinked記録・pendingには入れない
+  [20] 同上: 一致方式が1本のみ(低確信度)なら従来通りpending+ボタン付き通知の
+       承認フローに落ちる (自動リンクの回帰: 閾値未満まで自動化されないこと)
+  [21] 同上: 自動リンクのconfirm_fnが失敗結果を返したらpending/seenどちらにも
+       書かず、来週また孤児として拾わせる (tool_approve_orphan_relinkの失敗時と
+       同じ「黙って次回に回す」判断)
+  [22] 同上: 高確信度と低確信度が同じ実行に混在しても、通知件数と自動リンク
+       件数がそれぞれ正しくカウントされる
+  [23] ストック一括処理 (slotsを既定より大きく指定): 複数件が同時に自動リンク
+       されても通知は1通のサマリーに集約される (1件ずつ送らない)
+  [24] ロックスコープ回帰ガード: find_related_fn実行中はpending_pathのロックを
+       保持していない (2026-08-22、ループ全体をロックしていたためバックログ
+       一括処理中にライブのDiscord承認/却下ボタンが応答不能になった実害の回帰)
+  [25] _append_backlink: 専用セクションが無いノートには新設して追記する
+       (実測: tool_confirm_related_notesの逆リンクはテンプレート由来の「### 関連
+       ノート」が無いノートには何もせず、承認29件後も孤児件数が変化しなかった)
+  [26] _append_backlink: 同じリンクは二重に追記しない (冪等)
+  [27] _append_backlink: 既存セクションがあればそこに追記し、ヘッダーは重複しない
+  [28] run_weekly_orphan_relink_job: 自動リンク成功時、最上位候補1件だけに
+       孤児への逆リンクを追記する (2位・3位の候補には追記しない)
+  [29] tool_approve_orphan_relink: 人間の承認でも同様に最上位候補へ逆リンクする
+  [30] 逆リンク追記が例外を出しても、承認/自動リンク自体の成功結果には影響しない
 
 本番logs/vault_index.db・logs/orphan_relink_pending.json・logs/orphan_relink_seen.json
 には一切触れない (tempfile配下のDB/JSONパスを関数の引数として渡すだけで完全に隔離できる
@@ -51,6 +75,7 @@ sys.stdout.reconfigure(encoding='utf-8')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools.tool_vault_index import _connect, SOURCE_VAULT  # noqa: E402
+from lib.bot_errors import is_failure_result  # noqa: E402
 import tools.tool_orphan_relink as orph  # noqa: E402
 
 _PASS, _FAIL = [], []
@@ -235,6 +260,10 @@ def _make_vault_notes(root, filenames):
 
 def _fake_candidate(name):
     return {"filename": name}
+
+
+def _fake_candidate_with_sources(name, sources):
+    return {"filename": name, "sources": list(sources)}
 
 
 # ---------------------------------------------------------
@@ -464,6 +493,322 @@ def test_end_to_end_detect_to_approve():
     print("--- [18] done ---")
 
 
+# ---------------------------------------------------------
+# [24] ロックスコープ回帰ガード
+# ---------------------------------------------------------
+
+def test_run_job_does_not_hold_lock_during_slow_processing():
+    """2026-08-22の実害の回帰テスト: run_weekly_orphan_relink_jobがループ全体を
+    pending_pathのロックで囲っていたため、バックログ一括処理中にライブのDiscord
+    承認/却下ボタン(同じロックを取る)がタイムアウトした。find_related_fn(遅い
+    呼び出しを模す)の最中に、同じpending_pathへの別ロック取得(ライブボタン相当)
+    が阻害されず成功することを確認する。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "index.db")
+        filenames = ["30_Main/a.md"]
+        _make_db(db, files=[(filenames[0], 1.0, SOURCE_VAULT)])
+        _make_vault_notes(tmp, filenames)
+        pending_path = os.path.join(tmp, "pending.json")
+        seen_path = os.path.join(tmp, "seen.json")
+
+        lock_acquired_during_search = []
+
+        def slow_find_related(q, exclude_filename="", top_k=8):
+            from lib.file_lock import FileLock as _FL
+            try:
+                with _FL(pending_path, timeout=1.0):
+                    lock_acquired_during_search.append(True)
+            except Exception as e:
+                lock_acquired_during_search.append(False)
+                print(f"  (ロック取得失敗: {e})")
+            return [_fake_candidate("related.md")]
+
+        orph.run_weekly_orphan_relink_job(
+            db_path=db, pending_path=pending_path, seen_path=seen_path, work_dir=tmp,
+            find_related_fn=slow_find_related,
+            notify_fn=lambda msg, components=None: None,
+        )
+        check("[24] 検索呼び出し中も同じpending_pathのロックが取得できる (ロック非保持)",
+              lock_acquired_during_search == [True], lock_acquired_during_search)
+    print("--- [24] done ---")
+
+
+# ---------------------------------------------------------
+# [19]-[22] 自動リンク (項目4改善: 確信度の高い候補は承認を介さず即リンク)
+# ---------------------------------------------------------
+
+def test_run_job_auto_links_high_confidence_candidate():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "index.db")
+        filenames = ["30_Main/a.md"]
+        _make_db(db, files=[(filenames[0], 1.0, SOURCE_VAULT)])
+        _make_vault_notes(tmp, filenames)
+
+        pending_path = os.path.join(tmp, "pending.json")
+        seen_path = os.path.join(tmp, "seen.json")
+        notified = []
+        confirm_calls = []
+
+        def fake_confirm(idea_filename, candidate_filenames):
+            confirm_calls.append((idea_filename, candidate_filenames))
+            return "Success: linked."
+
+        result = orph.run_weekly_orphan_relink_job(
+            db_path=db, pending_path=pending_path, seen_path=seen_path, work_dir=tmp,
+            find_related_fn=lambda q, exclude_filename="", top_k=8: [
+                _fake_candidate_with_sources("related.md", ["keyword", "semantic"])],
+            notify_fn=lambda msg, components=None: notified.append((msg, components)),
+            confirm_fn=fake_confirm,
+        )
+        check("[19] confirm_fnが呼ばれる (承認を介さず即リンク)",
+              confirm_calls == [("a.md", ["related.md"])], confirm_calls)
+        check("[19] pendingには入らない (承認待ちにしない)",
+              orph._load_pending(pending_path) == {}, orph._load_pending(pending_path))
+        seen_after = orph._load_seen(seen_path)
+        check("[19] seenにauto=Trueでlinkedが記録される",
+              seen_after.get("30_Main/a.md", {}) == {
+                  **seen_after.get("30_Main/a.md", {}), "decision": "linked", "auto": True},
+              seen_after)
+        check("[19] ボタン無しの通知が1件送られる (無言にしない)",
+              len(notified) == 1 and notified[0][1] is None, notified)
+        check("[19] 戻り値に自動リンク1件が明記される", "1件自動リンク" in result, result)
+        check("[19] 通知件数は0件のまま (承認待ち通知ではない)", "0件通知" in result, result)
+    print("--- [19] done ---")
+
+
+def test_run_job_low_confidence_still_uses_approval_flow():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "index.db")
+        filenames = ["30_Main/a.md"]
+        _make_db(db, files=[(filenames[0], 1.0, SOURCE_VAULT)])
+        _make_vault_notes(tmp, filenames)
+
+        pending_path = os.path.join(tmp, "pending.json")
+        seen_path = os.path.join(tmp, "seen.json")
+        notified = []
+        confirm_calls = []
+
+        result = orph.run_weekly_orphan_relink_job(
+            db_path=db, pending_path=pending_path, seen_path=seen_path, work_dir=tmp,
+            find_related_fn=lambda q, exclude_filename="", top_k=8: [
+                _fake_candidate_with_sources("related.md", ["keyword"])],  # 1本のみ一致
+            notify_fn=lambda msg, components=None: notified.append((msg, components)),
+            confirm_fn=lambda idea_filename, candidate_filenames: confirm_calls.append(1) or "Success",
+        )
+        check("[20] confirm_fnは呼ばれない (自動リンクしない)", confirm_calls == [], confirm_calls)
+        check("[20] ボタン付き通知が送られる", len(notified) == 1 and notified[0][1] is not None, notified)
+        pending_after = orph._load_pending(pending_path)
+        check("[20] pendingに審議中として保存される",
+              pending_after.get("0", {}).get("filepath") == "30_Main/a.md", pending_after)
+        check("[20] 戻り値は従来通り1件通知", "1件通知" in result and "0件自動リンク" in result, result)
+    print("--- [20] done ---")
+
+
+def test_run_job_auto_link_failure_not_recorded():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "index.db")
+        filenames = ["30_Main/a.md"]
+        _make_db(db, files=[(filenames[0], 1.0, SOURCE_VAULT)])
+        _make_vault_notes(tmp, filenames)
+
+        pending_path = os.path.join(tmp, "pending.json")
+        seen_path = os.path.join(tmp, "seen.json")
+
+        result = orph.run_weekly_orphan_relink_job(
+            db_path=db, pending_path=pending_path, seen_path=seen_path, work_dir=tmp,
+            find_related_fn=lambda q, exclude_filename="", top_k=8: [
+                _fake_candidate_with_sources("related.md", ["keyword", "semantic"])],
+            notify_fn=lambda msg, components=None: None,
+            confirm_fn=lambda idea_filename, candidate_filenames: "Error: リンク挿入に失敗しました",
+        )
+        check("[21] pendingにもseenにも書かれない (来週また拾える)",
+              orph._load_pending(pending_path) == {} and orph._load_seen(seen_path) == {},
+              (orph._load_pending(pending_path), orph._load_seen(seen_path)))
+        check("[21] 戻り値の自動リンク件数は0件", "0件自動リンク" in result, result)
+    print("--- [21] done ---")
+
+
+def test_run_job_batches_multiple_auto_links_into_one_summary():
+    """ストック一括処理を想定: 複数件が同時に高確信度でも通知は1通に集約する
+    (1件ずつ送るとバックログ一括処理時にDiscordが埋まるため)。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "index.db")
+        filenames = [f"30_Main/n{i}.md" for i in range(4)]
+        _make_db(db, files=[(fn, float(i), SOURCE_VAULT) for i, fn in enumerate(filenames)])
+        _make_vault_notes(tmp, filenames)
+
+        notified = []
+        result = orph.run_weekly_orphan_relink_job(
+            db_path=db, pending_path=os.path.join(tmp, "pending.json"),
+            seen_path=os.path.join(tmp, "seen.json"), work_dir=tmp,
+            slots=10,  # ストック一括処理: スロットを既定(5)より大きく取る
+            find_related_fn=lambda q, exclude_filename="", top_k=8: [
+                _fake_candidate_with_sources("related.md", ["keyword", "semantic"])],
+            notify_fn=lambda msg, components=None: notified.append((msg, components)),
+            confirm_fn=lambda idea_filename, candidate_filenames: "Success",
+        )
+        check("[23] 4件とも自動リンクされる", "4件自動リンク" in result, result)
+        check("[23] 通知は1通だけ (1件ずつ送らない)", len(notified) == 1, notified)
+        if notified:
+            check("[23] 1通に4件とも含まれる",
+                  all(f"n{i}" in notified[0][0] for i in range(4)), notified[0][0])
+            check("[23] ボタン無し", notified[0][1] is None, notified[0])
+    print("--- [23] done ---")
+
+
+def test_run_job_reports_auto_linked_count_in_mixed_batch():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "index.db")
+        filenames = ["30_Main/high.md", "30_Main/low.md"]
+        _make_db(db, files=[(fn, float(i), SOURCE_VAULT) for i, fn in enumerate(filenames)])
+        _make_vault_notes(tmp, filenames)
+
+        def find_related(q, exclude_filename="", top_k=8):
+            if exclude_filename == "high.md":
+                return [_fake_candidate_with_sources("related.md", ["keyword", "semantic", "activity"])]
+            return [_fake_candidate_with_sources("related.md", ["keyword"])]
+
+        result = orph.run_weekly_orphan_relink_job(
+            db_path=db, pending_path=os.path.join(tmp, "pending.json"),
+            seen_path=os.path.join(tmp, "seen.json"), work_dir=tmp,
+            find_related_fn=find_related,
+            notify_fn=lambda msg, components=None: None,
+            confirm_fn=lambda idea_filename, candidate_filenames: "Success",
+        )
+        check("[22] 高確信度1件・低確信度1件が両方カウントされる",
+              "1件通知, 1件自動リンク" in result, result)
+    print("--- [22] done ---")
+
+
+# ---------------------------------------------------------
+# [25]-[27] _append_backlink (逆リンク追記の純粋なファイル操作)
+# ---------------------------------------------------------
+
+def test_append_backlink_creates_section_when_missing():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "candidate.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("# Candidate\n\n本文。\n")
+        orph._append_backlink(path, "Orphan Title")
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
+        check("[25] セクション見出しが新設される", orph._BACKLINK_HEADER in content, content)
+        check("[25] リンクが追記される", "- [[Orphan Title]]" in content, content)
+        check("[25] 元の本文は残る", "本文。" in content, content)
+    print("--- [25] done ---")
+
+
+def test_append_backlink_is_idempotent():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "candidate.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("# Candidate\n\n本文。\n")
+        orph._append_backlink(path, "Orphan Title")
+        orph._append_backlink(path, "Orphan Title")  # 2回目
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
+        check("[26] 同じリンクは二重に追記されない",
+              content.count("- [[Orphan Title]]") == 1, content)
+    print("--- [26] done ---")
+
+
+def test_append_backlink_appends_to_existing_section():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "candidate.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# Candidate\n\n本文。\n\n{orph._BACKLINK_HEADER}\n- [[Existing]]\n")
+        orph._append_backlink(path, "New Orphan")
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
+        check("[27] ヘッダーは重複しない", content.count(orph._BACKLINK_HEADER) == 1, content)
+        check("[27] 既存リンクは残る", "- [[Existing]]" in content, content)
+        check("[27] 新しいリンクが追記される", "- [[New Orphan]]" in content, content)
+    print("--- [27] done ---")
+
+
+# ---------------------------------------------------------
+# [28]-[30] 最上位候補への逆リンク配線 (案A: 候補最上位1件のみに限定)
+# ---------------------------------------------------------
+
+def test_run_job_backlinks_only_top_candidate_on_auto_link():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "index.db")
+        filenames = ["30_Main/a.md"]
+        _make_db(db, files=[(filenames[0], 1.0, SOURCE_VAULT)])
+        _make_vault_notes(tmp, filenames)
+
+        backlink_calls = []
+        orig_resolve = orph.find_file_in_vault
+        try:
+            orph.find_file_in_vault = lambda name: os.path.join(tmp, "resolved_" + name)
+            orph.run_weekly_orphan_relink_job(
+                db_path=db, pending_path=os.path.join(tmp, "pending.json"),
+                seen_path=os.path.join(tmp, "seen.json"), work_dir=tmp,
+                find_related_fn=lambda q, exclude_filename="", top_k=8: [
+                    _fake_candidate_with_sources("top.md", ["keyword", "semantic"]),
+                    _fake_candidate_with_sources("second.md", ["keyword", "semantic"]),
+                ],
+                notify_fn=lambda msg, components=None: None,
+                confirm_fn=lambda idea_filename, candidate_filenames: "Success",
+                backlink_fn=lambda path, title: backlink_calls.append((path, title)),
+            )
+        finally:
+            orph.find_file_in_vault = orig_resolve
+        check("[28] 逆リンクは1回だけ呼ばれる (最上位候補のみ)", len(backlink_calls) == 1, backlink_calls)
+        if backlink_calls:
+            check("[28] 最上位候補(top.md)へ逆リンクする",
+                  backlink_calls[0][0] == os.path.join(tmp, "resolved_top.md"), backlink_calls)
+            check("[28] 孤児タイトルが渡される", backlink_calls[0][1] == "a", backlink_calls)
+    print("--- [28] done ---")
+
+
+def test_approve_backlinks_top_candidate():
+    with tempfile.TemporaryDirectory() as tmp:
+        pending_path = os.path.join(tmp, "pending.json")
+        seen_path = os.path.join(tmp, "seen.json")
+        _save_pending_entry(pending_path, 0, "30_Main/orphan.md",
+                             candidates=("top.md", "second.md"))
+
+        backlink_calls = []
+        orig_resolve = orph.find_file_in_vault
+        try:
+            orph.find_file_in_vault = lambda name: os.path.join(tmp, "resolved_" + name)
+            orph.tool_approve_orphan_relink(
+                0, pending_path=pending_path, seen_path=seen_path,
+                confirm_fn=lambda idea_filename, candidate_filenames: "Success: linked.",
+                backlink_fn=lambda path, title: backlink_calls.append((path, title)),
+            )
+        finally:
+            orph.find_file_in_vault = orig_resolve
+        check("[29] 承認でも最上位候補にだけ逆リンクする",
+              backlink_calls == [(os.path.join(tmp, "resolved_top.md"), "orphan")], backlink_calls)
+    print("--- [29] done ---")
+
+
+def test_approve_succeeds_even_if_backlink_raises():
+    with tempfile.TemporaryDirectory() as tmp:
+        pending_path = os.path.join(tmp, "pending.json")
+        seen_path = os.path.join(tmp, "seen.json")
+        _save_pending_entry(pending_path, 0, "30_Main/orphan.md", candidates=("top.md",))
+
+        orig_resolve = orph.find_file_in_vault
+        try:
+            orph.find_file_in_vault = lambda name: os.path.join(tmp, "resolved_" + name)
+            result = orph.tool_approve_orphan_relink(
+                0, pending_path=pending_path, seen_path=seen_path,
+                confirm_fn=lambda idea_filename, candidate_filenames: "Success: linked.",
+                backlink_fn=lambda path, title: (_ for _ in ()).throw(OSError("書き込み失敗")),
+            )
+        finally:
+            orph.find_file_in_vault = orig_resolve
+        check("[30] 逆リンクが例外でも承認結果は成功のまま",
+              not is_failure_result(result), result)
+        seen_after = orph._load_seen(seen_path)
+        check("[30] seenにもlinkedが記録される",
+              seen_after.get("30_Main/orphan.md", {}).get("decision") == "linked", seen_after)
+    print("--- [30] done ---")
+
+
 if __name__ == "__main__":
     test_compute_orphan_notes_finds_unlinked()
     test_compute_orphan_notes_excludes_linked()
@@ -483,6 +828,18 @@ if __name__ == "__main__":
     test_reject_leaves_files_untouched()
     test_unknown_slot_returns_error()
     test_end_to_end_detect_to_approve()
+    test_run_job_does_not_hold_lock_during_slow_processing()
+    test_run_job_auto_links_high_confidence_candidate()
+    test_run_job_low_confidence_still_uses_approval_flow()
+    test_run_job_auto_link_failure_not_recorded()
+    test_run_job_batches_multiple_auto_links_into_one_summary()
+    test_run_job_reports_auto_linked_count_in_mixed_batch()
+    test_append_backlink_creates_section_when_missing()
+    test_append_backlink_is_idempotent()
+    test_append_backlink_appends_to_existing_section()
+    test_run_job_backlinks_only_top_candidate_on_auto_link()
+    test_approve_backlinks_top_candidate()
+    test_approve_succeeds_even_if_backlink_raises()
 
     print(f"\n{len(_PASS)} passed, {len(_FAIL)} failed")
     if _FAIL:

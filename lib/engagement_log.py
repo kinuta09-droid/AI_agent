@@ -270,20 +270,26 @@ def snapshot_open_files(vault_root: str = None, log_path: str = LOG_PATH,
     previous = _load_open_state(state_path)
     opened = [] if seed_only else diff_open_files(current, previous)
 
+    # lastOpenFiles にはフォルダ (拡張子なし) や desktop.ini 等の非ノートも混ざる。
+    # 個人化 (lib/preference_weights.py) の「よく開いたノート」がこれを拾うと、
+    # 実際のノートより高頻度で上位に出てランキングを汚染する
+    # (実測: 03_Crypto フォルダが9件で最多、実ノートは3〜4件だった)。
+    loggable = [p for p in opened if p.lower().endswith(".md")]
+
     entries = [
         build_entry("open", p, "obsidian", meta={"ext": os.path.splitext(p)[1]})
-        for p in opened
+        for p in loggable
     ]
     if not _append_lines(entries, log_path):
         # 追記に失敗した状態で状態ファイルを進めると、この差分は永久に
         # 再検出されず取りこぼす。状態は据え置き、次回に再試行させる。
-        return f"Engagement Snapshot: 追記に失敗 ({len(opened)}件) — 状態を更新せず次回再試行"
+        return f"Engagement Snapshot: 追記に失敗 ({len(loggable)}件) — 状態を更新せず次回再試行"
 
     _save_open_state(state_path, current)
 
     if seed_only:
         return f"Engagement Snapshot: state seeded ({len(current)} files)"
-    return f"Engagement Snapshot: {len(opened)} new opens ({len(current)} tracked)"
+    return f"Engagement Snapshot: {len(loggable)} new opens ({len(current)} tracked)"
 
 
 # ---------------------------------------------------------

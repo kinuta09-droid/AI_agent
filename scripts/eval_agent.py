@@ -66,7 +66,6 @@ TIER_B_CALLS_PER_QUESTION = 5
 #   したがって実行時のツールマップ側で塞ぐしかない。
 WRITE_TOOLS = frozenset({
     "tool_create_note", "tool_update_note", "tool_refactor_note", "tool_move_note",
-    "tool_merge_weekly_reports", "tool_merge_all_weekly_reports",
     "tool_fetch_daily_news", "tool_generate_briefing", "tool_gmail_check",
     "tool_analyze_crypto", "tool_scan_crypto_market",
     "tool_future_search", "tool_xtrend", "tool_xtrend_prompt",

@@ -1256,6 +1256,19 @@ def tool_find_related_notes(query: str, exclude_filename: str = "", top_k: int =
     ユーザーが個別に外せるようになったため、取りこぼしより候補を広めに出す方向へ倒した）。
     # ponytail: スコア閾値なしの簡易版。ノイズが実害になったら scripts/eval_retrieval.py と
     # 同じ方法論で閾値を計測して足す
+
+    "sources" (ヒットした検索方式の集合、keyword/semantic/activity) を結果に含める。
+    RRF融合後の rrf 値は 1/(k+rank) 形式で k=60 だと上位が 0.015〜0.016 に密集し
+    絶対値では確信度の閾値に使えない (実測済み) が、複数方式が同じノートに独立に
+    一致したかどうかは意味のある信号になる (tools/tool_orphan_relink.py の
+    自動リンク判定が利用する)。
+
+    source != "vault" (行動ログ等) のヒットは除外する。呼び出し元はこの結果を
+    最終的に [[wikilink]] として挿入する (tool_confirm_related_notes) 前提だが、
+    行動ログの実体は Vault 上の実ファイルではなく find_file_in_vault で解決できない
+    ("Related note not found, skipped" になるだけ)。解決不能な候補をそのまま
+    提示すると、通知の候補枠を無駄に消費し (孤児ノート一括処理で実際に頻発を確認)、
+    ユーザーには「リンクできない候補」が紛れて見える。
     """
     if not query or not str(query).strip():
         return []
@@ -1263,18 +1276,25 @@ def tool_find_related_notes(query: str, exclude_filename: str = "", top_k: int =
     if exclude_norm and not exclude_norm.endswith('.md'):
         exclude_norm += '.md'
 
-    hits, _notes, _queries = _hybrid_hits(query, max(1, int(top_k)) + 1)
+    # 除外分の余地を持たせるため top_k より多めに取得する。
+    hits, _notes, _queries = _hybrid_hits(query, max(1, int(top_k)) * 2 + 1)
 
     seen = set()
     results = []
     for h in hits:
+        if h.get("source") != "vault":
+            continue
         filename = h.get("filename", "")
         if filename.strip().lower() == exclude_norm:
             continue
         if filename in seen:
             continue
         seen.add(filename)
-        results.append({"filename": filename, "rel_path": h.get("rel_path", "")})
+        results.append({
+            "filename": filename,
+            "rel_path": h.get("rel_path", ""),
+            "sources": h.get("sources", []),
+        })
         if len(results) >= top_k:
             break
     return results

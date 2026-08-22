@@ -17,8 +17,13 @@
   [13] DBファイル未構築でも例外を出さず "" を返す
   [14] source != 'vault' の行は候補から除外される
   [15] DB破損時、stale側は例外を吸収して "" 扱い・one_year_ago側の結果は道連れにされず生き残る
+  [16] MOC (被リンク最大でも) は除外され、次点の通常ノートが選ばれる
+  [17] cooldown中の候補は飛ばされ、次点の被リンク数のノートが選ばれる
+  [18] cooldown_days 経過後は同じノートが再び選ばれる
+  [19] 実際に出したノートは記録され、直後の再呼び出しでは出なくなる
 
-本番Vault・logs/vault_index.db には一切触れない (tempfile の DB/Vault path のみ使う)。
+本番Vault・logs/vault_index.db には一切触れない (tempfile の DB/Vault path、seen.jsonも
+tmp配下のみ使う)。
 """
 import os
 import sys
@@ -100,7 +105,7 @@ def test_find_stale_popular_note_basic():
             ("Old.md", STALE_CUTOFF - 100, SOURCE_VAULT),
         ], links=[("X.md", "Old", "Old.md"), ("Y.md", "Old", "Old.md")])
 
-        result = rs._find_stale_popular_note(db_path=db, now=NOW)
+        result = rs._find_stale_popular_note(db_path=db, now=NOW, seen={})
         assert result is not None
         assert result["filepath"] == "Old.md", result
         assert result["backlinks"] == 2, result
@@ -118,7 +123,7 @@ def test_find_stale_popular_note_below_min_backlinks():
             ("Old.md", STALE_CUTOFF - 100, SOURCE_VAULT),
         ], links=[("X.md", "Old", "Old.md")])  # 被リンク1件のみ
 
-        result = rs._find_stale_popular_note(db_path=db, now=NOW)
+        result = rs._find_stale_popular_note(db_path=db, now=NOW, seen={})
         assert result is None, result
     print("✅ [5] 被リンク1件 (MIN_BACKLINKS未満) は選ばれない")
 
@@ -134,7 +139,7 @@ def test_find_stale_popular_note_boundary_mtime_equals_cutoff():
             ("Old.md", STALE_CUTOFF, SOURCE_VAULT),  # ちょうど cutoff
         ], links=[("X.md", "Old", "Old.md"), ("Y.md", "Old", "Old.md")])
 
-        result = rs._find_stale_popular_note(db_path=db, now=NOW)
+        result = rs._find_stale_popular_note(db_path=db, now=NOW, seen={})
         assert result is None, (
             f"mtime==cutoff ちょうどは対象外のはず: {result}")
     print("✅ [6] 境界値: mtime == cutoff ちょうどは対象外")
@@ -155,7 +160,7 @@ def test_find_stale_popular_note_survives_null_dst_path():
             ("Z.md", "未作成ノート", None),  # 未解決リンク (dst_path=NULL)
         ])
 
-        result = rs._find_stale_popular_note(db_path=db, now=NOW)
+        result = rs._find_stale_popular_note(db_path=db, now=NOW, seen={})
         assert result is not None and result["backlinks"] == 2, (
             f"NULL dst_path混入で被リンク数が誤集計されている: {result}")
     print("✅ [7] NULL dst_path が混ざっていても被リンク数が正しく集計される")
@@ -178,7 +183,7 @@ def test_find_stale_popular_note_picks_max_backlinks():
             ("Z.md", "High", "High.md"),
         ])
 
-        result = rs._find_stale_popular_note(db_path=db, now=NOW)
+        result = rs._find_stale_popular_note(db_path=db, now=NOW, seen={})
         assert result["filepath"] == "High.md", result
         assert result["backlinks"] == 3, result
     print("✅ [8] 複数stale候補から被リンク数最大のものが選ばれる")
@@ -201,7 +206,7 @@ def test_find_stale_popular_note_tie_break_by_older_mtime():
             ("Y.md", "Older", "Older.md"),
         ])
 
-        result = rs._find_stale_popular_note(db_path=db, now=NOW)
+        result = rs._find_stale_popular_note(db_path=db, now=NOW, seen={})
         assert result["filepath"] == "Older.md", result
     print("✅ [9] 被リンク数同率時、より古い(mtime小)ものが選ばれる")
 
@@ -216,7 +221,8 @@ def test_build_resurfacing_section_both_missing():
         _connect(db).close()
         today = datetime.date(2026, 8, 22)
 
-        section = rs._build_resurfacing_section(today=today, vault_root=tmp, db_path=db, now=NOW)
+        section = rs._build_resurfacing_section(today=today, vault_root=tmp, db_path=db, now=NOW,
+                                          seen_path=os.path.join(tmp, "seen.json"))
         assert section == "", section
     print("✅ [10] 両方該当なしは空文字")
 
@@ -230,7 +236,8 @@ def test_build_resurfacing_section_both_present():
             ("Old.md", STALE_CUTOFF - 100, SOURCE_VAULT),
         ], links=[("X.md", "Old", "Old.md"), ("Y.md", "Old", "Old.md")])
 
-        section = rs._build_resurfacing_section(today=today, vault_root=tmp, db_path=db, now=NOW)
+        section = rs._build_resurfacing_section(today=today, vault_root=tmp, db_path=db, now=NOW,
+                                          seen_path=os.path.join(tmp, "seen.json"))
         assert section.count("## 🔁 再浮上ノート") == 1, section
         assert "2025-08-22" in section, section
         assert "Old" in section and "被リンク2件" in section, section
@@ -244,7 +251,8 @@ def test_build_resurfacing_section_only_one_year_ago():
         _make_daily_note(tmp, today - datetime.timedelta(days=365))
         _connect(db).close()  # stale候補なし
 
-        section = rs._build_resurfacing_section(today=today, vault_root=tmp, db_path=db, now=NOW)
+        section = rs._build_resurfacing_section(today=today, vault_root=tmp, db_path=db, now=NOW,
+                                          seen_path=os.path.join(tmp, "seen.json"))
         assert "2025-08-22" in section, section
         assert "被リンク" not in section, section
     print("✅ [12] 片方のみ該当ならその1行のみ")
@@ -259,7 +267,8 @@ def test_build_resurfacing_section_missing_db_file():
         db = os.path.join(tmp, "does_not_exist", "index.db")
         today = datetime.date(2026, 8, 22)
 
-        section = rs._build_resurfacing_section(today=today, vault_root=tmp, db_path=db, now=NOW)
+        section = rs._build_resurfacing_section(today=today, vault_root=tmp, db_path=db, now=NOW,
+                                          seen_path=os.path.join(tmp, "seen.json"))
         assert section == "", section
     print("✅ [13] DBファイル未構築でも例外を出さず空文字を返す")
 
@@ -275,9 +284,100 @@ def test_find_stale_popular_note_excludes_other_sources():
             ("Crypto.md", STALE_CUTOFF - 100, "crypto"),
         ], links=[("X.md", "Crypto", "Crypto.md"), ("Y.md", "Crypto", "Crypto.md")])
 
-        result = rs._find_stale_popular_note(db_path=db, now=NOW)
+        result = rs._find_stale_popular_note(db_path=db, now=NOW, seen={})
         assert result is None, result
     print("✅ [14] source != 'vault' の行は候補から除外される")
+
+
+# ---------------------------------------------------------
+# [16] MOC除外
+# ---------------------------------------------------------
+
+def test_find_stale_popular_note_excludes_moc():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "index.db")
+        _make_db(db, files=[
+            ("MOC_AI.md", STALE_CUTOFF - 100, SOURCE_VAULT),   # 被リンク最大だがMOC
+            ("Old.md", STALE_CUTOFF - 100, SOURCE_VAULT),
+        ], links=[
+            ("X.md", "MOC_AI", "MOC_AI.md"),
+            ("Y.md", "MOC_AI", "MOC_AI.md"),
+            ("Z.md", "MOC_AI", "MOC_AI.md"),
+            ("X.md", "Old", "Old.md"),
+            ("Y.md", "Old", "Old.md"),
+        ])
+
+        result = rs._find_stale_popular_note(db_path=db, now=NOW, seen={})
+        assert result["filepath"] == "Old.md", (
+            f"MOCはハブノートが正常にstaleなだけで対象外のはず: {result}")
+    print("✅ [16] MOC (被リンク最大でも) は除外され、次点の通常ノートが選ばれる")
+
+
+# ---------------------------------------------------------
+# [17][18] cooldown: 直近提示済みは次点に譲り、期間経過後は復活する
+# ---------------------------------------------------------
+
+def test_find_stale_popular_note_cooldown_skips_recently_shown():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "index.db")
+        _make_db(db, files=[
+            ("High.md", STALE_CUTOFF - 100, SOURCE_VAULT),
+            ("Low.md", STALE_CUTOFF - 100, SOURCE_VAULT),
+        ], links=[
+            ("X.md", "High", "High.md"),
+            ("Y.md", "High", "High.md"),
+            ("Z.md", "High", "High.md"),
+            ("X.md", "Low", "Low.md"),
+            ("Y.md", "Low", "Low.md"),
+        ])
+        recently = datetime.datetime.fromtimestamp(NOW) - datetime.timedelta(days=5)
+        seen = {"High.md": {"shown_at": recently.isoformat()}}
+
+        result = rs._find_stale_popular_note(db_path=db, now=NOW, seen=seen)
+        assert result["filepath"] == "Low.md", (
+            f"cooldown中のHigh.mdを飛ばして次点が選ばれるはず: {result}")
+    print("✅ [17] cooldown中の候補は飛ばされ、次点の被リンク数のノートが選ばれる")
+
+
+def test_find_stale_popular_note_cooldown_expires():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "index.db")
+        _make_db(db, files=[
+            ("High.md", STALE_CUTOFF - 100, SOURCE_VAULT),
+        ], links=[("X.md", "High", "High.md"), ("Y.md", "High", "High.md")])
+        long_ago = (datetime.datetime.fromtimestamp(NOW)
+                    - datetime.timedelta(days=rs.STALE_COOLDOWN_DAYS + 1))
+        seen = {"High.md": {"shown_at": long_ago.isoformat()}}
+
+        result = rs._find_stale_popular_note(db_path=db, now=NOW, seen=seen)
+        assert result is not None and result["filepath"] == "High.md", (
+            f"cooldown経過後は再び選ばれるはず: {result}")
+    print("✅ [18] cooldown_days 経過後は同じノートが再び選ばれる")
+
+
+# ---------------------------------------------------------
+# [19] _build_resurfacing_section が実際に出した回だけ記録する
+# ---------------------------------------------------------
+
+def test_build_resurfacing_section_records_shown_note():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "index.db")
+        today = datetime.date(2026, 8, 22)
+        _make_db(db, files=[
+            ("Old.md", STALE_CUTOFF - 100, SOURCE_VAULT),
+        ], links=[("X.md", "Old", "Old.md"), ("Y.md", "Old", "Old.md")])
+        seen_path = os.path.join(tmp, "seen.json")
+
+        section1 = rs._build_resurfacing_section(
+            today=today, vault_root=tmp, db_path=db, now=NOW, seen_path=seen_path)
+        assert "Old" in section1, section1
+
+        # 直後にもう一度呼んでも (cooldown内なので) 同じノートは出ない
+        section2 = rs._build_resurfacing_section(
+            today=today, vault_root=tmp, db_path=db, now=NOW, seen_path=seen_path)
+        assert "被リンク" not in section2, (
+            f"直後の再呼び出しではcooldownで同じノートが出ないはず: {section2!r}")
+    print("✅ [19] 実際に出したノートは記録され、直後の再呼び出しでは出なくなる")
 
 
 # ---------------------------------------------------------
@@ -292,7 +392,8 @@ def test_build_resurfacing_section_survives_broken_db_keeps_one_year_ago():
         today = datetime.date(2026, 8, 22)
         _make_daily_note(tmp, today - datetime.timedelta(days=365))
 
-        section = rs._build_resurfacing_section(today=today, vault_root=tmp, db_path=db, now=NOW)
+        section = rs._build_resurfacing_section(today=today, vault_root=tmp, db_path=db, now=NOW,
+                                          seen_path=os.path.join(tmp, "seen.json"))
         # tool_vault_index._connect() は executescript 失敗時に conn を close せず例外を
         # 伝播させる (例外オブジェクトのトレースバックがフレームを保持しconnが残る)。
         # Windowsではこの未close分がTemporaryDirectory削除時にWinError 32を誘発するため
