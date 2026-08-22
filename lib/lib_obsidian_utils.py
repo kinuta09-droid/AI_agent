@@ -77,6 +77,28 @@ def build_contradiction_names_and_links(relpath: str, related_note: str) -> tupl
     return own_name, own_link, related_name, related_link
 
 
+# ---------------------------------------------------------
+# ノート本文からの検索クエリ抽出
+# ---------------------------------------------------------
+# commands/bot_commands_idea.py の /idea-relink 専用実装だったが、
+# tools/tool_orphan_relink.py (スケジューラから直接呼ばれる) からも使うため、
+# tools層がcommands層に依存しなくて済むようここに集約する。
+
+# > [!SUMMARY] callout の次行にある要約本文を拾う（Tpl_Permanent.md の固定フォーマット）。
+_SUMMARY_CALLOUT_RE = re.compile(r'^> \[!SUMMARY\].*\n((?:^>.*\n?)*)', re.MULTILINE)
+
+
+def extract_note_query(content: str, max_chars: int = 200) -> str:
+    """ノート本文から検索クエリを取り出す。
+
+    SUMMARY calloutがあればその中身、無ければ本文先頭 max_chars 文字。
+    """
+    m = _SUMMARY_CALLOUT_RE.search(content or "")
+    if m:
+        return " ".join(line.lstrip('>').strip() for line in m.group(1).splitlines()).strip()
+    return (content or "")[:max_chars]
+
+
 # Vault のノート以外 (エージェントの行動ログ) を指す source 名。
 # 検索インデックスが Vault と同居するようになったので (Phase B)、
 # 出典を組み立てる側がここで分岐する必要がある。

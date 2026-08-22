@@ -116,6 +116,14 @@ except ImportError as _e:
     def check_vault_health():
         return f"Vault Health: tool_vault_health not available ({_vault_health_err})"
 
+# Orphan Relink (optional — Vault Semantic Index と同じ扱い)
+try:
+    from tools.tool_orphan_relink import run_weekly_orphan_relink_job
+except ImportError as _e:
+    _orphan_relink_err = str(_e)
+    def run_weekly_orphan_relink_job(*args, **kwargs):
+        return f"Orphan Relink: tool_orphan_relink not available ({_orphan_relink_err})"
+
 # ボタンの custom_id は bot プロセス側の永続 View (commands/bot_views.py) と
 # 一致させる必要があるため定数を直接 import する (discord.Client は起動しない)
 from commands.bot_views import DIVE_CUSTOM_IDS, SCHEDULER_LOG_CUSTOM_ID
@@ -717,6 +725,17 @@ SCHEDULE = [
         "time": "03:45",
         "name": "Note Promotion (fleeting→evergreen クラスタ提案)",
         "func": run_note_promotion_job,
+        "silent": True,
+    },
+    # Orphan Relink: Note Promotionの直後、同じ夜間帯の末尾。週1回の性質なので
+    # weekday指定。catch_upは付けない — Note Promotionが週次でもcatch_upを
+    # 付けていない前例に倣う。孤児ノートは1週遅れても実害が小さく、catch_up追加は
+    # 「起動時に前回分と今回分が両方走りpendingが二重生成される」リスクを増やすだけ。
+    {
+        "time": "03:50",
+        "name": "Orphan Relink (被リンク0件ノートの関連付け提案)",
+        "func": run_weekly_orphan_relink_job,
+        "weekday": 6,  # 日曜
         "silent": True,
     },
     {

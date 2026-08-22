@@ -150,6 +150,7 @@ PARALLEL_TESTS = frozenset({
     "test_news_risk.py",
     "test_note_promotion.py",
     "test_notebooklm.py",
+    "test_orphan_relink.py",
     "test_paper_digest.py",
     "test_paper_radar.py",
     "test_paper_radar_live.py",

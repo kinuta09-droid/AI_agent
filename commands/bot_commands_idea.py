@@ -22,11 +22,10 @@ from tools.tool_obsidian import (
 )
 from tools.tool_vault_hybrid import tool_find_related_notes
 from lib.bot_errors import log_command_error, is_failure_result
+from lib.lib_obsidian_utils import extract_note_query
 from commands.bot_views import AllowedUserView
 from scripts.generate_idea_dialogue import generate_next_question, summarize_idea_session
 
-# > [!SUMMARY] callout の次行にある要約本文を拾う（Tpl_Permanent.md の固定フォーマット）。
-_SUMMARY_CALLOUT_RE = re.compile(r'^> \[!SUMMARY\].*\n((?:^>.*\n?)*)', re.MULTILINE)
 # tool_create_note の成功文字列 "Success: Created [[filename]] with template." からfilenameを拾う。
 _CREATED_FILENAME_RE = re.compile(r'\[\[(.+?)\]\]')
 
@@ -410,11 +409,7 @@ async def cmd_idea_relink(interaction: discord.Interaction, title: str):
         await interaction.followup.send(f"❌ {note_content}", ephemeral=True)
         return
 
-    m = _SUMMARY_CALLOUT_RE.search(note_content)
-    if m:
-        query = " ".join(line.lstrip('>').strip() for line in m.group(1).splitlines()).strip()
-    else:
-        query = note_content[:200]
+    query = extract_note_query(note_content)
 
     await interaction.followup.send(f"🔍 [[{title}]] の関連ノートを検索します...", ephemeral=True)
     await _notify_related_notes(interaction.channel, title, query)

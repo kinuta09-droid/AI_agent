@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """tests/test_lib_obsidian_utils.py — lib/lib_obsidian_utils.py の単体テスト
 
-対象: read_frontmatter_field (plans/obsidian-agent-native-notes.md)
+対象: read_frontmatter_field (plans/obsidian-agent-native-notes.md)、
+      extract_note_query (commands/bot_commands_idea.py から移設、
+      tools/tool_orphan_relink.py と共用)
 
 検証する不変条件:
   [1] 正常系: frontmatter内の `key: value` を読める
@@ -10,6 +12,9 @@
   [4] ファイル未存在: None を返す (例外を投げない)
   [5] head_bytes で打ち切った先にキーがある場合は拾えない (仕様どおり)
   [6] 値の前後空白・複数行値は最初の空白区切りトークンのみ拾う
+  [7] extract_note_query: SUMMARY calloutがあればその中身 (複数行を結合) を返す
+  [8] extract_note_query: calloutが無ければ本文先頭 max_chars 文字にフォールバックする
+  [9] extract_note_query: 空文字/None は例外を投げず空文字を返す
 
 本番ファイルには一切触れない (tempfile のみ使う)。
 """
@@ -20,7 +25,7 @@ import tempfile
 sys.stdout.reconfigure(encoding='utf-8')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from lib.lib_obsidian_utils import read_frontmatter_field  # noqa: E402
+from lib.lib_obsidian_utils import read_frontmatter_field, extract_note_query  # noqa: E402
 
 
 def _write(tmp, name, content):
@@ -100,6 +105,29 @@ def test_read_frontmatter_field_scalar_only():
         path = _write(tmp, "A.md", "---\ntopic: 新規事業 検討中\n---\n\nBody\n")
         assert read_frontmatter_field(path, "topic") == "新規事業"
     print("✅ [6] ブロック値/複数語の値は最初のトークンのみ (単一行スカラー専用の仕様どおり)")
+
+
+# ---------------------------------------------------------
+# [7]-[9] extract_note_query
+# ---------------------------------------------------------
+
+def test_extract_note_query_summary_callout():
+    content = "本文冒頭\n\n> [!SUMMARY]\n> 1行目の要約\n> 2行目の要約\n\n### 関連ノート\n"
+    assert extract_note_query(content) == "1行目の要約 2行目の要約"
+    print("✅ [7] SUMMARY calloutの複数行を結合して返す")
+
+
+def test_extract_note_query_fallback_to_head():
+    content = "x" * 300
+    assert extract_note_query(content) == "x" * 200
+    assert extract_note_query(content, max_chars=10) == "x" * 10
+    print("✅ [8] calloutが無ければ本文先頭 max_chars 文字にフォールバック")
+
+
+def test_extract_note_query_empty_input():
+    assert extract_note_query("") == ""
+    assert extract_note_query(None) == ""
+    print("✅ [9] 空文字/None は例外を投げず空文字を返す")
 
 
 if __name__ == "__main__":
