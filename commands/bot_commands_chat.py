@@ -13,7 +13,7 @@ import wave
 import discord
 
 from engine_plan_execute import run_plan_and_execute
-from lib.bot_errors import log_command_error
+from lib.bot_errors import log_command_error, is_failure_result
 from lib.lib_shared import client as gemini_client, MODEL_NAME
 from lib.discord_response import (
     send_long_message as _send_long_message,
@@ -28,6 +28,7 @@ from tools.tool_curator import (
     get_curation_suggestions,
     fetch_external_trends,
 )
+from tools.tool_session_archive import archive_chat_session
 
 try:
     import discord.ext.voice_recv as voice_recv
@@ -373,6 +374,7 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
         if user_id in _chat_sessions:
             session = _chat_sessions[user_id]
             turns = len(session["history"]) // 2
+            history = session["history"]
             # ボイス切断
             voice_ses = session.get("voice_session")
             if voice_ses:
@@ -385,6 +387,19 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
             await interaction.response.send_message(
                 f"👋 チャットセッションを終了しました（{turns}ターン{voice_tag}）"
             )
+            if history:
+                try:
+                    archive_result = await asyncio.to_thread(archive_chat_session, history)
+                except Exception as e:
+                    log_command_error("/chat off (archive)", e)
+                    archive_result = None
+                if archive_result is None:
+                    pass  # 例外は log_command_error 済み、二重通知しない
+                elif is_failure_result(archive_result):
+                    print(f"[Chat] Session archive failed: {archive_result}")
+                elif archive_result.startswith("Success"):
+                    await interaction.followup.send(f"📝 {archive_result}")
+                # else: "Skipped: ..." は通知不要 (毎回出すとノイズになるため)
         else:
             await interaction.response.send_message("⚠️ アクティブなセッションがありません")
         return
