@@ -371,6 +371,32 @@ _FRONTMATTER_RE = re.compile(r'\A---\n(.*?)\n---\n', re.DOTALL)
 _CLIP_SOURCE_RE = re.compile(r'^source:\s*\S', re.MULTILINE)
 
 
+def _set_frontmatter_field(path: str, field: str, value: str) -> None:
+    """frontmatterの{field}: 行を{value}に置換する。無ければ末尾に追加する (冪等)。
+
+    _add_tag_to_note と同じ正規表現ベースの流儀 (YAMLフルパースはしない)。
+    frontmatterブロックが無いノートは対象外 (tag_untagged_clips と同じ扱い)。
+    """
+    with open(path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    m = _FRONTMATTER_RE.match(content)
+    if not m:
+        return
+
+    frontmatter = m.group(1)
+    field_re = re.compile(rf'^{re.escape(field)}:.*$', re.MULTILINE)
+    line = f'{field}: {value}'
+    if field_re.search(frontmatter):
+        new_frontmatter = field_re.sub(line, frontmatter, count=1)
+    else:
+        new_frontmatter = frontmatter + f'\n{line}'
+
+    content = content[:m.start(1)] + new_frontmatter + content[m.end(1):]
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+
 def tag_untagged_clips(limit: int = 20) -> str:
     """00_inbox内の未処理Clipノート(Obsidian Web Clipper由来、frontmatterにsource:を持つ)へ
     BitNetでトピックタグ、GeminiでMOC候補タグ(moc/<name>)を付与する。

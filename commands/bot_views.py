@@ -22,6 +22,7 @@ from lib.bot_errors import log_command_error, is_failure_result
 from tools.tool_note_promotion import (
     NOTE_PROMO_SLOTS, tool_promote_cluster, tool_reject_cluster,
 )
+from tools.tool_contradiction_resolve import CONTRADICTION_SLOTS, tool_resolve_contradiction
 
 # ---------------------------------------------------------
 # 認可付き基底 View
@@ -387,6 +388,68 @@ class NotePromotionView(AllowedUserView):
                 result = log_command_error(f"ノート昇格{action_label} (slot={slot})", e)
             finally:
                 _promo_running.discard(slot)
+
+            icon = "❌" if is_failure_result(result) else "✅"
+            if interaction.channel is not None:
+                await interaction.channel.send(f"{icon} {result}")
+
+        return callback
+
+
+# ---------------------------------------------------------
+# 矛盾の能動解決 (裁定ボタン)
+# ---------------------------------------------------------
+
+_contra_running: set[int] = set()
+
+_CONTRA_VERDICT_STYLE = {
+    "a": discord.ButtonStyle.primary,
+    "b": discord.ButtonStyle.primary,
+    "both": discord.ButtonStyle.secondary,
+}
+_CONTRA_VERDICT_LABEL = {
+    "a": "🅰️ Aを採る",
+    "b": "🅱️ Bを採る",
+    "both": "🤝 両論併記",
+}
+
+
+class ContradictionResolutionView(AllowedUserView):
+    """矛盾裁定の3択ボタン (Vault Insight Watcherが検知直後にREST送信、実処理は
+    ここが担う)。アーキテクチャは NotePromotionView と同一 (上記参照):
+    スケジューラ/watcherはボタンを「表示」するだけで、実際のクリック処理は
+    bot プロセス側のこの永続 View が行う。ボタンの見た目 (ラベル/スタイル) は
+    表示時に REST 送信された components が実際に使われる (ここでの定義は
+    永続 View 登録の型として必要なだけで、表示には影響しない)。
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        for slot in range(CONTRADICTION_SLOTS):
+            for verdict in ("a", "b", "both"):
+                button = discord.ui.Button(
+                    label=_CONTRA_VERDICT_LABEL[verdict],
+                    style=_CONTRA_VERDICT_STYLE[verdict],
+                    custom_id=f"contra_resolve:{slot}:{verdict}",
+                )
+                button.callback = self._make_callback(slot, verdict)
+                self.add_item(button)
+
+    def _make_callback(self, slot: int, verdict: str):
+        async def callback(interaction: discord.Interaction):
+            if slot in _contra_running:
+                await interaction.response.send_message(
+                    "⏳ この矛盾は処理中です。", ephemeral=True
+                )
+                return
+            _contra_running.add(slot)
+            await interaction.response.defer()
+            try:
+                result = await asyncio.to_thread(tool_resolve_contradiction, slot, verdict)
+            except Exception as e:
+                result = log_command_error(f"矛盾裁定 (slot={slot}, verdict={verdict})", e)
+            finally:
+                _contra_running.discard(slot)
 
             icon = "❌" if is_failure_result(result) else "✅"
             if interaction.channel is not None:

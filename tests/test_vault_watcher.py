@@ -431,6 +431,60 @@ def test_check_vault_insights_survives_contradiction_writer_exception():
     print("✅ [8f] contradiction_writer_fn が例外を投げても check_vault_insights 全体は失敗しない")
 
 
+def test_contradiction_queue_fires_alongside_writer_for_contradicts_relation():
+    """contradiction_queue_fn は contradiction_writer_fn と同様、relation=='contradicts' の
+    ときだけ、同じ (relpath, title, result) で呼ばれる (_timestamp 付き)。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        scan_dir = _reset_watcher(tmp)
+        watcher._save_seen_mtimes({})
+        _write(os.path.join(scan_dir, "contradicts.md"), "body")
+
+        writer_calls = []
+        queue_calls = []
+        watcher.check_vault_insights(
+            notify=False,
+            search_fn=lambda query, top_k=5: "(hits)",
+            llm_fn=lambda prompt: _notable_result(relation="contradicts"),
+            notify_fn=lambda msg: None,
+            contradiction_writer_fn=lambda relpath, title, result: writer_calls.append(
+                (relpath, title, result)),
+            contradiction_queue_fn=lambda relpath, title, result: queue_calls.append(
+                (relpath, title, result)))
+
+        assert len(writer_calls) == 1 and len(queue_calls) == 1, (writer_calls, queue_calls)
+        w_relpath, w_title, w_result = writer_calls[0]
+        q_relpath, q_title, q_result = queue_calls[0]
+        assert (w_relpath, w_title) == (q_relpath, q_title) == ("contradicts.md", "contradicts")
+        assert "_timestamp" in q_result and q_result["_timestamp"] == w_result["_timestamp"]
+    print("✅ [8h] contradiction_queue_fn は contradiction_writer_fn と同じ引数(_timestamp込み)で呼ばれる")
+
+
+def test_check_vault_insights_survives_contradiction_queue_exception():
+    """contradiction_queue_fn が例外を投げても check_vault_insights 全体は失敗せず、
+    contradiction_writer_fn 側 (Markdown記録) は独立して実行される (片方の失敗が
+    他方・ループ全体を止めない、既存の握りつぶし規約通り)。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        scan_dir = _reset_watcher(tmp)
+        watcher._save_seen_mtimes({})
+        _write(os.path.join(scan_dir, "note.md"), "body")
+
+        def _raise(*_a, **_kw):
+            raise RuntimeError("discord unreachable")
+
+        writer_calls = []
+        result = watcher.check_vault_insights(
+            notify=False,
+            search_fn=lambda query, top_k=5: "(hits)",
+            llm_fn=lambda prompt: _notable_result(),
+            notify_fn=lambda msg: None,
+            contradiction_writer_fn=lambda relpath, title, result: writer_calls.append(result),
+            contradiction_queue_fn=_raise)
+        assert "1件処理" in result, result
+        assert not result.startswith("Error:"), result
+        assert len(writer_calls) == 1, writer_calls
+    print("✅ [8i] contradiction_queue_fn が例外を投げても check_vault_insights 全体・writer側は失敗しない")
+
+
 def test_wikilink_split_heading_roundtrip_for_related_note_with_anchor():
     """related_note に #見出し が混ざっても壊れたリンクにならない (format/split の対応関係)。"""
     from lib.lib_obsidian_utils import format_wikilink, split_heading_anchor

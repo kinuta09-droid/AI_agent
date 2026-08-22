@@ -56,6 +56,27 @@ def split_heading_anchor(link_text: str) -> tuple[str, str]:
     return file_part.strip(), heading.strip()
 
 
+def build_contradiction_names_and_links(relpath: str, related_note: str) -> tuple[str, str, str, str]:
+    """矛盾記録の own/related 双方について (name, wikilink) を組み立てる。
+
+    Vault Insight Watcher (検知→Markdown記録) と矛盾裁定キュー (Discord裁定→
+    実ファイル解決) が同じ組み立てロジックを共有するための切り出し
+    (format_wikilink/split_heading_anchor の対使用と同じ理由: 片方だけ変えると
+    ログの wikilink と裁定時のファイル解決が食い違う)。
+
+    戻り値: (own_name, own_link, related_name, related_link)。
+    own_name/related_name は見出しアンカーを除いた拡張子なしファイル名
+    (find_file_in_vault にそのまま渡せる形)。related_note が空なら
+    related_name="" / related_link="(不明)"。
+    """
+    own_name, own_heading = split_heading_anchor(os.path.splitext(relpath)[0])
+    related_raw, related_heading = split_heading_anchor(str(related_note or ""))
+    related_name = os.path.splitext(related_raw)[0] if related_raw else ""
+    own_link = format_wikilink(own_name, own_heading)
+    related_link = format_wikilink(related_name, related_heading) if related_name else "(不明)"
+    return own_name, own_link, related_name, related_link
+
+
 # Vault のノート以外 (エージェントの行動ログ) を指す source 名。
 # 検索インデックスが Vault と同居するようになったので (Phase B)、
 # 出典を組み立てる側がここで分岐する必要がある。

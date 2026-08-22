@@ -21,7 +21,7 @@ import datetime
 
 from lib.paths import VAULT_ROOT, LOGS_DIR
 from lib.file_lock import FileLock
-from lib.lib_obsidian_utils import format_wikilink, split_heading_anchor
+from lib.lib_obsidian_utils import build_contradiction_names_and_links
 
 SCAN_DIR = os.path.join(VAULT_ROOT, "30_Main")
 SEEN_MTIMES_CACHE = os.path.join(LOGS_DIR, "vault_insight_seen_mtimes.json")
@@ -144,7 +144,7 @@ _NOTICE_PROMPT = """あなたはノートの関連性を判定する係です。
 
 出力は説明なしのJSONのみ:
 {{"notable": false}} または
-{{"notable": true, "related_note": "関連先のファイル名", "relation": "complements|contradicts|extends", "insight": "1-2文で具体的に"}}"""
+{{"notable": true, "related_note": "<search_hits>に出てきたファイル名をそのまま(拡張子なし、[[ ]]や#見出しは付けない)", "relation": "complements|contradicts|extends", "insight": "1-2文で具体的に"}}"""
 
 
 def _build_notice_prompt(title: str, own_snippet: str, search_result_text: str) -> str:
@@ -208,15 +208,16 @@ def _default_write_contradiction(relpath: str, title: str, result: dict) -> None
     残らないと、Known Bug Patterns A の「無言の死」と同型 (検知はしているのに
     後から誰も見返せない) になるため、検索可能な形で Vault に残す。
 
-    format_wikilink (出す側) / split_heading_anchor (解決する側) を対で使う
-    (CLAUDE.md §E: 片方だけ変えると Obsidian の「開く」ボタンが無言で壊れる)。
+    build_contradiction_names_and_links (出す側) / find_file_in_vault (解決する側) を
+    対で使う (CLAUDE.md §E: 片方だけ変えると Obsidian の「開く」ボタンが無言で壊れる)。
+
+    result["_timestamp"] があればそれを使う (check_vault_insights が
+    contradiction_queue_fn にも同じタイムスタンプを渡すため、両者の記録を
+    後から突き合わせられる)。無ければこれまで通り自前で生成する。
     """
-    own_name, own_heading = split_heading_anchor(os.path.splitext(relpath)[0])
-    related_raw, related_heading = split_heading_anchor(str(result.get("related_note", "")))
-    related_name = os.path.splitext(related_raw)[0] if related_raw else ""
-    own_link = format_wikilink(own_name, own_heading)
-    related_link = format_wikilink(related_name, related_heading) if related_name else "(不明)"
-    timestamp = datetime.datetime.now().isoformat(timespec="seconds")
+    _, own_link, _, related_link = build_contradiction_names_and_links(
+        relpath, result.get("related_note", ""))
+    timestamp = result.get("_timestamp") or datetime.datetime.now().isoformat(timespec="seconds")
     insight = result.get("insight", "")
 
     os.makedirs(os.path.dirname(CONTRADICTIONS_NOTE), exist_ok=True)
@@ -280,20 +281,30 @@ def _sanitize_result(result) -> dict:
 # エントリポイント
 # ---------------------------------------------------------
 
+def _default_queue_contradiction(relpath: str, title: str, result: dict) -> None:
+    # tool_contradiction_resolve は CONTRADICTIONS_NOTE 参照のためこのモジュールに
+    # 依存する (逆方向はこの関数内 import のみ) ため、ここをモジュール冒頭の
+    # トップレベル import にすると循環importになる。_default_notify と同じ
+    # 「関数内 import」の流儀で回避する。
+    from tools.tool_contradiction_resolve import queue_contradiction
+    queue_contradiction(relpath, title, result)
+
+
 def check_vault_insights(max_files: int = MAX_FILES_PER_RUN,
                           notify: bool = True,
                           search_fn=None, llm_fn=None, notify_fn=None,
-                          contradiction_writer_fn=None) -> str:
+                          contradiction_writer_fn=None, contradiction_queue_fn=None) -> str:
     """スケジューラ/Planner/スラッシュコマンド共通のエントリポイント。
 
     ツール層規約通り例外を投げず "Error: ..." を返す。
-    search_fn/llm_fn/notify_fn/contradiction_writer_fn はテスト用の差し替えフック
-    （既定は実実装）。
+    search_fn/llm_fn/notify_fn/contradiction_writer_fn/contradiction_queue_fn は
+    テスト用の差し替えフック（既定は実実装）。
     """
     search_fn = search_fn or _default_search
     llm_fn = llm_fn or _call_gemini_notice
     notify_fn = notify_fn or _default_notify
     contradiction_writer_fn = contradiction_writer_fn or _default_write_contradiction
+    contradiction_queue_fn = contradiction_queue_fn or _default_queue_contradiction
 
     try:
         # SEEN_MTIMES_CACHE は 03:20 の定時ジョブと手動 /vault_watch の
@@ -345,10 +356,21 @@ def check_vault_insights(max_files: int = MAX_FILES_PER_RUN,
                     print(f"[VaultWatcher] ⚠️ ログ書き込みに失敗、続行します: {relpath} ({e})")
 
                 if bool(result.get("notable")) and result.get("relation") == "contradicts":
+                    # Markdownログ (writer) と裁定キュー (queue) の両方に同じ
+                    # timestamp を持たせる — 裁定時に Vault_Contradictions.md の
+                    # 該当行を timestamp+wikilink で一意に特定するため
+                    # (queue側だけ別timestampを生成すると突き合わせが壊れる)。
+                    result_with_ts = dict(result)
+                    result_with_ts.setdefault(
+                        "_timestamp", datetime.datetime.now().isoformat(timespec="seconds"))
                     try:
-                        contradiction_writer_fn(relpath, title, result)
+                        contradiction_writer_fn(relpath, title, result_with_ts)
                     except Exception as e:
                         print(f"[VaultWatcher] ⚠️ 矛盾記録の書き込みに失敗、続行します: {relpath} ({e})")
+                    try:
+                        contradiction_queue_fn(relpath, title, result_with_ts)
+                    except Exception as e:
+                        print(f"[VaultWatcher] ⚠️ 矛盾裁定キューの登録に失敗、続行します: {relpath} ({e})")
 
                 # 1件処理するたびに永続化する。ループ完了後に1回だけ保存する
                 # 設計だと、後続のファイルで例外が起きたとき既にGemini課金・
