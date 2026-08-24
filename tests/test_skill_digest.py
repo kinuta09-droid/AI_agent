@@ -53,22 +53,29 @@ def test_skill_adapter_maps_repo_to_paper_shape():
     assert adapter["abs_url"] == "https://github.com/owner/name"
     assert adapter["subject_label"] == "Skill"
     assert adapter["source_label"] == "リポジトリ"
-    assert adapter["fallback_fields"] == [("説明", "description"), ("導入価値", "why_fit")]
+    assert adapter["fallback_fields"] == [("説明", "description")]
     print("✅ [1a] _skill_adapter: paper形のキーへ写像")
 
 
-def test_build_skill_digest_prefers_comment_ja_then_description_then_name():
+def test_build_skill_digest_ignores_comment_ja_uses_description_then_name():
+    """comment_ja (ARMS適合度判定の内部コメント) は外部公開下書きに混入させない
+    ため one_liner には絶対に使わない — ARMSコマンドスキルにおける情報汚染
+    (2026-08-23) の回帰テスト。"""
     import tools.tool_skill_digest as sdigest
 
-    with_comment = _repo("a/x", description="desc", comment_ja="コメント")
-    assert sdigest._build_skill_digest(with_comment)["one_liner"] == "コメント"
+    with_comment = _repo("a/x", description="desc", comment_ja="ARMSのプラン実行に合う")
+    digest = sdigest._build_skill_digest(with_comment)
+    assert digest["one_liner"] == "desc"
+    assert "comment_ja" not in digest
+    assert "why_fit" not in digest
+    assert "ARMS" not in str(digest)
 
     no_comment = _repo("a/y", description="desc", comment_ja="")
     assert sdigest._build_skill_digest(no_comment)["one_liner"] == "desc"
 
     bare = _repo("a/z", description="", comment_ja="")
     assert sdigest._build_skill_digest(bare)["one_liner"] == "a/z"
-    print("✅ [1b] _build_skill_digest: one_liner は comment_ja→description→full_name の順")
+    print("✅ [1b] _build_skill_digest: one_liner は description→full_name の順、comment_jaは無視")
 
 
 def test_build_skill_digest_uses_topics_as_keywords():
@@ -86,9 +93,7 @@ def test_build_skill_digest_falls_back_when_ai_fit_missing():
     repo = {"full_name": "a/x", "html_url": "https://github.com/a/x", "description": "desc",
             "stars": 1, "topics": []}  # --no-comment 週を模した、ai_fit/comment_ja キー自体が無いdict
     digest = sdigest._build_skill_digest(repo)
-    assert digest["fit"] == "unknown"
     assert digest["one_liner"] == "desc"
-    assert "コメントなし" in digest["why_fit"]
     print("✅ [1d] _build_skill_digest: ai_fit/comment_ja欠如でも例外にならない")
 
 

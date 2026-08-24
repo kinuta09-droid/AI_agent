@@ -5,9 +5,11 @@ Skill Digest — Skill Radar が見つけた候補1件を SNS/note 下書きに�
 Flow:
   1. tool_skill_radar が残した候補 (logs/skill_radar_latest.json) から1件選ぶ
      (候補が無ければその場で Skill Radar を回す / --repo で full_name 直接指定も可)
-  2. description/topics/comment_ja/ai_fit から直接 digest dict を組み立てる
-     (**新しい Gemini 要約ステージは追加しない** — Skill Radar が
-     evaluate_fit_ja() で既に付与済みの適合度コメントをそのまま使う設計)
+  2. description/topics から直接 digest dict を組み立てる (**新しい Gemini 要約
+     ステージは追加しない**)。comment_ja/ai_fit (Skill Radar の evaluate_fit_ja()
+     が付与する「ARMSへの適合度」判定) は ARMS の内部技術情報を含みうるため
+     使わない — 外部公開向け下書きに ARMS の内部情報が混入した情報汚染
+     インシデント (2026-08-23) の再発防止
   3. tool_paper_digest.build_sns_post / build_note_article を再利用して
      X(Twitter) ティザー投稿下書き / note.com・X Articles 記事下書きを生成
   4. Obsidian に下書きを保存
@@ -76,27 +78,28 @@ def _skill_adapter(repo: dict) -> dict:
         "abs_url": repo.get("html_url", ""),
         "subject_label": "Skill",
         "source_label": "リポジトリ",
-        "fallback_fields": [("説明", "description"), ("導入価値", "why_fit")],
+        "fallback_fields": [("説明", "description")],
     }
 
 
 def _build_skill_digest(repo: dict) -> dict:
-    """description/topics/comment_ja/ai_fit から直接 digest dict を組み立てる。
+    """description/topics から直接 digest dict を組み立てる。
 
-    comment_ja (Gemini適合度判定のコメント) が最有力の材料だが、--no-comment で
-    回した週や evaluate_fit_ja() 失敗時は欠けるため、description → full_name の
-    順にフォールバックし、例外にはしない。
+    comment_ja/ai_fit は evaluate_fit_ja() が「ARMSに導入する価値があるか」を
+    判定した内部コメントであり、_ARMS_ARCHITECTURE_SUMMARY (ARMSの内部技術構成)
+    を踏まえて書かれるためARMS固有の内部情報を含みうる。これを外部公開向け
+    SNS/note下書きの材料 (digest, Geminiへ<facts>として渡る) に使うと、
+    ARMSの内部情報がそのまま下書きに転記される (2026-08-23 実際に発生、
+    boshu2/agentops 下書きに「ARMS（Agent-based Resource Management System）
+    におけるプラン実行の安定化」が混入した情報汚染インシデント)。
+    そのため digest は description/topics という GitHub 上の公開情報のみで
+    組み立て、comment_ja/ai_fit は一切含めない。
     """
     description = (repo.get("description") or "").strip()
-    comment = (repo.get("comment_ja") or "").strip()
-    one_liner = comment or description or repo.get("full_name", "")
-    why_fit = comment or "(AI適合度コメントなし。説明文とtopicsから判断してください)"
+    one_liner = description or repo.get("full_name", "")
     return {
         "one_liner": one_liner,
         "description": description,
-        "why_fit": why_fit,
-        "fit": repo.get("ai_fit") or "unknown",
-        "stars": repo.get("stars", 0),
         "keywords": list(repo.get("topics") or [])[:5],
     }
 
