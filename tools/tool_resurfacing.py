@@ -29,10 +29,16 @@ MIN_BACKLINKS = 2
 # であり、「昔重要だったが放置された」ノートとは意味が違う。除外しないと
 # 被リンク最大は常にMOCが独占し、他のノートが一生浮上しない。
 _MOC_PREFIX = "moc_"
+# 自動生成される読み取り専用ログ/レポートもMOCと同じ理由で除外する: 「被リンクが多い
+# まま更新されない」のが構造上の正常状態であり、再浮上させても無意味。
+# 実測 (logs/resurfacing_seen.json): 2026-08-23にBriefing、2026-08-24にCryptoが
+# 再浮上枠を占有していた -> [[90日非表示機能におけるBriefing除外の検]]
+# MOC判定と同じくlowerで正規化した集合にする (Vault側のフォルダ名/ファイル名の
+# 大小文字揺れで無言の検出漏れになるのを防ぐ)。
+_EXCLUDED_DIR_SEGMENTS = {"briefing", "03_crypto", "40_report_xtrend", "02_news"}
+_EXCLUDED_BASENAMES = {"00_home"}
 SEEN_PATH = os.path.join(LOGS_DIR, "resurfacing_seen.json")
 STALE_COOLDOWN_DAYS = 30
-# cooldown中の候補を読み飛ばして次点を拾うための候補プール数。
-CANDIDATE_POOL = 20
 
 
 def _find_one_year_ago_note(today: datetime.date = None, vault_root: str = VAULT_ROOT) -> str | None:
@@ -75,9 +81,11 @@ def _find_stale_popular_note(db_path: str = DB_PATH, now: float = None,
     falseになりJOINされない) だが、tool_vault_health.py の既知の落とし穴
     (NOT INでの三値論理事故) を踏まえ意図を明文化するために残す。
 
-    MOC (被リンクが多いまま更新されないのが正常なハブノート) と、直近
-    cooldown_days 日以内に既出の候補は除外し、候補プールの中から次点を拾う
-    (実測: フィルタ無しだと被リンク最大のMOCが毎朝固定で出続けていた)。
+    MOC・自動生成レポート系 (被リンクが多いまま更新されないのが正常なハブノート/ログ)
+    と、直近 cooldown_days 日以内に既出の候補は除外し次点を拾う。除外はSQLの
+    LIMITではなく全件取得後にPython側で行う — 実測でstale候補89件中57件がMOC/
+    Briefing/Crypto/News/XTrendで占められており、LIMIT付きだと除外対象だけで
+    上位が埋まり有効な候補がプールから漏れて "該当なし" になっていた。
     """
     now_ts = now if now is not None else time.time()
     cutoff = now_ts - stale_days * 86400
@@ -97,10 +105,8 @@ def _find_stale_popular_note(db_path: str = DB_PATH, now: float = None,
             GROUP BY f.filepath
             HAVING COUNT(l.src_path) >= :min_backlinks
             ORDER BY backlinks DESC, f.mtime ASC
-            LIMIT :pool
             """,
-            {"source": SOURCE_VAULT, "cutoff": cutoff, "min_backlinks": min_backlinks,
-             "pool": CANDIDATE_POOL},
+            {"source": SOURCE_VAULT, "cutoff": cutoff, "min_backlinks": min_backlinks},
         ).fetchall()
     finally:
         conn.close()
@@ -108,6 +114,11 @@ def _find_stale_popular_note(db_path: str = DB_PATH, now: float = None,
     for filepath, backlinks, mtime in rows:
         basename = os.path.splitext(os.path.basename(filepath))[0]
         if basename.lower().startswith(_MOC_PREFIX):
+            continue
+        if basename.lower() in _EXCLUDED_BASENAMES:
+            continue
+        segments = {seg.lower() for seg in filepath.replace("\\", "/").split("/")}
+        if segments & _EXCLUDED_DIR_SEGMENTS:
             continue
         shown_at = seen.get(filepath, {}).get("shown_at", "")
         try:

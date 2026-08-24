@@ -21,6 +21,8 @@
   [17] cooldown中の候補は飛ばされ、次点の被リンク数のノートが選ばれる
   [18] cooldown_days 経過後は同じノートが再び選ばれる
   [19] 実際に出したノートは記録され、直後の再呼び出しでは出なくなる
+  [20] Briefing/Crypto/XTrend/News配下・00_home.md は被リンク最大でも除外され、
+       通常ノートが選ばれる
 
 本番Vault・logs/vault_index.db には一切触れない (tempfile の DB/Vault path、seen.jsonも
 tmp配下のみ使う)。
@@ -311,6 +313,38 @@ def test_find_stale_popular_note_excludes_moc():
         assert result["filepath"] == "Old.md", (
             f"MOCはハブノートが正常にstaleなだけで対象外のはず: {result}")
     print("✅ [16] MOC (被リンク最大でも) は除外され、次点の通常ノートが選ばれる")
+
+
+# ---------------------------------------------------------
+# [20] 自動生成レポート系 (Briefing/Crypto/XTrend/News) + 00_home.md の除外
+# ---------------------------------------------------------
+
+def test_find_stale_popular_note_excludes_auto_generated_reports():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "index.db")
+        excluded = [
+            "30_Main/Briefing/Briefing_2026-03-14.md",
+            "50_Archive/2026-W07/03_Crypto/Crypto_BTC_USDT_2026-02-16.md",
+            "50_Archive/2026-W10/40_Report_XTrend/2026-03-14_xtrend.md",
+            # 大小文字が揺れても検出できることの確認 (MOC判定と同じlower正規化)
+            "50_Archive/2026-W09/02_NEWS/News_2026-03-04.md",
+            "00_Home.md",
+        ]
+        files = [(p, STALE_CUTOFF - 100, SOURCE_VAULT) for p in excluded]
+        files.append(("Old.md", STALE_CUTOFF - 100, SOURCE_VAULT))
+        links = []
+        # 除外対象ほど被リンクを多く積み、除外ロジックが無ければ確実にこれらが選ばれる状態にする
+        for i, p in enumerate(excluded):
+            for j in range(6 - i):
+                links.append((f"src{i}_{j}.md", "x", p))
+        links.append(("X.md", "Old", "Old.md"))
+        links.append(("Y.md", "Old", "Old.md"))
+        _make_db(db, files=files, links=links)
+
+        result = rs._find_stale_popular_note(db_path=db, now=NOW, seen={})
+        assert result["filepath"] == "Old.md", (
+            f"Briefing/Crypto/XTrend/News/00_homeは除外され通常ノートが選ばれるはず: {result}")
+    print("✅ [20] Briefing/Crypto/XTrend/News配下・00_home.mdは被リンク最大でも除外される")
 
 
 # ---------------------------------------------------------
