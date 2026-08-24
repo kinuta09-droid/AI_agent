@@ -38,6 +38,21 @@ _WIKILINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
 
 _sessions = {}  # channel_id -> {"goal": str, "summary": str, "files": list, "ts": float}
 
+# generate_plan 側のプロンプト文言 (186-187行付近「※ 要求が『それ』『さっき』
+# 『続き』『同じ』など直前の作業を参照している場合のみ、この文脈を使って解釈する
+# こと。無関係な要求の場合は完全に無視する。」) と同じ語彙。あちらはGeminiへの
+# 自然文指示のみでコード側の強制力が無く、直前タスクの結果 (内部情報を含みうる、
+# 最大1000字) が無関係な要求にも無条件で注入されてしまう
+# (2026-08-23 ARMSコマンドスキルにおける情報汚染インシデントと同型のリスク、
+# 予防的に2026-08-24 追加)。session_context の注入可否そのものをここで
+# コード側から強制する。
+_SESSION_REF_RE = re.compile(r"それ|さっき|続き|同じ")
+
+
+def _goal_references_previous_session(goal: str) -> bool:
+    """goal が直前の作業を参照している場合のみ True。"""
+    return bool(_SESSION_REF_RE.search(goal))
+
 # run_plan_and_execute が返す失敗文字列の接頭辞。
 # 汎用分 ("Error:" / "Error (") は lib.bot_errors に集約し、ここには
 # Plan-Execute エンジン固有の文言だけを足す (判定が二重管理になると必ず割れる)。
@@ -220,7 +235,10 @@ async def cmd_agent(interaction: discord.Interaction, goal: str):
         except Exception as e:
             print(f"[AgentUI] Warning: Failed to update status: {e}")
 
-    session_context = _get_session_context(interaction.channel_id)
+    session_context = (
+        _get_session_context(interaction.channel_id)
+        if _goal_references_previous_session(goal) else ""
+    )
 
     try:
         loop = asyncio.get_running_loop()

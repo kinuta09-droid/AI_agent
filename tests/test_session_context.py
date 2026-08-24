@@ -99,6 +99,47 @@ def test_run_plan_and_execute_default_empty():
 
 
 # ---------------------------------------------------------
+# _goal_references_previous_session (session_context 注入のコード側ゲート)
+# ---------------------------------------------------------
+
+def test_goal_references_previous_session_matches_reference_words():
+    ref = agent_cmd._goal_references_previous_session
+    assert ref("さっきの続きをやって")
+    assert ref("それを保存して")
+    assert ref("同じテーマでもう1本書いて")
+    print("✅ _goal_references_previous_session: 参照語ありは True")
+
+
+def test_goal_references_previous_session_rejects_unrelated_goal():
+    ref = agent_cmd._goal_references_previous_session
+    assert not ref("AIニュースを調べて")
+    assert not ref("最近のクリプト市況をSNS用にまとめて投稿文を作って")
+    print("✅ _goal_references_previous_session: 無関係な要求は False")
+
+
+def test_cmd_agent_session_context_gated_by_goal_reference():
+    """cmd_agent が実際に呼ぶ形 (goal判定 -> _get_session_context) の統合確認。
+
+    無関係な goal では、セッションに直前タスクが残っていても session_context が
+    空文字になり Planner へ渡らないこと (2026-08-24 情報汚染インシデントと同型の
+    リスクへの予防策)。"""
+    agent_cmd._sessions.clear()
+    agent_cmd._update_session(777, "ARMSの実行エンジンの設計を調べて", "内部アーキテクチャの詳細...")
+
+    def _resolve_session_context(channel_id, goal):
+        return (
+            agent_cmd._get_session_context(channel_id)
+            if agent_cmd._goal_references_previous_session(goal) else ""
+        )
+
+    assert _resolve_session_context(777, "最近の出来事をSNS用にまとめて投稿文を作って") == "", \
+        "無関係な要求には直前タスクの内部情報を渡してはいけない"
+    assert _resolve_session_context(777, "さっきの内容を保存して") != "", \
+        "参照語がある要求には従来通り注入されること"
+    print("✅ cmd_agent相当: 無関係なgoalではsession_contextが空になる")
+
+
+# ---------------------------------------------------------
 # セッションストア (_update_session / _get_session_context)
 # ---------------------------------------------------------
 
@@ -174,6 +215,9 @@ def test_session_store_no_files():
 
 if __name__ == "__main__":
     tests = [
+        test_goal_references_previous_session_matches_reference_words,
+        test_goal_references_previous_session_rejects_unrelated_goal,
+        test_cmd_agent_session_context_gated_by_goal_reference,
         test_generate_plan_injects_session_block,
         test_generate_plan_no_session_block_when_empty,
         test_run_plan_and_execute_passes_session_context,

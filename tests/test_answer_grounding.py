@@ -468,6 +468,43 @@ def test_resolve_tool_args_prompt_forbids_fabricating_append_text():
     check("捏造という言葉で明示的に禁じている", "捏造であり" in src)
 
 
+def test_rich_content_prompt_forbids_internal_info_leak():
+    """[14] _generate_rich_content が無関係/内部限定の情報混入を禁じていること (2026-08-24)
+
+    実測: tool_skill_digest.py が Skill Radar の内部評価コメント (「ARMSにとって〜」)
+    を外部公開SNS下書きの材料にそのまま使い回し、boshu2/agentops のSNS/note下書きに
+    ARMSの内部情報が混入した (別ツールでの実際のインシデント、
+    詳細は .claude/skills/llm-output-safety/SKILL.md 参照)。engine_plan_execute.py の
+    Plan中間結果連結にも同型のリスクがある — 汎用SNS投稿ツールが無いため
+    tool_create_note がその代替経路になりうるが、_generate_rich_content には
+    「無関係/内部限定の情報を除外せよ」という指示が無かった。予防的に追加。
+    """
+    print("\n[14] _generate_rich_content プロンプトが無関係/内部情報の混入を禁じている")
+    path = os.path.join(_PROJECT_ROOT, "engine_plan_execute.py")
+    with open(path, encoding='utf-8') as f:
+        src = f.read()
+
+    check("関連性の制約の節がある", "【関連性の制約】" in src)
+    check("今回のタスクと無関係な情報を除外する指示がある",
+          "今回の【タスク】と無関係な情報や" in src)
+    check("ARMS自体の内部情報を除外する指示がある",
+          "このシステム(ARMS)自体の内部設計・実装・運用に関する情報" in src)
+    check("外部公開を意識した注意書きがある", "外部に公開される可能性がある場合は特に注意する" in src)
+
+
+def test_resolve_tool_args_prompt_forbids_internal_info_leak():
+    """[15] _resolve_tool_args (content/append_text) も同様に内部情報混入を禁じていること (2026-08-24)"""
+    print("\n[15] _resolve_tool_args プロンプトが無関係/内部情報の混入を禁じている")
+    path = os.path.join(_PROJECT_ROOT, "engine_plan_execute.py")
+    with open(path, encoding='utf-8') as f:
+        src = f.read()
+
+    check("content/append_text向けの関連性制約がある",
+          "content/append_textには、今回のタスクと無関係な情報や" in src)
+    check("ARMS自体の内部情報を除外する指示がある",
+          "このシステム(ARMS)自体の内部設計・実装・運用に関する情報を含めないこと" in src)
+
+
 def test_critique_prompt_forbids_obsidian_folder_names_as_genre_override():
     """[13] Criticがgenre_overrideにObsidianフォルダ名を指定しないこと (2026-08-17)
 
@@ -510,6 +547,8 @@ if __name__ == "__main__":
     test_resolve_tool_args_prompt_mentions_query_year_month()
     test_resolve_tool_args_prompt_copies_filename_verbatim_for_update_note()
     test_resolve_tool_args_prompt_forbids_fabricating_append_text()
+    test_rich_content_prompt_forbids_internal_info_leak()
+    test_resolve_tool_args_prompt_forbids_internal_info_leak()
     test_critique_prompt_forbids_obsidian_folder_names_as_genre_override()
 
     print("\n" + "=" * 55)
