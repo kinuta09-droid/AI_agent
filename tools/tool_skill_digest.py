@@ -151,7 +151,7 @@ def _resolve_skill(index: int = 1, repo: str = "") -> dict:
     radar_msg = ""
     if not candidates:
         print("[SkillDigest] 候補が無いので Skill Radar を実行します...")
-        radar_msg = run_skill_radar(top_k=5, save=False)
+        radar_msg = run_skill_radar(top_k=10, save=False)
         candidates = load_latest_candidates()
     if not candidates:
         raise ValueError(f"候補リポジトリがありません — Skill Radar の結果: {radar_msg or '(未実行)'}")

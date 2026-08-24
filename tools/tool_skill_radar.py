@@ -544,7 +544,7 @@ def load_latest_candidates() -> list:
 # エントリポイント
 # ---------------------------------------------------------
 
-def run_skill_radar(top_k: int = 5, save: bool = True, include_seen: bool = False,
+def run_skill_radar(top_k: int = 10, save: bool = True, include_seen: bool = False,
                     comment: bool = True) -> str:
     """GitHubを巡回してARMS向けのSkill候補を判別し、レポートを返す
     (ツール層の戻り値契約: 失敗は "Error: ...")。"""
@@ -621,7 +621,7 @@ def run_skill_radar(top_k: int = 5, save: bool = True, include_seen: bool = Fals
 
 def main():
     parser = argparse.ArgumentParser(description="Skill Radar — GitHub巡回でARMS向けSkillを提案")
-    parser.add_argument("--top", type=int, default=5)
+    parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--no-save", action="store_true", help="Obsidian に書かない")
     parser.add_argument("--include-seen", action="store_true", help="既出候補も含める")
     parser.add_argument("--no-comment", action="store_true", help="AI適合度判定/コメントを付けない (Gemini呼び出しゼロ、stars/keywordのみでスコアリング)")

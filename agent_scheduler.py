@@ -245,7 +245,7 @@ def _run_skill_radar() -> str:
     — tools/tool_skill_radar.py の docstring参照)。"""
     if not _HAS_SKILL_RADAR:
         return f"Skill Radar: tool_skill_radar not available ({_skill_radar_err})"
-    return _skill_radar(top_k=5)
+    return _skill_radar(top_k=10)
 
 
 def _run_gws_auth_health_check() -> str:
