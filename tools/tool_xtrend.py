@@ -69,7 +69,7 @@ DEFAULT_QUERIES = [
 DEFAULT_MIN_LIKES = 500
 DEFAULT_MIN_RETWEETS = 100
 MAX_PER_QUERY = 15          # 1クエリあたりの最大取得数（20→15に削減）
-FETCH_TIMEOUT = 15          # seconds
+FETCH_TIMEOUT = 30          # seconds (15秒だとtwitterAPI.io側の遅延でクエリ丸ごと失敗しfeatures数が激減する実測あり)
 
 # 取得済みツイートIDのキャッシュファイル
 SEEN_IDS_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
