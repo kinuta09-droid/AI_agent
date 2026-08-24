@@ -9,7 +9,7 @@
 | File | Purpose |
 |------|---------|
 | `tool_curator.py` | The Explorer v4.0 "Entropy Injector" (3-slot curation + Tavily trends) |
-| `tool_calendar.py` | Google Calendar + Todoist integration (5 tools) |
+| `tool_calendar.py` | Google Calendar + Google Tasks (gws CLI) integration (5 tools) |
 | `tool_daily_note.py` | Daily note auto-generation from template |
 | `tool_lora_factory.py` | LoRA/ComfyUI image generation |
 | `tool_paper_radar.py` | 注目論文の自動判別 (arXiv × HF upvote × 被引用速度 × 新しさ)。Gemini不使用=課金ゼロ |
@@ -43,7 +43,7 @@ py agent_trigger.py            # Trigger webhook
 
 ## MCP Servers
 `.mcp.json` (プロジェクトスコープ・コミット済み) に3つ登録済み。初回は承認プロンプトが出る:
-- `context7`: ライブラリの最新ドキュメント参照 (`todoist-api-python` v3+ 等のバージョン差異バグの予防)
+- `context7`: ライブラリの最新ドキュメント参照 (サードパーティAPIのバージョン差異バグの予防)
 - `chrome-devtools`: `tool_browser_use.py` / `tool_xtrend.py` のセレクタ崩れを実ブラウザで確認 (要 Node.js 22+)
 - `code-review-graph`: Tree-sitterでコード構造をグラフ化し、変更影響範囲・テストギャップをトークン効率よく返す (`pipx install code-review-graph`)。`/review-changes` `/explore-codebase` `/debug-issue` `/refactor-safely` の4スキル付き。**既知の罠**: (a) `.mcp.json`の`command`は`code-review-graph`本体(`~/.local/bin`)の絶対パス直呼びにすること — `install`が既定で書く`uvx code-review-graph serve`は`pipx`とは別環境で、`pipx inject code-review-graph sentence-transformers`(意味検索用embedding、¥0)が効かない。(b) `detect_changes_tool`等の既定`base`は`HEAD~1`。未コミット分だけ見たいときは`base="HEAD"`を明示する。(c) スキル内のツール名(`list_graph_stats`等)は実際のMCP登録名(`..._tool`サフィックス付き)と食い違うので、ToolSearchで正式名を引く。(d) PostToolUseフックが編集のたびにグラフを自動更新する(実測0.74秒/回のブロッキング遅延)
 

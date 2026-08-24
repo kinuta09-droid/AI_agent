@@ -683,8 +683,6 @@ def test_tool_layer_failure_checks():
     # 「未設定」センチネルは失敗ではないので、判定に巻き込んでいないこと
     check("'Google Calendar が未設定です' は失敗ではない",
           not is_failure_result("Google Calendar が未設定です。"))
-    check("'Todoist が未設定です' は失敗ではない",
-          not is_failure_result("Todoist が未設定です。"))
     check("正常な予定出力は失敗ではない",
           not is_failure_result("## 2026-07-28 の予定\n- 10:00-11:00: 会議"))
 

@@ -37,7 +37,6 @@ try:
         tool_daily_summary,
         _run_gws_command,
         GOOGLE_CALENDAR_ENABLED,
-        TODOIST_API_KEY,
     )
     _HAS_CALENDAR_TOOL = True
 except ImportError:
@@ -138,54 +137,24 @@ def _fetch_calendar_content(date: datetime.date) -> str:
 # ---------------------------------------------------------
 
 def _fetch_tasks_content() -> str:
-    """今日のタスクを取得してMarkdown形式で返す（Google Tasks via gws CLI）。"""
+    """今日のタスクを取得してMarkdown形式で返す（tool_get_tasks を再利用）。
+
+    以前はここで gws を直接叩き、「"items" キーが無ければ0件」という甘い判定をしていた。
+    これだと gws 認証切れ時のエラーdict (`{"error": ...}`) も「タスクはありません」に
+    丸めてしまう (_run_gws_command が警告している「エラーを0件と誤認させない」原則違反)。
+    tool_get_tasks は is_failure_result() で正しく判定するため、それを再利用する。
+    """
     if not _HAS_CALENDAR_TOOL:
         return "タスク連携が未設定です。"
 
-    # gws CLI 経由で Google Tasks を取得
-    try:
-        data = _run_gws_command(["tasks", "tasks", "list",
-                                 "--params", json.dumps({"tasklist": "@default"}),
-                                 "--format", "json"])
-        if data and "items" in data:
-            lines = []
-            for task in data["items"]:
-                title = task.get("title", "(無題)")
-                status = task.get("status", "")
-                due = task.get("due", "")
-                # 完了済みタスクはスキップ
-                if status == "completed":
-                    continue
-                due_str = f" (期限: {due[:10]})" if due else ""
-                lines.append(f"- [ ] {title}{due_str}")
-            return "\n".join(lines) if lines else "タスクはありません。"
-        elif data is not None:
-            return "タスクはありません。"
-    except Exception:
-        pass
+    result = tool_get_tasks("today")
+    if is_failure_result(result):
+        return "タスク連携が利用できません (gws CLI が未インストールまたは未認証)。"
 
-    # gws が利用不可の場合、Todoist にフォールバック
-    return _fetch_tasks_content_todoist()
-
-
-def _fetch_tasks_content_todoist() -> str:
-    """今日のタスクを取得してMarkdown形式で返す（旧 Todoist 版・フォールバック用）。"""
-    if not TODOIST_API_KEY:
-        return "Todoist が未設定です。"
-
-    try:
-        result = tool_get_tasks("today")
-        if is_failure_result(result) or result.startswith("Todoist"):
-            return result
-
-        # Remove header line
-        lines = result.split('\n')
-        if lines and lines[0].startswith('##'):
-            lines = lines[1:]
-
-        return '\n'.join(lines).strip() if lines else "タスクはありません。"
-    except Exception as e:
-        return f"タスク取得エラー: {e}"
+    lines = result.split("\n")
+    if lines and lines[0].startswith("##"):
+        lines = lines[1:]
+    return "\n".join(lines).strip() if lines else "タスクはありません。"
 
 
 # ---------------------------------------------------------

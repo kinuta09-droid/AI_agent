@@ -403,16 +403,16 @@ async def cmd_add_event(interaction: discord.Interaction,
     await bot_commands_calendar.cmd_add_event(interaction, title, start_time, end_time)
 
 
-@tree.command(name="tasks", description="Todoistのタスク一覧を表示します")
+@tree.command(name="tasks", description="Google Tasksからタスク一覧を表示します")
 @app_commands.describe(filter="フィルター（today, overdue, week, all）")
 async def cmd_tasks(interaction: discord.Interaction, filter: str = "today"):
     await bot_commands_calendar.cmd_tasks(interaction, filter)
 
 
-@tree.command(name="remind", description="タスクを追加します（Google Tasks優先、Briefing/Dailynoteに反映）")
+@tree.command(name="remind", description="Google Tasksにタスクを追加します（Briefing/Dailynoteに反映）")
 @app_commands.describe(
     content="リマインド内容",
-    due_date="期限（例: 明日, 2026-02-15, 毎日 21:00）",
+    due_date="期限（例: 今日, 明日, 2026-02-15）。繰り返し表現は未対応",
 )
 async def cmd_remind(interaction: discord.Interaction,
                      content: str, due_date: str = ""):

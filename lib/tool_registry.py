@@ -353,17 +353,17 @@ TOOL_ENTRIES = [
      "module": "tools.tool_calendar", "optional": True},
     {"name": "tool_add_event", "usage": "tool_add_event(title, start_time, end_time='', description='')", "description": "Google Calendarに予定を追加",
      "module": "tools.tool_calendar", "optional": True},
-    {"name": "tool_create_task", "usage": "tool_create_task(title, due_date='', priority=1, project='Inbox')",
-     "description": "Google Tasks（未設定/認証切れ時はTodoistへフォールバック）にタスクを追加。Briefing/Dailynoteの未完了タスク欄に反映される",
+    {"name": "tool_create_task", "usage": "tool_create_task(title, due_date='')",
+     "description": "Google Tasksにタスクを追加。Briefing/Dailynoteの未完了タスク欄に反映される",
      "module": "tools.tool_calendar", "optional": True},
-    # Todoist 側は認証がAPIキー1本 (トークンファイルの更新が無い) ので取得は純粋。
-    {"name": "tool_get_tasks", "usage": "tool_get_tasks(filter='today')", "description": "Todoistからタスク一覧を取得",
+    {"name": "tool_get_tasks", "usage": "tool_get_tasks(filter='today')",
+     "description": "Google Tasksからタスク一覧を取得。filterは today/overdue/week/all",
      "module": "tools.tool_calendar", "optional": True, "parallel_safe": True},
     # 起動条件 (予定/タスクの同期) と非対象 (任意テキスト) の両方を書く。
     # tool_update_note 側に「デイリーノート」を書いた分、こちらの縄張りを
     # 明示しないと逆に同期要求を奪われる。
     {"name": "tool_sync_to_daily_note", "usage": "tool_sync_to_daily_note()",
-     "description": "Google Calendarの予定とTodoistのタスクをデイリーノートの所定欄へ流し込む専用ツール。任意の文章の追記には使えない（それはtool_update_note）",
+     "description": "Google Calendarの予定とGoogle Tasksのタスクをデイリーノートの所定欄へ流し込む専用ツール。任意の文章の追記には使えない（それはtool_update_note）",
      "module": "tools.tool_calendar", "optional": True},
     # 動画ファイルをVault (30_Main/Assets/Shorts) に書き込むため parallel_safe は付けない。
     {"name": "tool_shorts_from_video", "usage": "tool_shorts_from_video(video_path, target_seconds=30, topic_hint='', bgm_path='', vertical_mode='pad')",

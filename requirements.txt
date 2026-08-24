@@ -11,7 +11,6 @@ youtube-transcript-api
 feedparser
 google-api-python-client
 google-auth-oauthlib
-todoist-api-python
 dateparser
 numpy
 scipy  # scripts/eval_features.py (spearmanr) — pandas_ta 経由でローカルには入っていたが CI 用に明示

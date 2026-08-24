@@ -43,7 +43,7 @@ async def cmd_add_event(interaction: discord.Interaction,
 
 
 async def cmd_tasks(interaction: discord.Interaction, filter: str = "today"):
-    """Todoistのタスク一覧を表示します"""
+    """Google Tasksからタスク一覧を表示します"""
     await interaction.response.defer()
 
     try:
@@ -61,11 +61,11 @@ async def cmd_tasks(interaction: discord.Interaction, filter: str = "today"):
 
 async def cmd_remind(interaction: discord.Interaction,
                      content: str, due_date: str = ""):
-    """タスクを追加します（Google Tasks優先、gws未設定/認証切れ時はTodoistへフォールバック）"""
+    """Google Tasksにタスクを追加します"""
     await interaction.response.defer()
 
     try:
-        result = await asyncio.to_thread(tool_create_task, content, due_date, 1)
+        result = await asyncio.to_thread(tool_create_task, content, due_date)
     except Exception as e:
         result = log_command_error("/remind", e)
 

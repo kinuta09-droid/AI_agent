@@ -401,7 +401,7 @@ def collect_candidates(queries: list) -> tuple:
 # 静的な短い要約をここに持つ。変わったら手で更新する。
 _ARMS_ARCHITECTURE_SUMMARY = (
     "ARMSは個人用のDiscord Bot型AIエージェント基盤 (Python, discord.py)。"
-    "Gemini APIによる要約/分析、Google Calendar・Todoist連携、Obsidian Vaultへの"
+    "Gemini APIによる要約/分析、Google Calendar・Google Tasks連携、Obsidian Vaultへの"
     "ノート自動生成・保存、暗号資産シグナル監視、論文レーダー、スケジューラによる"
     "定時ジョブ実行が中心機能。Claude Code の `.claude/skills/*/SKILL.md` 形式で"
     "既知バグパターンや作業手順を蓄積している。"

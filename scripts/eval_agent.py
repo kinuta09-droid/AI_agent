@@ -88,7 +88,7 @@ def load_eval_set(path: str = EVAL_SET_PATH) -> dict:
 def known_tools() -> set:
     """現在ロードできるツール名の集合 (唯一の情報源は lib.tool_registry)。
 
-    optional ツール (calendar/todoist) は認証情報が無いと登録されないため、
+    optional ツール (calendar/tasks) は認証情報が無いと登録されないため、
     ここに含まれないことが「壊れている」ではなく「今は無い」を意味する。
     """
     from lib.tool_registry import get_tools_config

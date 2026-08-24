@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Calendar / Task Integration Module
-Google Calendar + Todoist + Obsidian Daily Note 連携ツール群。
+Google Calendar + Google Tasks (gws CLI) + Obsidian Daily Note 連携ツール群。
 """
 
 import os
@@ -32,11 +32,9 @@ SCOPES = ["https://www.googleapis.com/auth/calendar"]
 DAILY_NOTE_DIR = os.path.join(VAULT_ROOT, "01_Daily")
 
 GOOGLE_CALENDAR_ENABLED = os.getenv("GOOGLE_CALENDAR_ENABLED", "false").lower() == "true"
-TODOIST_API_KEY = os.getenv("TODOIST_API_KEY", "")
 
 # Lazy imports (未インストール時にagent起動が壊れない)
 _HAS_GCAL = False
-_HAS_TODOIST = False
 _HAS_DATEPARSER = False
 
 try:
@@ -51,12 +49,6 @@ try:
     from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
     _HAS_GCAL = True
-except ImportError:
-    pass
-
-try:
-    from todoist_api_python.api import TodoistAPI
-    _HAS_TODOIST = True
 except ImportError:
     pass
 
@@ -125,15 +117,6 @@ def _get_calendar_service():
             token.write(creds.to_json())
 
     return build('calendar', 'v3', credentials=creds)
-
-
-def _get_todoist_client():
-    """Todoist API クライアントを取得する。"""
-    if not TODOIST_API_KEY:
-        return None
-    if not _HAS_TODOIST:
-        return None
-    return TodoistAPI(TODOIST_API_KEY)
 
 
 # ---------------------------------------------------------
@@ -394,127 +377,97 @@ def tool_daily_summary() -> str:
 
 
 # ---------------------------------------------------------
-# Tool: Todoist
+# Tool: Google Tasks (gws CLI 版)
 # ---------------------------------------------------------
 
-_PRIORITY_MAP = {1: 4, 2: 3, 3: 2, 4: 1}  # ユーザー向け(1=最高) → Todoist内部(4=最高)
-_PRIORITY_LABEL = {4: "最高", 3: "高", 2: "中", 1: "低"}
+_GWS_UNAVAILABLE_MSG = ("Error: gws CLIが利用できません。\n"
+                         "gws のインストール・認証状態を確認してください。")
 
 
-def tool_create_task(title: str, due_date: str = "",
-                     priority: int = 1, project: str = "Inbox") -> str:
-    """タスクを追加する。Google Tasks (gws) を優先し、未設定/認証切れ時のみ Todoist へフォールバック。
+def _format_gws_error(error) -> str:
+    """_run_gws_command が返すエラーdictをユーザー向けの短い文言に整形する。"""
+    if isinstance(error, dict):
+        return str(error.get("message", error))
+    return str(error)
+
+
+def tool_create_task(title: str, due_date: str = "") -> str:
+    """Google Tasks (gws) にタスクを追加する。
 
     Briefing (tool_daily_summary) と Dailynote (_fetch_tasks_content) はどちらも
-    gws 経由の Google Tasks を主系統として読むため、Todoist にしか無いタスクは
-    ARMS の他の機能から見えない (2026-08-24 実測: 「登録しました」と出るのに
-    Briefing/Dailynote に反映されない不具合の真因)。gws のフォールバック順序を
-    _fetch_tasks_content と揃えることで、登録先と参照先を一致させる。
-    priority/project は Google Tasks API に対応概念が無いため、gws 経由では無視され
-    Todoist フォールバック時のみ使われる。
+    gws 経由の Google Tasks を主系統として読むため、以前 Todoist にのみ保存していた頃は
+    「登録しました」と出るのに Briefing/Dailynote に反映されない食い違いがあった
+    (2026-08-24 実測)。登録先を Briefing/Dailynote と統一するため gws 一本化した。
+    due_date は単発の日付表現のみ解釈できる (_parse_datetime)。繰り返し表現は未対応。
     """
-    due_info = f" (期限: {due_date})" if due_date else ""
     body = {"title": title}
-    gws_due_ok = True
+    due_info = ""
     if due_date:
         try:
             dt = _parse_datetime(due_date)
-            body["due"] = dt.strftime("%Y-%m-%dT00:00:00.000Z")
-        except ValueError:
-            # _parse_datetime は単発の日付表現しか解けない。Todoist の due_string は
-            # "every monday" 等の繰り返し/相対表現も解釈できるため、ここで即 Error にすると
-            # 従来 Todoist で登録できていた表現が登録不能になる (regression)。
-            # gws だけスキップし、生の due_date のまま Todoist フォールバックへ渡す。
-            gws_due_ok = False
+        except ValueError as e:
+            return f"Error: {e}"
+        body["due"] = dt.strftime("%Y-%m-%dT00:00:00.000Z")
+        due_info = f" (期限: {due_date})"
 
-    if gws_due_ok:
-        data = _run_gws_command([
-            "tasks", "tasks", "insert",
-            "--params", json.dumps({"tasklist": "@default"}),
-            "--json", json.dumps(body, ensure_ascii=False),
-        ])
-        if data is not None and "error" not in data:
-            return f"Success: タスクを追加しました: {title}{due_info}"
-
-    return _tool_create_task_todoist(title, due_date, priority, project)
+    data = _run_gws_command([
+        "tasks", "tasks", "insert",
+        "--params", json.dumps({"tasklist": "@default"}),
+        "--json", json.dumps(body, ensure_ascii=False),
+    ])
+    if data is None:
+        return _GWS_UNAVAILABLE_MSG
+    if "error" in data:
+        return f"Error: タスクの追加に失敗しました: {_format_gws_error(data['error'])}"
+    return f"Success: タスクを追加しました: {title}{due_info}"
 
 
-def _tool_create_task_todoist(title: str, due_date: str = "",
-                              priority: int = 1, project: str = "Inbox") -> str:
-    """Todoist にタスクを追加する (gws 未設定/認証切れ時のフォールバック)。"""
-    api = _get_todoist_client()
-    if api is None:
-        if not TODOIST_API_KEY:
-            return ("Todoist が未設定です。\n"
-                    "1. https://todoist.com/app/settings/integrations → API トークン取得\n"
-                    "2. .env の TODOIST_API_KEY に設定")
-        return "Error: todoist-api-python がインストールされていません。"
+# today/overdue/week 以外は期間フィルタなし ("all" 相当) として扱う。
+def _gws_task_filter_params(filter: str) -> dict:
+    """filter 名を Google Tasks API の dueMin/dueMax クエリパラメータへ変換する。
 
-    todoist_priority = _PRIORITY_MAP.get(priority, 1)
+    Tasks API の due は日付のみ有効 (時刻は無視される) ため、ローカル日付をそのまま
+    UTC 日付とみなして境界を組み立てる。tool_create_task の due_date 変換と同じ単純化。
+    """
+    today = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    fmt = "%Y-%m-%dT00:00:00.000Z"
+    params = {"tasklist": "@default", "showCompleted": False}
+    if filter == "today":
+        params["dueMin"] = today.strftime(fmt)
+        params["dueMax"] = (today + datetime.timedelta(days=1)).strftime(fmt)
+    elif filter == "overdue":
+        params["dueMax"] = today.strftime(fmt)
+    elif filter == "week":
+        params["dueMin"] = today.strftime(fmt)
+        params["dueMax"] = (today + datetime.timedelta(days=7)).strftime(fmt)
+    # それ以外 ("all" 含む) は期間フィルタなし (showCompleted=False のみ)
+    return params
 
-    kwargs = {
-        "content": title,
-        "priority": todoist_priority,
-    }
-    if due_date:
-        kwargs["due_string"] = due_date
-    if project and project != "Inbox":
-        # プロジェクト名からIDを解決
-        try:
-            projects = api.get_projects()
-            for p in projects:
-                if p.name == project:
-                    kwargs["project_id"] = p.id
-                    break
-        except Exception:
-            pass
 
-    try:
-        task = api.add_task(**kwargs)
-        due_info = f" (期限: {due_date})" if due_date else ""
-        return f"Success: タスクを追加しました: {title}{due_info}"
-    except Exception as e:
-        return f"Error: タスクの追加に失敗: {e}"
+def _format_gws_tasks(items: list, filter: str) -> str:
+    if not items:
+        return f"## {filter} のタスク\nタスクはありません。"
+
+    lines = [f"## {filter} のタスク ({len(items)}件)"]
+    for item in items:
+        due_str = ""
+        if item.get("due"):
+            due_str = f" (期限: {item['due'][:10]})"
+        lines.append(f"- [ ] {item.get('title', '(無題)')}{due_str}")
+    return "\n".join(lines)
 
 
 def tool_get_tasks(filter: str = "today") -> str:
-    """Todoist からタスク一覧を取得する。"""
-    api = _get_todoist_client()
-    if api is None:
-        if not TODOIST_API_KEY:
-            return ("Todoist が未設定です。\n"
-                    "1. https://todoist.com/app/settings/integrations → API トークン取得\n"
-                    "2. .env の TODOIST_API_KEY に設定")
-        return "Error: todoist-api-python がインストールされていません。"
-
-    filter_map = {
-        "today": "today",
-        "overdue": "overdue",
-        "week": "7 days",
-        "all": "all",
-    }
-    todoist_filter = filter_map.get(filter, filter)
-
-    try:
-        # todoist-api-python v3+: filter_tasks(query=) returns Iterator[list[Task]]
-        tasks = []
-        for page in api.filter_tasks(query=todoist_filter):
-            tasks.extend(page)
-    except Exception as e:
-        return f"Error: タスクの取得に失敗: {e}"
-
-    if not tasks:
-        return f"## {filter} のタスク\nタスクはありません。"
-
-    lines = [f"## {filter} のタスク ({len(tasks)}件)"]
-    for task in tasks:
-        p_label = _PRIORITY_LABEL.get(task.priority, "")
-        due_str = ""
-        if task.due:
-            due_str = f" (期限: {task.due.date})"
-        lines.append(f"- [ ] {task.content}{due_str} {f'[{p_label}]' if p_label else ''}")
-
-    return "\n".join(lines)
+    """Google Tasks (gws) からタスク一覧を取得する。filter: today/overdue/week/all"""
+    data = _run_gws_command([
+        "tasks", "tasks", "list",
+        "--params", json.dumps(_gws_task_filter_params(filter)),
+    ])
+    if data is None:
+        return _GWS_UNAVAILABLE_MSG
+    if "error" in data:
+        return f"Error: タスクの取得に失敗しました: {_format_gws_error(data['error'])}"
+    return _format_gws_tasks(data.get("items", []), filter)
 
 
 # ---------------------------------------------------------
@@ -522,7 +475,7 @@ def tool_get_tasks(filter: str = "today") -> str:
 # ---------------------------------------------------------
 
 def tool_sync_to_daily_note() -> str:
-    """Google Calendar と Todoist の内容を Obsidian デイリーノートに同期する。"""
+    """Google Calendar と Google Tasks の内容を Obsidian デイリーノートに同期する。"""
     today_str = datetime.datetime.now().strftime('%Y-%m-%d')
     daily_path = os.path.join(DAILY_NOTE_DIR, f"{today_str}.md")
 
@@ -547,17 +500,16 @@ def tool_sync_to_daily_note() -> str:
             cal_content = "\n".join(cal_lines) if cal_lines else "予定はありません。"
             synced_items.append("予定")
 
-    # Todoist 同期
+    # タスク同期 (Google Tasks / gws)
     tasks_content = ""
-    if TODOIST_API_KEY and _get_todoist_client() is not None:
-        tasks_result = tool_get_tasks("today")
-        if not is_failure_result(tasks_result) and not tasks_result.startswith("Todoist"):
-            tasks_lines = tasks_result.split("\n")[1:]  # ヘッダー除去
-            tasks_content = "\n".join(tasks_lines) if tasks_lines else "タスクはありません。"
-            synced_items.append("タスク")
+    tasks_result = tool_get_tasks("today")
+    if not is_failure_result(tasks_result):
+        tasks_lines = tasks_result.split("\n")[1:]  # ヘッダー除去
+        tasks_content = "\n".join(tasks_lines) if tasks_lines else "タスクはありません。"
+        synced_items.append("タスク")
 
     if not synced_items:
-        return "同期するサービスが設定されていません。Google Calendar または Todoist を設定してください。"
+        return "同期するサービスが設定されていません。Google Calendar/Tasks (gws) を設定してください。"
 
     updated = content
     if cal_content and "<!-- CALENDAR_PLACEHOLDER -->" in updated:
