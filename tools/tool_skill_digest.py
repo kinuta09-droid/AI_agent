@@ -2,6 +2,16 @@
 """
 Skill Digest — Skill Radar が見つけた候補1件を SNS/note 下書きにする
 
+外部公開の厳禁事項 (最重要):
+  ここで生成する下書きは X/note.com にそのまま公開される想定のテキスト。
+  _build_skill_digest() が組み立てる digest には、ARMSの内部技術構成・
+  個人情報・非公開の運用データを一切含めないこと。「ARMSに合うか」のような
+  内部評価専用に生成したLLM出力 (comment_ja 等) を外部公開下書きの材料に
+  使い回すと、内部情報がそのまま公開文面に転記される
+  (2026-08-23 実際に発生、詳細は _build_skill_digest のdocstring参照)。
+  新しいフィールドを digest に追加するときは、必ず「GitHub上の公開情報か」
+  「内部評価専用のデータではないか」を確認すること。
+
 Flow:
   1. tool_skill_radar が残した候補 (logs/skill_radar_latest.json) から1件選ぶ
      (候補が無ければその場で Skill Radar を回す / --repo で full_name 直接指定も可)

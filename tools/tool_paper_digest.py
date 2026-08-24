@@ -23,6 +23,15 @@ Flow:
   明示し、本文をタグで囲って渡す。要約が JSON にならなかった場合は
   safe_json_loads が {} を返すので、その時は失敗として扱う (捏造で埋めない)。
 
+内部情報混入の厳禁 (2026-08-23、tool_skill_digest.py で実際に発生したインシデント):
+  build_sns_post/build_note_article/draft_sns_hook_post が受け取る digest は
+  そのまま**外部公開**されるSNS投稿・note記事の材料になる。ARMSの内部技術構成・
+  個人情報・非公開の運用データなど、公開してよくない情報は digest は元より、
+  digest を組み立てる呼び出し元 (tool_skill_digest.py・tool_document.py 等) の
+  段階で一切混入させないこと。「ARMSへの適合度」のような内部評価専用に生成した
+  LLM出力を、外部公開下書きの材料として使い回さない (詳細は
+  tool_skill_digest._build_skill_digest のdocstring参照)。
+
 Usage:
   py tools/tool_paper_digest.py                    # レーダー1位を digest
   py tools/tool_paper_digest.py --index 2 --mode note
@@ -249,6 +258,10 @@ YouTube のサムネイル・本屋に並ぶ小説の帯・新書のタイトル
 
 def draft_sns_hook_post(digest: dict, paper: dict) -> str:
     """実測パターン+一般理論に基づき、フックのある投稿本文を Gemini で1本作る。
+
+    digest はまるごと <facts> としてプロンプトに埋め込まれ、生成結果は外部に
+    公開される。呼び出し元は digest に ARMSの内部情報・個人情報を含めないこと
+    (2026-08-23の情報汚染インシデント、モジュールdocstring参照)。
 
     本編記事 (note.com / X Articles) への **ティザー投稿** として生成する
     (X プレミアム Basic 以上は140字制限が解除されるが、あえて1本の長文で
@@ -509,6 +522,10 @@ arXiv: {paper.get('abs_url', '')}
 
 def build_note_article(digest: dict, paper: dict, capture: dict) -> dict:
     """ロングフォーム記事 (タイトル+本文) を Gemini で生成する。
+
+    digest はまるごとプロンプトに埋め込まれ、生成結果は外部に公開される。
+    呼び出し元は digest に ARMSの内部情報・個人情報を含めないこと
+    (2026-08-23の情報汚染インシデント、モジュールdocstring参照)。
 
     note.com と X Articles の両方にそのまま転載する前提の共通記事として作る
     (両者とも「見出し付き長文」という構成が近く、書き分ける実益が薄いため)。
