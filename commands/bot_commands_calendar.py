@@ -61,7 +61,7 @@ async def cmd_tasks(interaction: discord.Interaction, filter: str = "today"):
 
 async def cmd_remind(interaction: discord.Interaction,
                      content: str, due_date: str = ""):
-    """Todoistにリマインダー（タスク）を追加します"""
+    """タスクを追加します（Google Tasks優先、gws未設定/認証切れ時はTodoistへフォールバック）"""
     await interaction.response.defer()
 
     try:

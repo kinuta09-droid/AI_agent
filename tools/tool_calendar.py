@@ -403,7 +403,45 @@ _PRIORITY_LABEL = {4: "最高", 3: "高", 2: "中", 1: "低"}
 
 def tool_create_task(title: str, due_date: str = "",
                      priority: int = 1, project: str = "Inbox") -> str:
-    """Todoist にタスクを追加する。"""
+    """タスクを追加する。Google Tasks (gws) を優先し、未設定/認証切れ時のみ Todoist へフォールバック。
+
+    Briefing (tool_daily_summary) と Dailynote (_fetch_tasks_content) はどちらも
+    gws 経由の Google Tasks を主系統として読むため、Todoist にしか無いタスクは
+    ARMS の他の機能から見えない (2026-08-24 実測: 「登録しました」と出るのに
+    Briefing/Dailynote に反映されない不具合の真因)。gws のフォールバック順序を
+    _fetch_tasks_content と揃えることで、登録先と参照先を一致させる。
+    priority/project は Google Tasks API に対応概念が無いため、gws 経由では無視され
+    Todoist フォールバック時のみ使われる。
+    """
+    due_info = f" (期限: {due_date})" if due_date else ""
+    body = {"title": title}
+    gws_due_ok = True
+    if due_date:
+        try:
+            dt = _parse_datetime(due_date)
+            body["due"] = dt.strftime("%Y-%m-%dT00:00:00.000Z")
+        except ValueError:
+            # _parse_datetime は単発の日付表現しか解けない。Todoist の due_string は
+            # "every monday" 等の繰り返し/相対表現も解釈できるため、ここで即 Error にすると
+            # 従来 Todoist で登録できていた表現が登録不能になる (regression)。
+            # gws だけスキップし、生の due_date のまま Todoist フォールバックへ渡す。
+            gws_due_ok = False
+
+    if gws_due_ok:
+        data = _run_gws_command([
+            "tasks", "tasks", "insert",
+            "--params", json.dumps({"tasklist": "@default"}),
+            "--json", json.dumps(body, ensure_ascii=False),
+        ])
+        if data is not None and "error" not in data:
+            return f"Success: タスクを追加しました: {title}{due_info}"
+
+    return _tool_create_task_todoist(title, due_date, priority, project)
+
+
+def _tool_create_task_todoist(title: str, due_date: str = "",
+                              priority: int = 1, project: str = "Inbox") -> str:
+    """Todoist にタスクを追加する (gws 未設定/認証切れ時のフォールバック)。"""
     api = _get_todoist_client()
     if api is None:
         if not TODOIST_API_KEY:

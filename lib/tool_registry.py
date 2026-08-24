@@ -353,7 +353,8 @@ TOOL_ENTRIES = [
      "module": "tools.tool_calendar", "optional": True},
     {"name": "tool_add_event", "usage": "tool_add_event(title, start_time, end_time='', description='')", "description": "Google Calendarに予定を追加",
      "module": "tools.tool_calendar", "optional": True},
-    {"name": "tool_create_task", "usage": "tool_create_task(title, due_date='', priority=1, project='Inbox')", "description": "Todoistにタスクを追加",
+    {"name": "tool_create_task", "usage": "tool_create_task(title, due_date='', priority=1, project='Inbox')",
+     "description": "Google Tasks（未設定/認証切れ時はTodoistへフォールバック）にタスクを追加。Briefing/Dailynoteの未完了タスク欄に反映される",
      "module": "tools.tool_calendar", "optional": True},
     # Todoist 側は認証がAPIキー1本 (トークンファイルの更新が無い) ので取得は純粋。
     {"name": "tool_get_tasks", "usage": "tool_get_tasks(filter='today')", "description": "Todoistからタスク一覧を取得",
