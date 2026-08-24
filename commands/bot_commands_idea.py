@@ -22,7 +22,7 @@ from tools.tool_obsidian import (
 )
 from tools.tool_vault_hybrid import tool_find_related_notes
 from lib.bot_errors import log_command_error, is_failure_result
-from lib.lib_obsidian_utils import extract_note_query
+from lib.lib_obsidian_utils import extract_note_query, extract_excerpt_citation
 from commands.bot_views import AllowedUserView
 from scripts.generate_idea_dialogue import generate_next_question, summarize_idea_session
 
@@ -246,6 +246,12 @@ async def _summarize_and_save(session: dict, thread: discord.Thread) -> str:
     元のFleeting Noteへのバックリンクになる。保存成功後は元ノートを削除する
     (削除失敗はログのみ、要約自体の成功には影響させない — 副次的な後処理のため)。
 
+    seed (元ノートの生テキスト) が quickadd の抜粋メモ (Tpl_Fleeting_Excerpt.md) 由来で
+    `> from [[引用元]]` を含む場合、その引用元も同じ `> Source:` 形式で追加する。
+    _extract_and_integrate_sections は同じ行を複数拾えるので、元アイデアの削除で
+    失われないこの引用元も一緒に「### 関連ノート」へ残る。AI要約 (summarize_idea_session)
+    に任せると本文の取捨選択で引用元が消えうるため、生テキストから機械的に拾う。
+
     保存成功後、関連ノートの検索・通知も行う (失敗してもこの関数の戻り値には影響させない —
     削除失敗と同じ「副次的な後処理」の扱い)。
     """
@@ -255,8 +261,14 @@ async def _summarize_and_save(session: dict, thread: discord.Thread) -> str:
 
     content = idea["content"]
     source_title = session.get("source_title")
+    source_lines = []
     if source_title:
-        content = f"> Source: [[{source_title}]]\n\n{content}"
+        source_lines.append(f"> Source: [[{source_title}]]")
+    citation = extract_excerpt_citation(session["seed"])
+    if citation and citation != f"[[{source_title}]]":
+        source_lines.append(f"> Source: {citation}")
+    if source_lines:
+        content = "\n".join(source_lines) + f"\n\n{content}"
 
     filename = (idea.get("title") or session["seed"])[:24]
     result = await asyncio.to_thread(

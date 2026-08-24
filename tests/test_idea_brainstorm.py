@@ -346,6 +346,49 @@ def test_summarize_and_save_notify_exception_does_not_fail_result():
     print("✅ [11] _summarize_and_save: 関連ノート通知が例外を出しても戻り値は保存成功のまま")
 
 
+async def _run_summarize_and_save_preserves_excerpt_citation():
+    # quickadd の Tpl_Fleeting_Excerpt.md が書く「> from [[引用元]]」を含む生テキストをseedにする。
+    seed = (
+        "---\ncreated: 2026-08-24 10:00\n---\n# 📝 抜粋メモ\n\n"
+        "> [!INFO] コンテキスト\n> from [[元記事ノート]]\n\n抜粋本文"
+    )
+    session = {"seed": seed, "turns": [], "source_title": "抜粋メモ"}
+    thread = AsyncMock()
+    created = {}
+
+    orig_summarize, orig_create, orig_delete, orig_find_related = (
+        idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea,
+        idea_mod.tool_find_related_notes,
+    )
+    try:
+        # AI要約は引用元に触れない (取捨選択で消える想定) が、それでも保存結果には残ることを確認する。
+        idea_mod.summarize_idea_session = lambda seed, turns: {"title": "T", "summary": "S", "content": "本文のみ"}
+
+        def _fake_create(filename, content, summary=""):
+            created["content"] = content
+            return "Success: saved"
+
+        idea_mod.tool_create_note = _fake_create
+        idea_mod.tool_delete_idea = lambda title: "Success: deleted"
+        idea_mod.tool_find_related_notes = lambda *a, **k: []
+        result = await idea_mod._summarize_and_save(session, thread)
+    finally:
+        idea_mod.summarize_idea_session, idea_mod.tool_create_note, idea_mod.tool_delete_idea = (
+            orig_summarize, orig_create, orig_delete
+        )
+        idea_mod.tool_find_related_notes = orig_find_related
+
+    assert result == "Success: saved", result
+    content = created.get("content", "")
+    assert "> Source: [[抜粋メモ]]" in content, content
+    assert "> Source: [[元記事ノート]]" in content, f"quickaddの引用元がAI要約で消えている: {content!r}"
+
+
+def test_summarize_and_save_preserves_excerpt_citation():
+    asyncio.run(_run_summarize_and_save_preserves_excerpt_citation())
+    print("✅ [12] _summarize_and_save: quickadd抜粋メモの引用元(> from [[...]])はAI要約で消えず保存される")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

@@ -99,6 +99,22 @@ def extract_note_query(content: str, max_chars: int = 200) -> str:
     return (content or "")[:max_chars]
 
 
+# quickadd の Tpl_Fleeting_Excerpt.md (`{{LINKCURRENT}}`) が書き込む
+# 「> [!INFO] コンテキスト\n> from [[元ノート]]」から引用元を取り出す。
+# /brainstorm はAI要約で本文を丸ごと書き直すため、この行を生テキストから機械的に
+# 拾わないと引用元がAIの取捨選択で消えうる (必ず残したい情報はAI任せにしない)。
+# [!INFO] callout の直下という構造にアンカーする — 単に「行頭が `> from `」だけで
+# 拾うと、/brainstorm は quickadd 由来以外の自由入力アイデアも同じ経路を通るため、
+# 引用文中にたまたま "> from ..." がある無関係な行まで引用元として誤抽出してしまう。
+_EXCERPT_SOURCE_RE = re.compile(r'^>\s*\[!INFO\][^\n]*\n>\s*from\s+(.+)$', re.MULTILINE)
+
+
+def extract_excerpt_citation(content: str) -> str | None:
+    """quickaddの抜粋メモ ([!INFO] callout直下の `> from ...`) の引用元を取り出す。無ければNone。"""
+    m = _EXCERPT_SOURCE_RE.search(content or "")
+    return m.group(1).strip() if m else None
+
+
 # Vault のノート以外 (エージェントの行動ログ) を指す source 名。
 # 検索インデックスが Vault と同居するようになったので (Phase B)、
 # 出典を組み立てる側がここで分岐する必要がある。
