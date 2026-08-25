@@ -30,13 +30,21 @@ from tools import tool_vault_watcher as watcher  # noqa: E402
 
 
 def _reset_watcher(tmp_dir: str) -> str:
-    """SCAN_DIR/SESSIONS_SCAN_DIR/SEEN_MTIMES_CACHE/INSIGHT_LOG/CONTRADICTIONS_NOTE を tempdir 配下へ差し替える。"""
+    """SCAN_DIR/SESSIONS_SCAN_DIR/USER_MEMORY_FILE/SEEN_MTIMES_CACHE/INSIGHT_LOG/
+    CONTRADICTIONS_NOTE を tempdir 配下へ差し替える。
+
+    USER_MEMORY_FILE は本番では 00_System/User_Memory.md (単一ファイル) を指す。
+    tempdir 配下の「存在しないパス」に差し替えることで、テスト実行のたびに
+    本番ファイルを誤って読みに行くのを防ぐ (os.path.isfile が False を返し
+    _scan_changed_files が無視する既定の安全な状態)。
+    """
     scan_dir = os.path.join(tmp_dir, "scan")
     sessions_dir = os.path.join(tmp_dir, "sessions")
     os.makedirs(scan_dir, exist_ok=True)
     os.makedirs(sessions_dir, exist_ok=True)
     watcher.SCAN_DIR = scan_dir
     watcher.SESSIONS_SCAN_DIR = sessions_dir
+    watcher.USER_MEMORY_FILE = os.path.join(tmp_dir, "User_Memory.md")
     watcher.SEEN_MTIMES_CACHE = os.path.join(tmp_dir, "seen.json")
     watcher.INSIGHT_LOG = os.path.join(tmp_dir, "log.jsonl")
     watcher.CONTRADICTIONS_NOTE = os.path.join(tmp_dir, "Vault_Contradictions.md")
@@ -104,6 +112,58 @@ def test_scan_changed_files_sessions_note_relpath_has_no_prefix():
         seen = {c[0]: c[3] for c in changed}
         assert watcher._scan_changed_files(seen) == []
     print("✅ [1b] Sessions由来ファイルの note_relpath はプレフィックスなし、cache_keyは同名衝突しない")
+
+
+def test_scan_changed_files_detects_user_memory_file():
+    """USER_MEMORY_FILE (単一ファイル) は SCAN_DIR/SESSIONS_SCAN_DIR と同じ
+    (cache_key, note_relpath, abspath, mtime) 形式で検知され、note_relpath は
+    find_file_in_vault が解決できる裸のファイル名 ("User_Memory.md") になる。
+    ファイル不在時は無視され、他のスキャン対象に影響しない。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        _reset_watcher(tmp)
+        assert watcher._scan_changed_files({}) == []  # 不在時は何も検知しない
+
+        _write(watcher.USER_MEMORY_FILE, "user memory body")
+        changed = watcher._scan_changed_files({})
+        assert len(changed) == 1, changed
+        cache_key, note_relpath, abspath, _mtime = changed[0]
+        assert cache_key == "System/User_Memory.md", cache_key
+        assert note_relpath == "User_Memory.md", note_relpath
+        assert abspath == watcher.USER_MEMORY_FILE, abspath
+
+        seen = {c[0]: c[3] for c in changed}
+        assert watcher._scan_changed_files(seen) == []  # mtime不変は再検知しない
+    print("✅ [1c] USER_MEMORY_FILE は単一ファイルとして検知され、note_relpathは裸のファイル名")
+
+
+def test_user_memory_file_uses_wider_snippet_than_own_snippet_chars():
+    """User_Memory.md は tool_user_memory.distill_daily_memory() が既存本文全体を
+    Gemini に渡して要約し直し、ファイル全体を上書きする (追記ではない) 方式のため、
+    新しい事実がファイルのどこに出るかは保証されない。OWN_SNIPPET_CHARS(1500字、
+    新規の個別ノート用)のままだと、常に6000字前後で推移するこのファイルの大半を
+    読み落とし、新しい蒸留内容が判定プロンプトに反映されない欠陥があった
+    (grillで検出、2026-08-25)。OWN_SNIPPET_CHARS を超える位置のマーカー文字列が
+    実際にプロンプトへ渡ることを確認する。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        _reset_watcher(tmp)
+        watcher._save_seen_mtimes({})  # キャッシュファイルを作る = 「初回実行」を消化済みにする
+        assert watcher.USER_MEMORY_SNIPPET_CHARS > watcher.OWN_SNIPPET_CHARS, (
+            watcher.USER_MEMORY_SNIPPET_CHARS, watcher.OWN_SNIPPET_CHARS)
+
+        marker = "MARKER_BEYOND_1500"
+        padding = "x" * (watcher.OWN_SNIPPET_CHARS + 200)
+        _write(watcher.USER_MEMORY_FILE, padding + marker)
+
+        prompts = []
+        result = watcher.check_vault_insights(
+            notify=False,
+            search_fn=lambda query, top_k=5: "(no hits)",
+            llm_fn=lambda prompt: (prompts.append(prompt), {"notable": False})[1],
+            notify_fn=_fail)
+        assert "1件処理" in result, result
+        assert len(prompts) == 1, prompts
+        assert marker in prompts[0], "OWN_SNIPPET_CHARSを超えた位置の内容がプロンプトに含まれていない"
+    print("✅ [1d] User_Memory.md は OWN_SNIPPET_CHARS を超える広い上限でスニペットを読む")
 
 
 def test_check_vault_insights_carries_over_files_beyond_max_files():

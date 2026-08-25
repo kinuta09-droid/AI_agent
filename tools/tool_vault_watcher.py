@@ -2,15 +2,20 @@
 """
 tools/tool_vault_watcher.py — Vault Insight Watcher (observe -> notice -> propose)
 
-30_Main (人間が書くノート) と 40_Report/Sessions (/chat off・アイドル退避時に
-LLMが「保存する価値がある」と判定した会話アーカイブ、tool_session_archive.py 参照)
-の変更ファイルを検知し、関連する既存ノートを検索した上で Gemini に「関係があるか」を
-判定させ、あれば短い所見として Discord に流す。Vault への書き込みは一切行わない (提案のみ)。
+30_Main (人間が書くノート)、40_Report/Sessions (/chat off・アイドル退避時に
+LLMが「保存する価値がある」と判定した会話アーカイブ、tool_session_archive.py 参照)、
+00_System/User_Memory.md (Chatlog全体を毎晩02:45にGeminiが蒸留する恒久的な
+ユーザー事実の長期記憶、tool_user_memory.py 参照) の変更ファイルを検知し、
+関連する既存ノートを検索した上で Gemini に「関係があるか」を判定させ、
+あれば短い所見として Discord に流す。Vault への書き込みは一切行わない (提案のみ)。
 
 40_Report は本来 Paper Digest / Skill Digest 等の機械的な収集物が多く自己言及ノイズに
 なるため監視対象から外しているが (plans/vault-insight-watcher.md)、Sessions だけは
 例外— LLM が事前に「検索・参照する価値がある」と選別済みの、ユーザーとの対話に基づく
-知見であり、Paper Digest 的な全量生成物とは性質が異なるため対象に含める。
+知見であり、Paper Digest 的な全量生成物とは性質が異なるため対象に含める。同じ理由で
+00_System フォルダ全体も対象外 (Vault_Health.md 等の機械生成レポートが混じる) だが、
+User_Memory.md だけは「ユーザー自身についての事実」であり自己言及にあたらないため
+単体で対象に加える。
 
 設計原則 (lib/verifier.py と同じ「偽陰性側に倒す」哲学):
   - Gemini には notable かどうかを必ず自己申告させ、既定は notable=false。
@@ -28,10 +33,19 @@ import datetime
 from lib.paths import VAULT_ROOT, LOGS_DIR
 from lib.file_lock import FileLock
 from lib.lib_obsidian_utils import build_contradiction_names_and_links
+from tools.tool_user_memory import MEMORY_MAX_CHARS as _USER_MEMORY_MAX_CHARS
 
 SCAN_DIR = os.path.join(VAULT_ROOT, "30_Main")
 SESSIONS_SCAN_DIR = os.path.join(VAULT_ROOT, "40_Report", "Sessions")
 SESSIONS_PREFIX = "Sessions/"
+USER_MEMORY_FILE = os.path.join(VAULT_ROOT, "00_System", "User_Memory.md")
+USER_MEMORY_CACHE_KEY = "System/User_Memory.md"
+# tool_user_memory._validate_distilled は MEMORY_MAX_CHARS*1.5 まで許容する。
+# OWN_SNIPPET_CHARS(1500字、新規の個別ノート用)のままだと、常に6000字前後で
+# 推移する全面書き換え型の User_Memory.md の大半を読み落とす — この関数は
+# 「既存本文全体をGeminiに渡して要約し直させ、ファイル全体を上書き」する方式
+# (追記ではない) なので、新しい事実がファイルのどこに出るかは保証されない。
+USER_MEMORY_SNIPPET_CHARS = int(_USER_MEMORY_MAX_CHARS * 1.5) + 500
 SEEN_MTIMES_CACHE = os.path.join(LOGS_DIR, "vault_insight_seen_mtimes.json")
 INSIGHT_LOG = os.path.join(LOGS_DIR, "vault_insight_log.jsonl")
 CONTRADICTIONS_NOTE = os.path.join(VAULT_ROOT, "00_System", "Vault_Contradictions.md")
@@ -84,8 +98,8 @@ def _save_seen_mtimes(d: dict) -> None:
 
 
 def _scan_changed_files(seen: dict) -> list:
-    """SCAN_DIR と SESSIONS_SCAN_DIR を走査し、seen より mtime が新しい (=未処理の) .md を
-    mtime 降順で返す。
+    """SCAN_DIR / SESSIONS_SCAN_DIR / USER_MEMORY_FILE を走査し、seen より mtime が
+    新しい (=未処理の) .md を mtime 降順で返す。
 
     cache_key (SESSIONS_SCAN_DIR 由来には SESSIONS_PREFIX を付与) と note_relpath
     (prefixなし、base_dir からの相対パス) を分けて返す。cache_key は seen 辞書の
@@ -116,16 +130,29 @@ def _scan_changed_files(seen: dict) -> list:
                     continue
                 if cache_key not in seen or mtime > seen[cache_key]:
                     changed.append((cache_key, note_relpath, abspath, mtime))
+
+    # User_Memory.md は単一ファイル (00_System フォルダごと対象にすると
+    # Vault_Health.md 等の機械生成レポートまで拾ってしまうため、これだけ単発でチェックする)。
+    if os.path.isfile(USER_MEMORY_FILE):
+        note_relpath = os.path.basename(USER_MEMORY_FILE)
+        try:
+            mtime = os.path.getmtime(USER_MEMORY_FILE)
+        except OSError:
+            mtime = None
+        if mtime is not None and (
+                USER_MEMORY_CACHE_KEY not in seen or mtime > seen[USER_MEMORY_CACHE_KEY]):
+            changed.append((USER_MEMORY_CACHE_KEY, note_relpath, USER_MEMORY_FILE, mtime))
+
     # mtime 降順、同mtimeは cache_key で決定的にタイブレーク (os.walk の列挙順は
     # 保証されないため、無指定だと上限超過時の繰り越し対象が実行毎に揺れる)。
     changed.sort(key=lambda x: (x[3], x[0]), reverse=True)
     return changed
 
 
-def _read_own_snippet(abspath: str) -> str:
+def _read_own_snippet(abspath: str, max_chars: int = OWN_SNIPPET_CHARS) -> str:
     try:
         with open(abspath, encoding="utf-8") as f:
-            return f.read(OWN_SNIPPET_CHARS)
+            return f.read(max_chars)
     except (OSError, UnicodeDecodeError) as e:
         print(f"[VaultWatcher] ⚠️ 読み込み失敗: {abspath} ({e})")
         return ""
@@ -358,7 +385,9 @@ def check_vault_insights(max_files: int = MAX_FILES_PER_RUN,
             processed = 0
 
             for cache_key, relpath, abspath, mtime in targets:
-                own_snippet = _read_own_snippet(abspath)
+                snippet_chars = (USER_MEMORY_SNIPPET_CHARS if cache_key == USER_MEMORY_CACHE_KEY
+                                  else OWN_SNIPPET_CHARS)
+                own_snippet = _read_own_snippet(abspath, snippet_chars)
                 title = os.path.splitext(os.path.basename(relpath))[0]
 
                 try:
