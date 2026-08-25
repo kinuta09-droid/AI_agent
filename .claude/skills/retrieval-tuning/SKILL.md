@@ -1,6 +1,6 @@
 ---
 name: retrieval-tuning
-description: Vault ハイブリッド検索・リランク (Gemini/Ollama)・ツール説明文によるPlanner選択・検索評価 (eval_retrieval/eval_agent)・Vault全体を一括走査する系のツール実装 の既知バグパターンと計測方法論。tools/tool_vault_hybrid.py, tools/tool_vault_index.py, tools/tool_vault_export.py, lib/tool_registry.py, scripts/eval_retrieval.py, scripts/eval_agent.py を触るとき、またはローカルLLM (Ollama) のレイテンシ/VRAM問題を調査するときに読む。
+description: Vault ハイブリッド検索・リランク (Gemini/Ollama)・ツール説明文によるPlanner選択・検索評価 (eval_retrieval/eval_agent)・Vault全体を一括走査する系のツール実装 の既知バグパターンと計測方法論。tools/tool_vault_hybrid.py, tools/tool_vault_index.py, tools/tool_vault_export.py, tools/tool_vault_watcher.py, lib/tool_registry.py, scripts/eval_retrieval.py, scripts/eval_agent.py を触るとき、またはローカルLLM (Ollama) のレイテンシ/VRAM問題を調査するときに読む。
 ---
 
 # Retrieval, Reranking & Tool-Selection Tuning
@@ -37,6 +37,7 @@ description: Vault ハイブリッド検索・リランク (Gemini/Ollama)・ツ
 ## Vault一括走査ツールの実装パターン
 
 - **Vault内の全 `.md` を一括走査するツールは、1件のファイル読み込み失敗で全体を止めてはいけない**。新規実装した `tools/tool_vault_export.py` の `_read_body()` は単純な `open(..., encoding="utf-8")` で、非UTF-8保存や破損ファイルが1件混じるだけで `UnicodeDecodeError` 等が飛び、実測929件の走査全体が停止する欠陥があった。`/grill` で指摘して気付いたのは、**同じ「Vault全体を舐める」処理である `tools/tool_vault_index.py` (505-513行目・623-626行目) には既に `errors="replace"` (デコード不能バイトは置換文字で読み進める) + `try/except OSError: continue` (該当ファイルだけ諦めて次へ) という確立パターンがあった**にもかかわらず、新規実装時にこれを見落として素朴に再実装してしまったこと。**Vault全走査系の新規ツールを書くときは、まず `tool_vault_index.py` のファイル読み込み部分を先に見て、このパターンをそのまま踏襲する** (車輪の再発明をしない)。修正は `errors="replace"` + `except OSError` で該当ファイルをスキップする形に書き直して対処 (`3650a32`)。回帰テストは未追加 (929件中1件の破損ファイルを人工的に用意するコストが高いため、当面は本節の明文化のみ)。2026-08-16
+- **複数の監視対象を持つツールに性質の異なる新しい対象を追加するとき、既存対象向けに調整済みの定数をそのまま使い回すと判定材料が静かに欠落する** (2026-08-25、`tools/tool_vault_watcher.py`)。Vault Insight Watcher の監視対象を `30_Main`/`40_Report/Sessions` から `00_System/User_Memory.md` へ拡張した際、`_read_own_snippet()` は冒頭 `OWN_SNIPPET_CHARS=1500` 字を読んで Gemini 判定プロンプトの `own_snippet` に渡す設計のまま流用していた。1500字という値は元々「新規に作られる短い個別ノート」を前提に決めており、冒頭1500文字でファイル全体をほぼカバーできていた。新規追加した `User_Memory.md` は `tools/tool_user_memory.py` の `distill_daily_memory()` により「既存本文全体を Gemini に渡して要約し直させファイル全体を上書き」する方式 (追記ではない) で、常時 `MEMORY_MAX_CHARS=6000` 字前後 (許容上限9000字) を維持する。この結果、毎晩の更新のたびに冒頭1500文字だけが判定材料になり、後方セクションに出た新しい蒸留内容は一度も既存ノートとの関連判定に使われないまま `notable=false` が返り続ける — 例外もエラーも出ないため、テストなしでは絶対に気付けない (実装時点では素通りし、後の `/grill` で発覚)。対処: `_read_own_snippet(abspath, max_chars=OWN_SNIPPET_CHARS)` を引数化し、`USER_MEMORY_CACHE_KEY` のときだけ `tool_user_memory.MEMORY_MAX_CHARS` から算出した `USER_MEMORY_SNIPPET_CHARS = int(MEMORY_MAX_CHARS*1.5)+500` を使うよう分岐 (マジックナンバーの二重管理を避けるため、値は定数importして算出する)。**一般化**: 走査/監視対象を追加するときは、既存対象向けの定数 (サイズ上限・件数上限・タイムアウト等) が新対象にも同じ前提 (生成頻度・更新方式が追記か全面書き換えか・典型サイズ) で成り立つかを検証する。1500字という値そのものは元の対象には正しかったが、その前提を書いた場所が無かったため、新しい対象を足す人が気付けなかった — 定数を決めた時点でその前提をコメントに残しておくと次に足す人が検証しやすい。回帰は `tests/test_vault_watcher.py` の `test_user_memory_file_uses_wider_snippet_than_own_snippet_chars` (OWN_SNIPPET_CHARSを超えた位置にマーカーを置き、実際にプロンプトへ渡ることを確認)。master `df0ebd7`
 
 ## DB接続とリソース管理 (sqlite3)
 

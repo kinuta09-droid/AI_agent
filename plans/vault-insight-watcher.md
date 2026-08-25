@@ -247,3 +247,22 @@ Critical 1件・Warning 3件をすべて修正:
     ロック競合・必須フィールド欠如)、全10ケース + `verify_project.py` フル +
     `run_test_sweep.py`(80/80 PASS)で再検証、実Vaultへのアイドルパス実行でも
     最終確認済み。
+
+### 2026-08-25 追記: 監視対象を Sessions / User_Memory.md へ拡張
+
+`30_Main` 限定だった監視対象に `40_Report/Sessions` (`/chat off`・60分アイドル退避時に
+LLMが「保存する価値がある」と判定した会話アーカイブ) と `00_System/User_Memory.md`
+(毎晩02:45に蒸留される長期記憶) を追加(master `df0ebd7`)。40_Report は本来 Paper Digest
+等の機械的収集物が多く自己言及ノイズになるため対象外だが、この2つはユーザー起点の
+情報でありその除外理由に当たらないと判断。
+
+キャッシュキーは `cache_key`(名前空間分離用、Sessions側は`Sessions/`プレフィックス)と
+`note_relpath`(find_file_in_vault解決用、プレフィックスなし)を分離して30_Main側の
+既存キャッシュ形式・後方互換性を維持。
+
+`/grill` で Critical 1件を検出・修正: `_read_own_snippet` の `OWN_SNIPPET_CHARS`(1500字)
+は「新規に増える短い個別ノート」前提の値で、`User_Memory.md`(既存本文全体を要約し直して
+ファイル全体を上書きする方式・常に6000字前後で推移)には成り立たなかった。冒頭1500文字
+だけでは新しい蒸留内容が判定プロンプトに一度も反映されない欠陥があり、`USER_MEMORY_SNIPPET_CHARS`
+(MEMORY_MAX_CHARSベースで算出)を使う分岐で修正。教訓は skill `retrieval-tuning` へ記録済み。
+テスト23/23 green、`verify_project.py` full green。
