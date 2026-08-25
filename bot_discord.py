@@ -77,6 +77,7 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 LOG_CHANNEL_ID = os.getenv("DISCORD_LOG_CHANNEL_ID", "")
+ALWAYS_CHAT_CHANNEL_ID = os.getenv("DISCORD_ALWAYS_CHAT_CHANNEL_ID", "")
 GUILD_ID = os.getenv("DISCORD_GUILD_ID", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
@@ -536,7 +537,8 @@ async def on_ready():
     bot_commands_curator.init_helpers(_log_to_daily_note)
     bot_commands_tools.init_helpers(_log_to_daily_note)
     bot_commands_agent.init_helpers(_log_to_daily_note)
-    bot_commands_chat.init_helpers(_log_to_daily_note, _openai_client)
+    bot_commands_chat.init_helpers(_log_to_daily_note, _openai_client, ALWAYS_CHAT_CHANNEL_ID)
+    bot_commands_chat.start_idle_archive_loop()
     # /restart が自分自身を閉じられるよう Client を渡す。
     # 認可リストの設定有無も渡す: 管理系コマンドは fail-open にできない
     # (未設定だと全ユーザーがサービスを停止できてしまう)

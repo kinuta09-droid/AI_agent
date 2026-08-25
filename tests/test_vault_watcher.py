@@ -30,10 +30,13 @@ from tools import tool_vault_watcher as watcher  # noqa: E402
 
 
 def _reset_watcher(tmp_dir: str) -> str:
-    """SCAN_DIR/SEEN_MTIMES_CACHE/INSIGHT_LOG/CONTRADICTIONS_NOTE を tempdir 配下へ差し替える。"""
+    """SCAN_DIR/SESSIONS_SCAN_DIR/SEEN_MTIMES_CACHE/INSIGHT_LOG/CONTRADICTIONS_NOTE を tempdir 配下へ差し替える。"""
     scan_dir = os.path.join(tmp_dir, "scan")
+    sessions_dir = os.path.join(tmp_dir, "sessions")
     os.makedirs(scan_dir, exist_ok=True)
+    os.makedirs(sessions_dir, exist_ok=True)
     watcher.SCAN_DIR = scan_dir
+    watcher.SESSIONS_SCAN_DIR = sessions_dir
     watcher.SEEN_MTIMES_CACHE = os.path.join(tmp_dir, "seen.json")
     watcher.INSIGHT_LOG = os.path.join(tmp_dir, "log.jsonl")
     watcher.CONTRADICTIONS_NOTE = os.path.join(tmp_dir, "Vault_Contradictions.md")
@@ -62,7 +65,7 @@ def test_scan_changed_files_detects_new_and_skips_unchanged():
         changed = watcher._scan_changed_files({})
         assert [c[0] for c in changed] == ["a.md"], changed
 
-        seen = {relpath: mtime for relpath, _abspath, mtime in changed}
+        seen = {cache_key: mtime for cache_key, _relpath, _abspath, mtime in changed}
         assert watcher._scan_changed_files(seen) == []
 
         new_mtime = os.path.getmtime(path_a) + 5
@@ -70,6 +73,37 @@ def test_scan_changed_files_detects_new_and_skips_unchanged():
         changed2 = watcher._scan_changed_files(seen)
         assert [c[0] for c in changed2] == ["a.md"], changed2
     print("✅ [1] 新規ファイル検知・mtime不変はスキップ・mtime更新で再検知")
+
+
+def test_scan_changed_files_sessions_note_relpath_has_no_prefix():
+    """SESSIONS_SCAN_DIR 由来ファイルの note_relpath (index 1) はキャッシュキーの
+    SESSIONS_PREFIX を含まない (find_file_in_vault が解決できる裸のファイル名で
+    あること)。cache_key (index 0) 側だけがプレフィックス付きで、SCAN_DIR 側と
+    同名ファイルが seen 辞書上で衝突しないことも合わせて確認する
+    (grillで検出した find_file_in_vault 解決不能バグの回帰、2026-08-25)。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        scan_dir = _reset_watcher(tmp)
+        sessions_dir = watcher.SESSIONS_SCAN_DIR
+        _write(os.path.join(scan_dir, "同名.md"), "30_Main note")
+        _write(os.path.join(sessions_dir, "同名.md"), "session note")
+
+        changed = watcher._scan_changed_files({})
+        by_cache_key = {c[0]: c[1] for c in changed}
+        assert by_cache_key == {
+            "同名.md": "同名.md",
+            "Sessions/同名.md": "同名.md",
+        }, changed
+
+        # note_relpath 側 (find_file_in_vault に渡す値) にプレフィックスが漏れて
+        # いないこと。漏れていると "Sessions/同名.md" のようなパス付き文字列に
+        # なり、40_Report/Sessions/同名.md を解決できず矛盾裁定ボタンが壊れる。
+        assert all("/" not in note_relpath for _ck, note_relpath, _ab, _mt in changed), changed
+
+        # cache_key はプレフィックスで分離されているため、同名ファイルでも
+        # seen 辞書上で衝突せず両方とも「未処理」として検知され続ける。
+        seen = {c[0]: c[3] for c in changed}
+        assert watcher._scan_changed_files(seen) == []
+    print("✅ [1b] Sessions由来ファイルの note_relpath はプレフィックスなし、cache_keyは同名衝突しない")
 
 
 def test_check_vault_insights_carries_over_files_beyond_max_files():

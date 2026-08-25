@@ -11,6 +11,7 @@ import threading
 import wave
 
 import discord
+from discord.ext import tasks
 
 from engine_plan_execute import run_plan_and_execute
 from lib.bot_errors import log_command_error, is_failure_result
@@ -29,6 +30,8 @@ from tools.tool_curator import (
     fetch_external_trends,
 )
 from tools.tool_session_archive import archive_chat_session
+from tools.tool_gmail_manager import get_gmail_summary as tool_gmail_check
+from tools.tool_obsidian import tool_save_idea
 
 try:
     import discord.ext.voice_recv as voice_recv
@@ -52,17 +55,20 @@ except ImportError:
 
 from commands import bot_commands_curator
 from commands import bot_commands_agent
+from commands import bot_commands_admin
 
 # bot_discord から注入されるヘルパー (Discord 応答系は lib.discord_response を直接 import 済み。
 # _openai_client は bot_discord.py 側で閉じた state のため引き続き注入で受け取る)
 _log_to_daily_note = None
 _openai_client = None
+_ALWAYS_CHAT_CHANNEL_ID = ""
 
 
-def init_helpers(log_func, openai_client):
-    global _log_to_daily_note, _openai_client
+def init_helpers(log_func, openai_client, always_chat_channel_id=""):
+    global _log_to_daily_note, _openai_client, _ALWAYS_CHAT_CHANNEL_ID
     _log_to_daily_note = log_func
     _openai_client = openai_client
+    _ALWAYS_CHAT_CHANNEL_ID = always_chat_channel_id
 
 
 # ---------------------------------------------------------
@@ -71,6 +77,50 @@ def init_helpers(log_func, openai_client):
 
 # ユーザーID -> セッション情報 のマップ
 _chat_sessions: dict[int, dict] = {}
+
+# 常時チャットチャンネルで /chat off した直後、自動応答を一時停止するユーザー
+# (ユーザーID -> 解除時刻)。30分経過 or /chat on で自動解除。
+_muted_until: dict[int, datetime.datetime] = {}
+MUTE_DURATION = datetime.timedelta(minutes=30)
+
+# 常時オンチャンネルは /chat off を挟まずに会話が続く前提なので、archive_chat_session
+# (これまで /chat off 時にしか呼ばれていなかった) が一度も発火しないまま history が
+# 際限なく伸び続ける恐れがある。一定時間発言が無いセッションは archive_chat_session で
+# 都度退避して history を畳む (セッション自体は終了しない — /chat off とは別物。
+# 常時オンチャンネルではユーザーに再度 /chat on を打たせたくないため)。
+IDLE_ARCHIVE_MINUTES = 60
+
+
+@tasks.loop(minutes=10)
+async def _idle_archive_loop():
+    now = datetime.datetime.now()
+    for user_id, session in list(_chat_sessions.items()):
+        history = session.get("history", [])
+        if not history:
+            continue
+        last_activity = session.get("last_activity") or session.get("started_at")
+        if not last_activity or now - last_activity < datetime.timedelta(minutes=IDLE_ARCHIVE_MINUTES):
+            continue
+        # archive_chat_session は Gemini 呼び出しを含み数秒かかりうる。history は
+        # session と共有参照なので、await 中に新しいメッセージが届くと
+        # session["history"] に追記される。ここでスナップショットの長さだけ
+        # 数え、await 後は「アーカイブした分だけ」を切り落とす (無条件で [] に
+        # すると、await 中に届いた新規メッセージまで無言で消える — grillで検出)。
+        snapshot = list(history)
+        try:
+            result = await asyncio.to_thread(archive_chat_session, snapshot)
+            print(f"[Chat] Idle archive (user={user_id}): {result}")
+        except Exception as e:
+            log_command_error("chat idle-archive", e)
+        # 成否に関わらず畳む — Skipped/Error でも snapshot 分は再判定し続けても
+        # 無駄なだけ (turns は増えないので無害)。
+        session["history"] = session["history"][len(snapshot):]
+
+
+def start_idle_archive_loop():
+    """bot_discord.py の on_ready から呼ぶ (_heartbeat_loop と同じ多重起動ガードは呼び出し側で行う)。"""
+    if not _idle_archive_loop.is_running():
+        _idle_archive_loop.start()
 
 
 def _gemini_chat_with_history(history: list) -> str:
@@ -241,6 +291,7 @@ class VoiceSession:
         """認識テキストを Gemini に送信し、テキストチャンネルに応答する。"""
         await self.text_channel.send(f"🎤 **認識**: {text}")
 
+        self.session["last_activity"] = datetime.datetime.now()
         self.session["history"].append({"role": "user", "content": text})
 
         async with self.text_channel.typing():
@@ -259,6 +310,39 @@ class VoiceSession:
 
 
 # ---------------------------------------------------------
+# 自然文「再起動」検知時のワンクッション確認
+# (/restart スラッシュコマンド自体は明示操作なので対象外。誤爆でプロセスが
+# 落ちる被害が大きいキーワードだけ、確認ボタンを挟んでから bot_commands_admin.
+# cmd_restart を呼ぶ。既存の /restart 実装を丸ごと再利用し、二重実装しない)
+# ---------------------------------------------------------
+
+class _RestartConfirmView(discord.ui.View):
+    def __init__(self, requester_id: int):
+        super().__init__(timeout=120)
+        self._requester_id = requester_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self._requester_id:
+            await interaction.response.send_message(
+                "⛔ 発言した本人のみ操作できます。", ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="♻️ 再起動する", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await bot_commands_admin.cmd_restart(interaction, "bot")
+
+    @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="キャンセルしました。", view=self)
+
+
+# ---------------------------------------------------------
 # Chat Intent Parser
 # ---------------------------------------------------------
 
@@ -270,6 +354,29 @@ INTENT_PATTERNS = {
     "crypto": r"^(crypto|btc|仮想通貨)\s*(.*)",
     "scan": r"^(scan|スキャン|市場)",
     "agent": r"^(agent|エージェント|plan)\s*(.*)",
+    "gmailcheck": r"^(gmail|gmailcheck|メールチェック|メール確認)",
+    # \b が無いと "ideally"/"idealistic" のような英単語の部分一致まで拾う
+    # (grillで検出)。日本語側の "アイデア" は英字\bの対象外なので不要。
+    "idea": r"^(idea\b|アイデア)\s*(.*)",
+}
+
+# 自然な会話 (文頭一致しない発言) でも拾うキーワード。日付/銘柄等のパラメータは
+# 文中の位置が不定で誤抽出のリスクがあるため対象外 — 常に query="" (既定値) で呼ぶ
+# (idea だけ例外、原文まるごとを保存対象にするので dispatch 側で message 本文を使う)。
+#
+# 既知の限界 (grillで指摘、未対応): dict はイテレーション順で最初に一致した
+# intent が勝つため、「タスク管理のアイデアを考えて」のように複数キーワードが
+# 同じ発言に含まれると tasks が idea より先に定義されているというだけの理由で
+# tasks 側が選ばれる。優先度付けは正解が一意に決まらない (LLM判定はコスト増の
+# ため見送り済み)。実害が増えたら見直す。
+ANYWHERE_INTENT_PATTERNS = {
+    "tasks": r"(tasks?|タスク|todo)",
+    "calendar": r"(calendar|カレンダー|予定|schedule)",
+    "gmailcheck": r"(gmail|メールチェック|メール確認)",
+    "idea": r"(\bidea\b|アイデア)",
+    # restart は誤検知時の被害が大きい (プロセス再起動) ため、文頭一致でも
+    # INTENT_PATTERNS には登録しない — 必ずこの anywhere 経路 (確認ボタン挟み) を通す。
+    "restart": r"(再起動|restart|リスタート)",
 }
 
 
@@ -281,7 +388,36 @@ def _parse_chat_intent(message: str) -> tuple:
         if match:
             query = match.group(2).strip() if match.lastindex and match.lastindex >= 2 else ""
             return intent, {"query": query}
+    for intent, pattern in ANYWHERE_INTENT_PATTERNS.items():
+        if re.search(pattern, message_stripped, re.IGNORECASE):
+            return intent, {"query": ""}
     return "chat", {}
+
+
+# 「さっきの内容」「直前の話」等、今のメッセージ自体には保存対象の本文が無く
+# 過去の発言を指している表現。「今の」「前の」を名詞なしの bare 形にすると
+# 「今のプロジェクトのアイデアを保存して」のような実内容入りメッセージまで
+# 誤って後方参照扱いにしてしまう (candidate を丸ごと捨てて無関係な履歴を保存する
+# 無言の誤保存、grillで検出) ため、名詞グループは必須にする。
+_IDEA_BACKREF_RE = re.compile(r"さっき|直前|前の(内容|話|やつ)|今の(内容|話)|この(内容|話)")
+
+
+def _resolve_idea_text(message_text: str, captured_query: str, session: dict | None) -> str | None:
+    """アイデアとして保存する本文を決める。
+
+    「idea ねこカフェ×VR」のように本文が明示されていればそれを使う。
+    「さっきの内容をアイデア登録しといて」のような後方参照なら、セッション履歴を
+    遡って直前のユーザー発言を拾う。解決できなければ None を返す (呼び出し側が
+    エラーメッセージを出す)。
+    """
+    candidate = captured_query or message_text
+    if not _IDEA_BACKREF_RE.search(candidate):
+        return candidate
+    if session:
+        for turn in reversed(session.get("history", [])):
+            if turn.get("role") == "user":
+                return turn["content"]
+    return None
 
 
 async def _dispatch_curate(interaction: discord.Interaction, query: str):
@@ -384,8 +520,12 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
                 await vc.disconnect()
             del _chat_sessions[user_id]
             voice_tag = " + 🎙️ ボイス切断" if vc else ""
+            mute_note = ""
+            if _ALWAYS_CHAT_CHANNEL_ID and str(session["channel_id"]) == _ALWAYS_CHAT_CHANNEL_ID:
+                _muted_until[user_id] = datetime.datetime.now() + MUTE_DURATION
+                mute_note = "\n30分間、または `/chat on` するまで自動応答を停止します。"
             await interaction.response.send_message(
-                f"👋 チャットセッションを終了しました（{turns}ターン{voice_tag}）"
+                f"👋 チャットセッションを終了しました（{turns}ターン{voice_tag}）{mute_note}"
             )
             if history:
                 try:
@@ -405,10 +545,13 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
         return
 
     if msg_lower == "on":
+        _muted_until.pop(user_id, None)
+        _now = datetime.datetime.now()
         _chat_sessions[user_id] = {
             "channel_id": interaction.channel_id,
             "history": [],
-            "started_at": datetime.datetime.now(),
+            "started_at": _now,
+            "last_activity": _now,
         }
         await interaction.response.send_message(
             "💬 **チャットセッションを開始しました**\n"
@@ -455,10 +598,12 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
 
         # セッション作成 (既存テキストセッションがあれば拡張、なければ新規)
         if user_id not in _chat_sessions:
+            _now = datetime.datetime.now()
             _chat_sessions[user_id] = {
                 "channel_id": interaction.channel_id,
                 "history": [],
-                "started_at": datetime.datetime.now(),
+                "started_at": _now,
+                "last_activity": _now,
             }
         session = _chat_sessions[user_id]
         session["voice_client"] = vc
@@ -526,6 +671,27 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
             except Exception:
                 pass
         return
+    elif intent == "gmailcheck":
+        result = await asyncio.to_thread(tool_gmail_check)
+    elif intent == "idea":
+        # /chat の単発呼び出しはセッション履歴を持たないため、後方参照 (「さっきの内容」)
+        # は解決できない — session=None で渡し、解決不能なら None を受けてエラー表示する。
+        idea_text = _resolve_idea_text(message, params.get("query", ""), None)
+        if idea_text is None:
+            result = "⚠️ 「さっきの内容」は単発の /chat 呼び出しでは参照できません。保存したい内容を直接書いてください。"
+        else:
+            result = await asyncio.to_thread(tool_save_idea, idea_text)
+    elif intent == "restart":
+        view = _RestartConfirmView(requester_id=interaction.user.id)
+        confirm_msg = "♻️ 再起動しますか？(誤検知防止のため確認します)"
+        if is_deferred:
+            await interaction.followup.send(confirm_msg, view=view)
+        else:
+            try:
+                await interaction.channel.send(f"{interaction.user.mention} {confirm_msg}", view=view)
+            except Exception:
+                pass
+        return
     else:
         # Default: Gemini chat
         today_str = datetime.datetime.now().strftime("%Y年%m月%d日")
@@ -575,7 +741,20 @@ async def handle_chat_message(message: discord.Message):
     """
     user_id = message.author.id
     if user_id not in _chat_sessions:
-        return
+        # 常時チャットチャンネルなら、on を打たせずに自動でセッションを開始する
+        if not _ALWAYS_CHAT_CHANNEL_ID or str(message.channel.id) != _ALWAYS_CHAT_CHANNEL_ID:
+            return
+        muted_at = _muted_until.get(user_id)
+        if muted_at and datetime.datetime.now() < muted_at:
+            return
+        _muted_until.pop(user_id, None)
+        _now = datetime.datetime.now()
+        _chat_sessions[user_id] = {
+            "channel_id": message.channel.id,
+            "history": [],
+            "started_at": _now,
+            "last_activity": _now,
+        }
 
     # 空メッセージはスキップ（画像・埋め込みのみの場合など）
     if not message.content or not message.content.strip():
@@ -586,6 +765,8 @@ async def handle_chat_message(message: discord.Message):
     # 同じチャンネルのみ応答
     if message.channel.id != session["channel_id"]:
         return
+
+    session["last_activity"] = datetime.datetime.now()
 
     # セッション内インテント解析（ツール呼び出しも可能）
     intent, params = _parse_chat_intent(message.content)
@@ -605,6 +786,20 @@ async def handle_chat_message(message: discord.Message):
             result = await asyncio.to_thread(tool_analyze_crypto, symbol)
         elif intent == "scan":
             result = await asyncio.to_thread(tool_scan_crypto_market)
+        elif intent == "gmailcheck":
+            result = await asyncio.to_thread(tool_gmail_check)
+        elif intent == "idea":
+            idea_text = _resolve_idea_text(message.content, params.get("query", ""), session)
+            if idea_text is None:
+                result = "⚠️ 「さっきの内容」を保存しようとしましたが、直前の発言が見つかりませんでした。保存したい内容を直接書いてください。"
+            else:
+                result = await asyncio.to_thread(tool_save_idea, idea_text)
+        elif intent == "restart":
+            await message.reply(
+                "♻️ 再起動しますか？(誤検知防止のため確認します)",
+                view=_RestartConfirmView(requester_id=message.author.id),
+            )
+            return
         else:
             result = None
 

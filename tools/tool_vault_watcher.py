@@ -2,9 +2,15 @@
 """
 tools/tool_vault_watcher.py — Vault Insight Watcher (observe -> notice -> propose)
 
-30_Main の変更ファイルを検知し、関連する既存ノートを検索した上で
-Gemini に「関係があるか」を判定させ、あれば短い所見として Discord に流す。
-Vault への書き込みは一切行わない (提案のみ)。
+30_Main (人間が書くノート) と 40_Report/Sessions (/chat off・アイドル退避時に
+LLMが「保存する価値がある」と判定した会話アーカイブ、tool_session_archive.py 参照)
+の変更ファイルを検知し、関連する既存ノートを検索した上で Gemini に「関係があるか」を
+判定させ、あれば短い所見として Discord に流す。Vault への書き込みは一切行わない (提案のみ)。
+
+40_Report は本来 Paper Digest / Skill Digest 等の機械的な収集物が多く自己言及ノイズに
+なるため監視対象から外しているが (plans/vault-insight-watcher.md)、Sessions だけは
+例外— LLM が事前に「検索・参照する価値がある」と選別済みの、ユーザーとの対話に基づく
+知見であり、Paper Digest 的な全量生成物とは性質が異なるため対象に含める。
 
 設計原則 (lib/verifier.py と同じ「偽陰性側に倒す」哲学):
   - Gemini には notable かどうかを必ず自己申告させ、既定は notable=false。
@@ -24,6 +30,8 @@ from lib.file_lock import FileLock
 from lib.lib_obsidian_utils import build_contradiction_names_and_links
 
 SCAN_DIR = os.path.join(VAULT_ROOT, "30_Main")
+SESSIONS_SCAN_DIR = os.path.join(VAULT_ROOT, "40_Report", "Sessions")
+SESSIONS_PREFIX = "Sessions/"
 SEEN_MTIMES_CACHE = os.path.join(LOGS_DIR, "vault_insight_seen_mtimes.json")
 INSIGHT_LOG = os.path.join(LOGS_DIR, "vault_insight_log.jsonl")
 CONTRADICTIONS_NOTE = os.path.join(VAULT_ROOT, "00_System", "Vault_Contradictions.md")
@@ -76,29 +84,41 @@ def _save_seen_mtimes(d: dict) -> None:
 
 
 def _scan_changed_files(seen: dict) -> list:
-    """SCAN_DIR を走査し、seen より mtime が新しい (=未処理の) .md を mtime 降順で返す。
+    """SCAN_DIR と SESSIONS_SCAN_DIR を走査し、seen より mtime が新しい (=未処理の) .md を
+    mtime 降順で返す。
+
+    cache_key (SESSIONS_SCAN_DIR 由来には SESSIONS_PREFIX を付与) と note_relpath
+    (prefixなし、base_dir からの相対パス) を分けて返す。cache_key は seen 辞書の
+    名前空間分離だけに使い、タイトル生成・矛盾記録・find_file_in_vault には
+    note_relpath を渡す — 両者を同じ値にすると "Sessions/xxx" のようなパス付き
+    文字列が find_file_in_vault (lib/lib_shared.py) に渡り、direct_path 判定・
+    os.walk のベース名一致のどちらにも一致せず実ファイル (40_Report/Sessions/xxx.md)
+    を解決できないまま矛盾裁定ボタンが毎回 "ノートが見つかりません" で失敗する
+    (grillで検出、2026-08-25)。
 
     Returns:
-        [(relpath, abspath, mtime), ...]
+        [(cache_key, note_relpath, abspath, mtime), ...]
     """
-    if not os.path.isdir(SCAN_DIR):
-        return []
     changed = []
-    for root, dirs, files in os.walk(SCAN_DIR):
-        for file in files:
-            if not file.endswith(".md"):
-                continue
-            abspath = os.path.join(root, file)
-            relpath = os.path.relpath(abspath, SCAN_DIR).replace("\\", "/")
-            try:
-                mtime = os.path.getmtime(abspath)
-            except OSError:
-                continue
-            if relpath not in seen or mtime > seen[relpath]:
-                changed.append((relpath, abspath, mtime))
-    # mtime 降順、同mtimeは relpath で決定的にタイブレーク (os.walk の列挙順は
+    for base_dir, prefix in ((SCAN_DIR, ""), (SESSIONS_SCAN_DIR, SESSIONS_PREFIX)):
+        if not os.path.isdir(base_dir):
+            continue
+        for root, dirs, files in os.walk(base_dir):
+            for file in files:
+                if not file.endswith(".md"):
+                    continue
+                abspath = os.path.join(root, file)
+                note_relpath = os.path.relpath(abspath, base_dir).replace("\\", "/")
+                cache_key = prefix + note_relpath
+                try:
+                    mtime = os.path.getmtime(abspath)
+                except OSError:
+                    continue
+                if cache_key not in seen or mtime > seen[cache_key]:
+                    changed.append((cache_key, note_relpath, abspath, mtime))
+    # mtime 降順、同mtimeは cache_key で決定的にタイブレーク (os.walk の列挙順は
     # 保証されないため、無指定だと上限超過時の繰り越し対象が実行毎に揺れる)。
-    changed.sort(key=lambda x: (x[2], x[0]), reverse=True)
+    changed.sort(key=lambda x: (x[3], x[0]), reverse=True)
     return changed
 
 
@@ -324,8 +344,8 @@ def check_vault_insights(max_files: int = MAX_FILES_PER_RUN,
 
             if not trustworthy:
                 new_seen = dict(seen)
-                for relpath, _abspath, mtime in changed:
-                    new_seen[relpath] = mtime
+                for cache_key, _relpath, _abspath, mtime in changed:
+                    new_seen[cache_key] = mtime
                 _save_seen_mtimes(new_seen)
                 return (f"Vault Insight Watcher: 初回実行(またはキャッシュ破損からの再構築)のため"
                         f"{len(changed)}件をシードし、所見生成はスキップしました。")
@@ -337,7 +357,7 @@ def check_vault_insights(max_files: int = MAX_FILES_PER_RUN,
             notices = []
             processed = 0
 
-            for relpath, abspath, mtime in targets:
+            for cache_key, relpath, abspath, mtime in targets:
                 own_snippet = _read_own_snippet(abspath)
                 title = os.path.splitext(os.path.basename(relpath))[0]
 
@@ -383,7 +403,7 @@ def check_vault_insights(max_files: int = MAX_FILES_PER_RUN,
                 # ログ済みのファイルの mtime が失われ、次回また処理し直して
                 # 二重課金・重複ログになる (max_files超過分の繰り越しと同じ
                 # 「処理した分だけ確定させる」原則をループ内にも適用する)。
-                seen[relpath] = mtime
+                seen[cache_key] = mtime
                 processed += 1
                 _save_seen_mtimes(seen)
 
