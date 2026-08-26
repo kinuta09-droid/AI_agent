@@ -131,8 +131,8 @@ def get_obsidian_updates() -> str:
 # Register Default Providers
 # ---------------------------------------------------------
 
-add_provider("Crypto", get_crypto_summary)
-add_provider("Obsidian", get_obsidian_updates)
+# 表示順は登録順 (dict は挿入順を保持) で決まる。
+# Schedule & Tasks → Gmail → Crypto → Obsidian の順で表示するため、この順で登録する。
 
 # gws CLI が利用可能なら予定＋タスクのサマリーを Briefing に含める
 try:
@@ -146,6 +146,9 @@ try:
     import tools.tool_gmail_manager  # noqa: F401 — side effect: registers "Gmail" provider
 except ImportError:
     pass
+
+add_provider("Crypto", get_crypto_summary)
+add_provider("Obsidian", get_obsidian_updates)
 
 
 # ---------------------------------------------------------
