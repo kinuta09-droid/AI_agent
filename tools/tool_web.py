@@ -212,7 +212,7 @@ def tool_fetch_url(url: str) -> str:
 
 def _read_interests_and_rss():
     """設定ファイルからキーワードとRSS URLを読み込む"""
-    path = os.path.join(VAULT_ROOT, "User_Interests.md")
+    path = os.path.join(VAULT_ROOT, "00_System", "User_Interests.md")
     keywords = []
     rss_urls = []
 

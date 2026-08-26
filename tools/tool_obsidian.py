@@ -364,6 +364,36 @@ def _set_frontmatter_field(path: str, field: str, value: str) -> None:
         f.write(content)
 
 
+def _append_list_item_to_section(path: str, section_heading: str, item: str) -> bool:
+    """Markdownの `## {section_heading}` 見出し直下の連続する `- ` リストの末尾に
+    `- {item}` を追記する。見出しが見つからない・ファイルが読めない場合は一切
+    書き込まず False を返す (_set_frontmatter_field と同じ「壊れた形式は無視」安全弁)。
+
+    見出し行の直後に連続する `- ` 行だけをブロックとしてマッチさせるため、
+    次の `## ` 見出しや別セクションの内容には影響しない。
+    """
+    line = str(item).strip().replace('\n', ' ')
+    if not line:
+        return False
+
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except OSError:
+        return False
+
+    section_re = re.compile(
+        rf'(^## {re.escape(section_heading)}.*\n(?:- .*\n)*)', re.MULTILINE)
+    m = section_re.search(content)
+    if not m:
+        return False
+
+    content = content[:m.start(1)] + m.group(1) + f'- {line}\n' + content[m.end(1):]
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content)
+    return True
+
+
 def tag_untagged_clips(limit: int = 20) -> str:
     """00_inbox内の未処理Clipノート(Obsidian Web Clipper由来、frontmatterにsource:を持つ)へ
     BitNetでトピックタグ、GeminiでMOC候補タグ(moc/<name>)を付与する。

@@ -58,7 +58,7 @@ def read_main_context(max_tokens: int = 30000) -> str:
     char_count = 0
 
     # 1. User_Interests.md（常に含める）
-    interests_path = os.path.join(VAULT_ROOT, "User_Interests.md")
+    interests_path = os.path.join(VAULT_ROOT, "00_System", "User_Interests.md")
     if os.path.exists(interests_path):
         try:
             with open(interests_path, 'r', encoding='utf-8') as f:

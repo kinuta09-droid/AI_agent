@@ -141,6 +141,7 @@ PARALLEL_TESTS = frozenset({
     "test_idea_relink.py",
     "test_import_modularized.py",
     "test_inbox_clip_tagging.py",
+    "test_interest_promotion.py",
     "test_ja_style_guard.py",
     "test_keyword_hits.py",
     "test_learning_db_rotation.py",

@@ -537,6 +537,7 @@ async def on_ready():
     bot_commands_curator.init_helpers(_log_to_daily_note)
     bot_commands_tools.init_helpers(_log_to_daily_note)
     bot_commands_agent.init_helpers(_log_to_daily_note)
+    bot_commands_idea.init_helpers(_log_to_daily_note)
     bot_commands_chat.init_helpers(_log_to_daily_note, _openai_client, ALWAYS_CHAT_CHANNEL_ID)
     bot_commands_chat.start_idle_archive_loop()
     # /restart が自分自身を閉じられるよう Client を渡す。
@@ -551,6 +552,7 @@ async def on_ready():
     bot.add_view(bot_views.ContradictionResolutionView())
     bot.add_view(bot_views.OrphanRelinkView())
     bot.add_view(bot_views.ReferencePromotionView())
+    bot.add_view(bot_views.InterestPromotionView())
     try:
         if GUILD_ID:
             guild = discord.Object(id=int(GUILD_ID))

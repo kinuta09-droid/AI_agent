@@ -132,6 +132,14 @@ except ImportError as _e:
     def run_reference_promotion_job(*args, **kwargs):
         return f"Reference Promotion: tool_reference_promotion not available ({_reference_promotion_err})"
 
+# Interest Promotion (optional — Vault Semantic Index と同じ扱い)
+try:
+    from tools.tool_interest_promotion import run_interest_promotion_job
+except ImportError as _e:
+    _interest_promotion_err = str(_e)
+    def run_interest_promotion_job(*args, **kwargs):
+        return f"Interest Promotion: tool_interest_promotion not available ({_interest_promotion_err})"
+
 # ボタンの custom_id は bot プロセス側の永続 View (commands/bot_views.py) と
 # 一致させる必要があるため定数を直接 import する (discord.Client は起動しない)
 from commands.bot_views import DIVE_CUSTOM_IDS, SCHEDULER_LOG_CUSTOM_ID
@@ -727,6 +735,17 @@ SCHEDULE = [
         "time": "03:55",
         "name": "Reference Promotion (よく参照されるノートのMOC昇格提案)",
         "func": run_reference_promotion_job,
+        "weekday": 6,  # 日曜
+        "silent": True,
+    },
+    # Interest Promotion (User_Memory.mdからの興味キーワード提案): Reference Promotionの
+    # 直後、同じ夜間帯の末尾。04:00はEval Radar (Weekly)が既に使用しているため04:05に置く。
+    # weekday指定・catch_upなしはOrphan Relink/Reference Promotionと同じ判断
+    # (1週遅れても実害が小さく、catch_up追加はpending二重生成リスクを増やすだけ)。
+    {
+        "time": "04:05",
+        "name": "Interest Promotion (興味キーワード新規候補の提案)",
+        "func": run_interest_promotion_job,
         "weekday": 6,  # 日曜
         "silent": True,
     },

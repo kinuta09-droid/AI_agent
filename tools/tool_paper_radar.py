@@ -454,7 +454,7 @@ def read_interest_keywords() -> list:
     用に RSS も返すのでシグネチャが違うが、**キーワードの出どころは1つ**に
     しておかないと「ニュースは追うのに論文は追わない話題」が生まれる。
     """
-    path = os.path.join(VAULT_ROOT, "User_Interests.md")
+    path = os.path.join(VAULT_ROOT, "00_System", "User_Interests.md")
     if not os.path.exists(path):
         return []
     keywords = []

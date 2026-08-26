@@ -415,7 +415,7 @@ def _load_user_context() -> str:
     存在しない場合は空文字を返す（幸福AIはユーザー情報なしでも動作する）。"""
     parts = []
     for filename, label in [
-        ("User_Interests.md", "User Interests"),
+        (os.path.join("00_System", "User_Interests.md"), "User Interests"),
         (os.path.join("00_System", "User_Profile.md"), "User Profile"),
     ]:
         path = os.path.join(VAULT_ROOT, filename)

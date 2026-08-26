@@ -29,6 +29,9 @@ from tools.tool_orphan_relink import (
 from tools.tool_reference_promotion import (
     REFERENCE_PROMOTION_SLOTS, tool_approve_reference_promotion, tool_reject_reference_promotion,
 )
+from tools.tool_interest_promotion import (
+    INTEREST_PROMOTION_SLOTS, tool_approve_interest_promotion, tool_reject_interest_promotion,
+)
 
 # ---------------------------------------------------------
 # 認可付き基底 View
@@ -560,6 +563,58 @@ class ReferencePromotionView(AllowedUserView):
                 result = log_command_error(f"MOC昇格{action_label} (slot={slot})", e)
             finally:
                 _reference_promotion_running.discard(slot)
+
+            icon = "❌" if is_failure_result(result) else "✅"
+            if interaction.channel is not None:
+                await interaction.channel.send(f"{icon} {result}")
+
+        return callback
+
+
+# ---------------------------------------------------------
+# 興味キーワード新規候補の承認/却下ボタン
+# ---------------------------------------------------------
+
+_interest_promotion_running: set[int] = set()
+
+
+class InterestPromotionView(AllowedUserView):
+    """興味キーワード新規候補の承認/却下ボタン (夜間ジョブが REST 送信、実処理はここが担う)。
+    アーキテクチャは ReferencePromotionView と同一 (上記参照)。
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        for slot in range(INTEREST_PROMOTION_SLOTS):
+            approve = discord.ui.Button(
+                label="✅ 追加", style=discord.ButtonStyle.success,
+                custom_id=f"interest_promo_approve:{slot}",
+            )
+            approve.callback = self._make_callback(slot, tool_approve_interest_promotion, "承認")
+            self.add_item(approve)
+
+            reject = discord.ui.Button(
+                label="❌ 却下", style=discord.ButtonStyle.danger,
+                custom_id=f"interest_promo_reject:{slot}",
+            )
+            reject.callback = self._make_callback(slot, tool_reject_interest_promotion, "却下")
+            self.add_item(reject)
+
+    def _make_callback(self, slot: int, action_fn, action_label: str):
+        async def callback(interaction: discord.Interaction):
+            if slot in _interest_promotion_running:
+                await interaction.response.send_message(
+                    "⏳ この提案は処理中です。", ephemeral=True
+                )
+                return
+            _interest_promotion_running.add(slot)
+            await interaction.response.defer()
+            try:
+                result = await asyncio.to_thread(action_fn, slot)
+            except Exception as e:
+                result = log_command_error(f"興味キーワード{action_label} (slot={slot})", e)
+            finally:
+                _interest_promotion_running.discard(slot)
 
             icon = "❌" if is_failure_result(result) else "✅"
             if interaction.channel is not None:

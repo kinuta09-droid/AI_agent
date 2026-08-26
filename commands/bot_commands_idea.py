@@ -6,9 +6,13 @@
 /brainstorm: AIと1問1答を繰り返しながらアイデアを育て、
              「🏁 まとめる」ボタンで対話全体を1枚のメモに要約してVault保存する。
 
-bot_commands_article.py と同じ自己完結スタイル (init_helpers 不要)。
 セッション状態はスレッドID -> dict のメモリ辞書のみで、bot 再起動をまたがない
 (article の _article_sessions と同じ耐久性)。
+
+/idea・/brainstorm はユーザーの自発的な入力(顕示選好が最も強いシグナル)だが、
+これまで Chatlog に記録されず User_Memory.md の夜間蒸留から完全に見えなかった
+(2026-08-26 調査で判明)。init_helpers 経由で _log_to_daily_note を注入し、
+他のコマンドモジュール(bot_commands_tools.py 等)と同じ形で記録する。
 """
 import discord
 from discord import app_commands
@@ -47,6 +51,14 @@ SOFT_TURN_CAP = 12
 #               "pending_question", "last_view", "busy"}
 _brainstorm_sessions: dict[int, dict] = {}
 
+# bot_discord から注入されるヘルパー (他のコマンドモジュールと同じ init_helpers パターン)
+_log_to_daily_note = None
+
+
+def init_helpers(log_func):
+    global _log_to_daily_note
+    _log_to_daily_note = log_func
+
 
 async def cmd_idea(interaction: discord.Interaction, text: str):
     """雑なアイデアを1文のまま00_inboxにFleeting Noteとして即保存する。"""
@@ -57,6 +69,8 @@ async def cmd_idea(interaction: discord.Interaction, text: str):
         result = log_command_error("/idea", e)
     icon = "❌" if is_failure_result(result) else "✅"
     await interaction.followup.send(f"{icon} {result}")
+    if _log_to_daily_note:
+        await asyncio.to_thread(_log_to_daily_note, "command", f"/idea {text}", result)
 
 
 async def idea_autocomplete(
@@ -331,6 +345,8 @@ async def cmd_brainstorm(interaction: discord.Interaction, text: str):
     if not question:
         await thread.send("❌ 質問の生成に失敗しました。もう一度 `/brainstorm` を実行してください。")
         return
+    if _log_to_daily_note:
+        await asyncio.to_thread(_log_to_daily_note, "chat", f"/brainstorm {seed}", question)
 
     _brainstorm_sessions[thread.id] = {
         "user_id": interaction.user.id,
@@ -387,6 +403,9 @@ async def handle_brainstorm_reply(message: discord.Message):
     try:
         session["turns"].append({"question": session["pending_question"], "answer": message.content})
         question = await asyncio.to_thread(generate_next_question, session["seed"], session["turns"])
+        if _log_to_daily_note:
+            await asyncio.to_thread(
+                _log_to_daily_note, "chat", message.content, question or "(質問生成失敗)")
         if not question:
             await message.channel.send("❌ 次の質問の生成に失敗しました。🏁まとめてボタンで終了できます。")
             return
