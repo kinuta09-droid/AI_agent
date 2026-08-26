@@ -26,6 +26,12 @@ except ImportError:
 
 from tools.tool_resurfacing import _build_resurfacing_section
 
+try:
+    from tools.tool_web import tool_fetch_daily_news
+    _HAS_NEWS_TOOL = True
+except ImportError:
+    _HAS_NEWS_TOOL = False
+
 
 # ---------------------------------------------------------
 # Provider Registry
@@ -198,6 +204,65 @@ def _build_xtrend_section(top_n: int = 3) -> str:
 
 
 # ---------------------------------------------------------
+# News Section (fixed — not filtered by Gemini)
+# ---------------------------------------------------------
+
+def _build_news_section(today_str: str) -> str:
+    """当日のニュース要約+リンクを固定セクションとして返す。
+    News_{date}.md が無ければ tool_fetch_daily_news() で生成してから読む。
+    """
+    if not _HAS_NEWS_TOOL:
+        return ""
+
+    news_file_path = os.path.join(VAULT_ROOT, "02_News", f"News_{today_str}.md")
+
+    try:
+        if not os.path.exists(news_file_path):
+            tool_fetch_daily_news()
+
+        if not os.path.exists(news_file_path):
+            return ""
+
+        with open(news_file_path, 'r', encoding='utf-8') as f:
+            news_content = f.read()
+
+        lines = news_content.split('\n')
+        summary_lines = []
+        in_summary = False
+        for line in lines:
+            if '要約' in line or 'まとめ' in line or '概要' in line:
+                in_summary = True
+                continue
+            if in_summary:
+                stripped = line.strip()
+                if stripped and not stripped.startswith('#') and not stripped.startswith('---'):
+                    # 元の要約が > [!SUMMARY] callout の引用行のことがあるため、
+                    # 先頭の "> " を剥がしてから使う (剥がさないと後段で二重に付く)。
+                    stripped = stripped.lstrip('>').strip()
+                    if stripped:
+                        summary_lines.append(stripped)
+                        if len(summary_lines) >= 3:
+                            break
+
+        if summary_lines:
+            summary = '\n'.join(summary_lines)
+        else:
+            summary = "ニュースの詳細はリンク先を参照してください。"
+            for line in lines:
+                if line.strip() and not line.startswith('#') and not line.startswith('---') and not line.startswith('>'):
+                    summary = line.strip()[:200] + "..." if len(line) > 200 else line.strip()
+                    break
+    except Exception as e:
+        return f"\n## 📰 今日のニュース\nニュース取得エラー: {e}\n"
+
+    return (
+        f"\n## 📰 今日のニュース\n"
+        f"> {summary}\n\n"
+        f"👉 [[News_{today_str}|詳細はこちら]]\n"
+    )
+
+
+# ---------------------------------------------------------
 # Main Tool
 # ---------------------------------------------------------
 
@@ -213,7 +278,6 @@ def tool_generate_briefing(include_content: bool = False) -> str:
         Success メッセージ + ファイルパス、本文全体、またはエラーメッセージ
     """
     today_str = datetime.date.today().strftime("%Y-%m-%d")
-    now_str = datetime.datetime.now().strftime("%H%M")
     print(f"[Briefing] 📋 Generating briefing for {today_str}...")
 
     # 1. Collect data from all providers
@@ -251,31 +315,36 @@ def tool_generate_briefing(include_content: bool = False) -> str:
 
     briefing_text = _call_gemini(prompt)
 
-    # 3. Save to 30_Main/Briefing (timestamp suffix to avoid overwrite)
-    output_dir = os.path.join(VAULT_ROOT, "30_Main", "Briefing")
+    # 3. Save to 01_Daily (デイリーノートとして1日1ファイル)。
+    # 既に当日分がある場合は上書きせずタイムスタンプ付き別ファイルにする —
+    # tool_update_note でその日のノートに追記された内容を、再実行のたびに
+    # 無警告で破壊しないため (旧 30_Main/Briefing 時代からの挙動を踏襲)。
+    output_dir = os.path.join(VAULT_ROOT, "01_Daily")
     os.makedirs(output_dir, exist_ok=True)
-    filename = f"Briefing_{today_str}.md"
+    filename = f"{today_str}.md"
     filepath = os.path.join(output_dir, filename)
-
-    # 既存ファイルがあればタイムスタンプ付きに変更
     if os.path.exists(filepath):
-        filename = f"Briefing_{today_str}_{now_str}.md"
+        now_str = datetime.datetime.now().strftime("%H%M")
+        filename = f"{today_str}_{now_str}.md"
         filepath = os.path.join(output_dir, filename)
 
     xtrend_section = _build_xtrend_section(top_n=3)
     resurfacing_section = _build_resurfacing_section()
+    news_section = _build_news_section(today_str)
 
     report = f"""---
 up: "[[10_MOCs/Dashboard]]"
 date: {today_str}
-type: briefing
+tags:
+  - type/daily
 ---
 
-# Daily Briefing — {today_str}
+# 📅 {today_str}
 
 {briefing_text}
 {xtrend_section}
 {resurfacing_section}
+{news_section}
 
 ---
 
@@ -291,13 +360,13 @@ type: briefing
 
     if include_content:
         return (
-            f"{briefing_text}\n{xtrend_section}\n{resurfacing_section}\n\n"
+            f"{briefing_text}\n{xtrend_section}\n{resurfacing_section}\n{news_section}\n\n"
             f"(Path: {filepath})"
         )
 
     return (
         f"Success: ブリーフィング生成完了。"
-        f" Report: [[30_Main/Briefing/{filename}]]"
+        f" Report: [[01_Daily/{filename}]]"
         f" (Path: {filepath})"
     )
 

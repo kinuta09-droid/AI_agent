@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Calendar / Task Integration Module
-Google Calendar + Google Tasks (gws CLI) + Obsidian Daily Note 連携ツール群。
+Google Calendar + Google Tasks (gws CLI) 連携ツール群。
 """
 
 import os
@@ -19,7 +19,6 @@ from lib.paths import PROJECT_ROOT, ENV_PATH, VAULT_ROOT
 load_dotenv(ENV_PATH)
 
 from lib.lib_shared import _run_gws_command
-from lib.bot_errors import is_failure_result
 
 # ---------------------------------------------------------
 # Configuration
@@ -29,7 +28,6 @@ CREDENTIALS_PATH = os.path.join(PROJECT_ROOT, "credentials.json")
 TOKEN_PATH = os.path.join(PROJECT_ROOT, "token.json")
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
-DAILY_NOTE_DIR = os.path.join(VAULT_ROOT, "01_Daily")
 
 GOOGLE_CALENDAR_ENABLED = os.getenv("GOOGLE_CALENDAR_ENABLED", "false").lower() == "true"
 
@@ -469,56 +467,3 @@ def tool_get_tasks(filter: str = "today") -> str:
         return f"Error: タスクの取得に失敗しました: {_format_gws_error(data['error'])}"
     return _format_gws_tasks(data.get("items", []), filter)
 
-
-# ---------------------------------------------------------
-# Tool: Sync to Daily Note
-# ---------------------------------------------------------
-
-def tool_sync_to_daily_note() -> str:
-    """Google Calendar と Google Tasks の内容を Obsidian デイリーノートに同期する。"""
-    today_str = datetime.datetime.now().strftime('%Y-%m-%d')
-    daily_path = os.path.join(DAILY_NOTE_DIR, f"{today_str}.md")
-
-    if not os.path.exists(daily_path):
-        return f"Error: デイリーノートが見つかりません: {daily_path}"
-
-    with open(daily_path, 'r', encoding='utf-8') as f:
-        content = f.read()
-
-    synced_items = []
-
-    # Google Calendar 同期
-    cal_content = ""
-    if GOOGLE_CALENDAR_ENABLED and _get_calendar_service() is not None:
-        cal_result = tool_get_calendar("today")
-        # 失敗判定は is_failure_result() に一本化する。ここが取りこぼすと
-        # エラー文がそのまま「今日の予定」としてデイリーノートに書き込まれる。
-        # "Google Calendar が未設定です" は失敗ではなく未設定のセンチネルなので別扱い。
-        if not is_failure_result(cal_result) and not cal_result.startswith("Google Calendar"):
-            # ヘッダーを除去してコンテンツのみ
-            cal_lines = cal_result.split("\n")[1:]  # "## ... の予定" を除去
-            cal_content = "\n".join(cal_lines) if cal_lines else "予定はありません。"
-            synced_items.append("予定")
-
-    # タスク同期 (Google Tasks / gws)
-    tasks_content = ""
-    tasks_result = tool_get_tasks("today")
-    if not is_failure_result(tasks_result):
-        tasks_lines = tasks_result.split("\n")[1:]  # ヘッダー除去
-        tasks_content = "\n".join(tasks_lines) if tasks_lines else "タスクはありません。"
-        synced_items.append("タスク")
-
-    if not synced_items:
-        return "同期するサービスが設定されていません。Google Calendar/Tasks (gws) を設定してください。"
-
-    updated = content
-    if cal_content and "<!-- CALENDAR_PLACEHOLDER -->" in updated:
-        updated = updated.replace("<!-- CALENDAR_PLACEHOLDER -->", cal_content)
-    if tasks_content and "<!-- TASKS_PLACEHOLDER -->" in updated:
-        updated = updated.replace("<!-- TASKS_PLACEHOLDER -->", tasks_content)
-
-    if updated != content:
-        with open(daily_path, 'w', encoding='utf-8') as f:
-            f.write(updated)
-
-    return f"Success: デイリーノートを同期しました ({', '.join(synced_items)})"

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""「自機能の捏造」と「追記ツールの取り違え」の回帰テスト
+"""「自機能の捏造」の回帰テスト
 
 このテストが存在する理由:
-  評価ハーネス (scripts/eval_agent.py) が 2026-07-28 に実測した2件の欠陥を、
+  評価ハーネス (scripts/eval_agent.py) が 2026-07-28 に実測した欠陥を、
   Gemini を1回も叩かずに守るためのもの。
 
   T12 (hallucination): 「このAIエージェントの音声通話機能の使い方を教えて」に対し、
@@ -12,13 +12,7 @@
     持っているか」を一切知らないまま報告を書いていたのが原因。
     → 要約プロンプトにツールレジストリ由来の機能一覧と自己言及規則を載せる。
 
-  T09 (negation): 「ノートは新規作成せず、既存のデイリーノートに追記する形で」に対し
-    tool_sync_to_daily_note (予定/タスク同期) が選ばれていた。tool_update_note の
-    description が "追記" の2文字しか無く、「デイリーノート」を説明文に含む
-    sync 側に語彙一致で奪われていたため。
-    → 両者の description に守備範囲と非対象を書く。
-
-  どちらもプロンプト/メタデータの文言なので、壊れても例外は出ない。
+  プロンプト/メタデータの文言なので、壊れても例外は出ない。
   つまり静的に見張るしかない。
 
 実行: py tests/test_answer_grounding.py
@@ -160,37 +154,6 @@ def test_summary_prompt_keeps_detail_requirements():
           "❌" in _build_final_summary_prompt(
               "x", [{"step": 1, "task": "t", "tool": "u",
                      "success": False, "observation": "Error: boom"}]))
-
-
-# ---------------------------------------------------------
-# 3. 追記ツールと同期ツールが弁別できる
-# ---------------------------------------------------------
-
-def test_note_tool_descriptions_are_distinguishable():
-    print("\n[4] tool_update_note / tool_sync_to_daily_note の弁別")
-    upd = _tool_desc("tool_update_note")
-    sync = _tool_desc("tool_sync_to_daily_note")
-
-    check("tool_update_note が登録されている", bool(upd))
-    check("tool_sync_to_daily_note が登録されている", bool(sync))
-
-    # T09 の直接原因: "追記" の2文字だけでは「デイリーノート」を含む sync に負ける
-    check("update_note の説明が『追記』の2文字より詳しい", len(upd) > 10, f"{upd!r}")
-    check("update_note が『既存』ノート向けだと書いてある", "既存" in upd, f"{upd!r}")
-    check("update_note が新規作成しないと書いてある", "新規" in upd, f"{upd!r}")
-    check("update_note がデイリーノートも守備範囲だと書いてある",
-          "デイリーノート" in upd, f"{upd!r}")
-
-    # 逆流防止: sync 側が起動条件と非対象の両方を持っていること
-    check("sync が予定/タスク専用だと書いてある",
-          ("予定" in sync and "タスク" in sync), f"{sync!r}")
-    check("sync が任意テキストに使えないと書いてある",
-          "任意の文章" in sync, f"{sync!r}")
-    check("sync が代わりの tool_update_note を案内している",
-          "tool_update_note" in sync, f"{sync!r}")
-
-    check("2つの説明文が同一でない", upd != sync)
-    check("一方が他方の部分文字列でない", upd not in sync and sync not in upd)
 
 
 def test_t12_assertion_still_rejects_the_original_bug():
@@ -344,8 +307,6 @@ def test_planner_prompt_mentions_append_guideline():
     check("指針が tool_update_note を指している",
           "既存ファイルに文章を書き足す場合**: tool_update_note" in src
           or "既存ファイルに文章を書き足す場合" in src and "tool_update_note を使う" in src)
-    check("sync が同期専用だと Planner にも書いてある",
-          "予定/タスクの同期専用" in src)
 
 
 def test_planner_prompt_routes_research_keyword_to_notebooklm():
@@ -536,7 +497,6 @@ if __name__ == "__main__":
     test_summary_prompt_has_self_reference_rule()
     test_summary_falls_back_when_prompt_build_fails()
     test_summary_prompt_keeps_detail_requirements()
-    test_note_tool_descriptions_are_distinguishable()
     test_t12_assertion_still_rejects_the_original_bug()
     test_summary_prompt_preserves_citations()
     test_summary_prompt_has_temporal_consistency_rule()

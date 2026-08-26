@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 r"""
 毎朝のニュース取得トリガースクリプト。
-デイリーノートが未作成なら自動生成 → tool_fetch_daily_news() を実行。
+tool_fetch_daily_news() を実行する。
 n8n や Windows Task Scheduler から呼び出して使う。
 
 Usage:
@@ -11,7 +11,6 @@ Usage:
 
 import sys
 import os
-import datetime
 import argparse
 
 sys.stdout.reconfigure(encoding='utf-8')
@@ -20,39 +19,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from dotenv import load_dotenv
 
-from lib.paths import ENV_PATH, VAULT_ROOT
+from lib.paths import ENV_PATH
 
 load_dotenv(ENV_PATH)
 
 import agent_hello
-
-DAILY_DIR = os.path.join(VAULT_ROOT, '01_Daily')
-TEMPLATE_PATH = os.path.join(VAULT_ROOT, '99_Assets', 'Templates', 'Tpl_Daily.md')
-
-
-def ensure_daily_note():
-    """今日のデイリーノートがなければテンプレートから自動作成する"""
-    today_str = datetime.datetime.now().strftime('%Y-%m-%d')
-    daily_path = os.path.join(DAILY_DIR, f"{today_str}.md")
-
-    if os.path.exists(daily_path):
-        print(f"[Trigger] Daily note exists: {today_str}.md")
-        return
-
-    print(f"[Trigger] Creating daily note: {today_str}.md")
-    os.makedirs(DAILY_DIR, exist_ok=True)
-
-    if os.path.exists(TEMPLATE_PATH):
-        with open(TEMPLATE_PATH, 'r', encoding='utf-8') as f:
-            content = f.read()
-        content = content.replace('{{date}}', today_str)
-    else:
-        content = f"---\ntags:\n  - type/daily\ncreated: {today_str}\n---\n\n# {today_str}\n"
-
-    with open(daily_path, 'w', encoding='utf-8') as f:
-        f.write(content)
-    print(f"[Trigger] Created: {daily_path}")
-
 
 def main():
     parser = argparse.ArgumentParser(description='Fetch daily news')
@@ -60,7 +31,6 @@ def main():
                         help='How many days back to search (default: 1)')
     args = parser.parse_args()
 
-    ensure_daily_note()
     result = agent_hello.tool_fetch_daily_news(days=args.days)
     print(result)
 

@@ -316,7 +316,7 @@ def test_find_stale_popular_note_excludes_moc():
 
 
 # ---------------------------------------------------------
-# [20] 自動生成レポート系 (Briefing/Crypto/XTrend/News) + 00_home.md の除外
+# [20] 自動生成レポート系 (Briefing/Crypto/XTrend/News/Daily) + 00_home.md の除外
 # ---------------------------------------------------------
 
 def test_find_stale_popular_note_excludes_auto_generated_reports():
@@ -328,6 +328,8 @@ def test_find_stale_popular_note_excludes_auto_generated_reports():
             "50_Archive/2026-W10/40_Report_XTrend/2026-03-14_xtrend.md",
             # 大小文字が揺れても検出できることの確認 (MOC判定と同じlower正規化)
             "50_Archive/2026-W09/02_NEWS/News_2026-03-04.md",
+            # Briefing/Dailynote統合(2026-08-26)で01_DailyがBriefingの生成先になったため
+            "01_Daily/2026-03-14.md",
             "00_Home.md",
         ]
         files = [(p, STALE_CUTOFF - 100, SOURCE_VAULT) for p in excluded]
@@ -343,8 +345,8 @@ def test_find_stale_popular_note_excludes_auto_generated_reports():
 
         result = rs._find_stale_popular_note(db_path=db, now=NOW, seen={})
         assert result["filepath"] == "Old.md", (
-            f"Briefing/Crypto/XTrend/News/00_homeは除外され通常ノートが選ばれるはず: {result}")
-    print("✅ [20] Briefing/Crypto/XTrend/News配下・00_home.mdは被リンク最大でも除外される")
+            f"Briefing/Crypto/XTrend/News/Daily/00_homeは除外され通常ノートが選ばれるはず: {result}")
+    print("✅ [20] Briefing/Crypto/XTrend/News/01_Daily配下・00_home.mdは被リンク最大でも除外される")
 
 
 # ---------------------------------------------------------

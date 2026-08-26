@@ -668,7 +668,7 @@ def test_tool_layer_failure_checks():
           _result_icon("Errorハンドリングの調査結果をまとめました"))
 
     # 自前の前方一致が復活していないことの静的スキャン
-    targets = ["tools/tool_calendar.py", "tools/tool_daily_note.py",
+    targets = ["tools/tool_calendar.py",
                "tools/tool_client_review.py", "commands/bot_commands_curator.py"]
     pattern = _re.compile(r'startswith\(\s*["\']Error')
     offenders = []

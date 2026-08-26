@@ -85,7 +85,6 @@ ERROR_FILE = os.path.join(WORK_DIR, 'Dev_Logs', 'ErrorReport.md')
 
 NEWS_DIR_NAME = "02_News"
 CRYPTO_DIR_NAME = "03_Crypto"
-DAILY_NOTE_DIR_NAME = "01_Daily"
 TRADE_LOG_PATH = os.path.join(VAULT_ROOT, "Dev_Logs", "trade_log.json")
 LEARNING_DB_PATH = os.path.join(PROJECT_ROOT, "learning_db.json")
 LEARNING_DB_ARCHIVE_PATH = os.path.join(PROJECT_ROOT, "learning_db_archive.jsonl")

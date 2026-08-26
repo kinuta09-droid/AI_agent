@@ -35,7 +35,9 @@ _MOC_PREFIX = "moc_"
 # 再浮上枠を占有していた -> [[90日非表示機能におけるBriefing除外の検]]
 # MOC判定と同じくlowerで正規化した集合にする (Vault側のフォルダ名/ファイル名の
 # 大小文字揺れで無言の検出漏れになるのを防ぐ)。
-_EXCLUDED_DIR_SEGMENTS = {"briefing", "03_crypto", "40_report_xtrend", "02_news"}
+# "01_daily": Briefing/Dailynote統合(2026-08-26)でBriefingの生成先が30_Main/Briefing
+# から01_Dailyに移ったため、同じ理由でここも除外しないと再浮上枠を占有する。
+_EXCLUDED_DIR_SEGMENTS = {"briefing", "03_crypto", "40_report_xtrend", "02_news", "01_daily"}
 _EXCLUDED_BASENAMES = {"00_home"}
 SEEN_PATH = os.path.join(LOGS_DIR, "resurfacing_seen.json")
 STALE_COOLDOWN_DAYS = 30

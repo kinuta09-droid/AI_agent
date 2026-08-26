@@ -241,7 +241,6 @@ def generate_plan(user_query: str, session_context: str = "") -> dict:
 - **両方が必要な場合**: まず tool_web_search で外部情報を取得し、その後 tool_vault_hybrid_search で関連する過去ノートを探す
 - **URLが与えられた場合**: tool_fetch_url でページ内容を取得する
 - **既存ファイルに文章を書き足す場合**: tool_update_note を使う
-  (tool_sync_to_daily_note は予定/タスクの同期専用で、任意のテキストは書けない)
 
 【args_json の出力ルール】（実行を高速化するため重要！）
 - 引数がこの時点で確定できるステップは、args_json に引数のJSON文字列を出力すること

@@ -18,7 +18,7 @@ import feedparser
 
 from lib.lib_shared import (
     client, tavily_client, MODEL_NAME,
-    WORK_DIR, VAULT_ROOT, NEWS_DIR_NAME, DAILY_NOTE_DIR_NAME,
+    WORK_DIR, VAULT_ROOT, NEWS_DIR_NAME,
     retry, EDITORIAL_STYLE_RULES,
 )
 from lib.cost_guard import GROUNDING_COUNTER
@@ -240,7 +240,6 @@ def tool_fetch_daily_news(days: int = 1) -> str:
     """
     Web検索とRSSフィードからニュースを収集し、Geminiで要約を生成。
     Tpl_Permanentテンプレートを適用して02_Newsに保存。
-    デイリーノートに要約テキスト+リンクを追記する。
     """
     print(f"[Tool] 🗞️ Fetching Daily News...")
     keywords, rss_urls = _read_interests_and_rss()
@@ -353,41 +352,4 @@ def tool_fetch_daily_news(days: int = 1) -> str:
         f.write(note_content)
     print(f"  ✅ Saved: {save_path}")
 
-    daily_note_path = os.path.join(
-        VAULT_ROOT, DAILY_NOTE_DIR_NAME, f"{today_str}.md"
-    )
-
-    if os.path.exists(daily_note_path):
-        with open(daily_note_path, "r", encoding="utf-8") as f:
-            existing = f.read()
-        if output_filename not in existing:
-            news_insert = (
-                f"> {summary}\n\n"
-                f"👉 [[{output_filename}|詳細はこちら]]"
-            )
-            placeholder = "<!-- NEWS_PLACEHOLDER -->"
-            if placeholder in existing:
-                updated = existing.replace(placeholder, news_insert)
-            elif "## 📰" in existing:
-                lines = existing.split('\n')
-                insert_idx = None
-                for i, line in enumerate(lines):
-                    if line.startswith("## 📰"):
-                        insert_idx = i + 1
-                        break
-                if insert_idx is not None:
-                    lines.insert(insert_idx, news_insert)
-                    updated = '\n'.join(lines)
-                else:
-                    updated = existing + f"\n\n## 📰 今日のニュース\n{news_insert}\n"
-            else:
-                updated = existing + f"\n\n## 📰 今日のニュース\n{news_insert}\n"
-            with open(daily_note_path, "w", encoding="utf-8") as f:
-                f.write(updated)
-            link_msg = f"Linked to [[{today_str}]]"
-        else:
-            link_msg = f"Link already exists in [[{today_str}]]"
-    else:
-        link_msg = "Daily note not found (skipped link)"
-
-    return f"Success: Created [[{NEWS_DIR_NAME}/{output_filename}]]. {link_msg}"
+    return f"Success: Created [[{NEWS_DIR_NAME}/{output_filename}]]."

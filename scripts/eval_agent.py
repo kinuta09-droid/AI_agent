@@ -69,7 +69,7 @@ WRITE_TOOLS = frozenset({
     "tool_fetch_daily_news", "tool_generate_briefing", "tool_gmail_check",
     "tool_analyze_crypto", "tool_scan_crypto_market",
     "tool_future_search", "tool_xtrend", "tool_xtrend_prompt",
-    "tool_add_event", "tool_create_task", "tool_sync_to_daily_note",
+    "tool_add_event", "tool_create_task",
 })
 
 BLOCKED_MESSAGE = "Error: [eval] 書き込み系ツールは評価中は無効化されています"

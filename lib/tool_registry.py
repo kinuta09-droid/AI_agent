@@ -250,9 +250,6 @@ TOOL_ENTRIES = [
      "module": "tools.tool_obsidian"},
     {"name": "tool_read_note", "usage": "tool_read_note(filename)", "description": "ファイル読込",
      "module": "tools.tool_obsidian", "parallel_safe": True},
-    # description は Planner の唯一のツール選択根拠。"追記" の2文字だった頃は
-    # 「既存のデイリーノートに追記して」が tool_sync_to_daily_note (説明文に
-    # 「デイリーノート」を含む) に語彙一致で奪われていた (eval T09・2026-07-28)。
     {"name": "tool_update_note", "usage": "tool_update_note(filename, append_text)",
      "description": "既存ノートの末尾にテキストを追記する（新規ファイルは作らない）。デイリーノート(YYYY-MM-DD.md)への任意の文章の追記もこれを使う",
      "module": "tools.tool_obsidian"},
@@ -359,12 +356,6 @@ TOOL_ENTRIES = [
     {"name": "tool_get_tasks", "usage": "tool_get_tasks(filter='today')",
      "description": "Google Tasksからタスク一覧を取得。filterは today/overdue/week/all",
      "module": "tools.tool_calendar", "optional": True, "parallel_safe": True},
-    # 起動条件 (予定/タスクの同期) と非対象 (任意テキスト) の両方を書く。
-    # tool_update_note 側に「デイリーノート」を書いた分、こちらの縄張りを
-    # 明示しないと逆に同期要求を奪われる。
-    {"name": "tool_sync_to_daily_note", "usage": "tool_sync_to_daily_note()",
-     "description": "Google Calendarの予定とGoogle Tasksのタスクをデイリーノートの所定欄へ流し込む専用ツール。任意の文章の追記には使えない（それはtool_update_note）",
-     "module": "tools.tool_calendar", "optional": True},
     # 動画ファイルをVault (30_Main/Assets/Shorts) に書き込むため parallel_safe は付けない。
     {"name": "tool_shorts_from_video", "usage": "tool_shorts_from_video(video_path, target_seconds=30, topic_hint='', bgm_path='', vertical_mode='pad')",
      "description": "既存の長尺動画ファイルから縦型9:16のSNSショート動画を自動編集する"

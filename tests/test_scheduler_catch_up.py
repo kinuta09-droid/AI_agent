@@ -114,7 +114,7 @@ def test_schedule_flags():
     by_name = {t["name"]: t for t in agent_scheduler.SCHEDULE}
 
     must_have = [
-        "Daily Note Generation", "X Trend Update", "Inbox Clip Auto-Tagging",
+        "X Trend Update", "Inbox Clip Auto-Tagging",
         "Morning Briefing", "Auto Deep-Dive (XTrend TOP1)", "Paper Radar",
         "Daily News",
     ]
@@ -138,6 +138,26 @@ def test_schedule_flags():
     for task in agent_scheduler.SCHEDULE:
         if task.get("catch_up"):
             check(f"[5c] {task['name']} は time を持つ", task.get("time") is not None)
+
+
+def test_daily_news_runs_before_morning_briefing():
+    """[5e] Daily News は Morning Briefing より前の時刻であること。
+
+    Briefing/Dailynote統合(2026-08-26)で tool_briefing_manager._build_news_section が
+    News_{date}.md 未生成なら自前で tool_fetch_daily_news() (Tavily/RSS/Gemini込み) を
+    呼ぶようになった。Daily News が Morning Briefing より後だと、同じ日に2回 (Briefing内で
+    1回・Daily Newsジョブでもう1回) 生成し、Briefingが埋め込んだ要約が直後に上書きされた
+    News_{date}.md と食い違う (無駄なAPI呼び出し + 内容不整合)。この順序が将来また崩れないよう固定する。
+    """
+    by_name = {t["name"]: t for t in agent_scheduler.SCHEDULE}
+    daily_news = by_name.get("Daily News")
+    briefing = by_name.get("Morning Briefing")
+    check("[5e] Daily News が SCHEDULE に存在する", daily_news is not None)
+    check("[5e] Morning Briefing が SCHEDULE に存在する", briefing is not None)
+    if daily_news is not None and briefing is not None:
+        check("[5e] Daily News の時刻が Morning Briefing より前",
+              daily_news["time"] < briefing["time"],
+              f"Daily News={daily_news['time']} Morning Briefing={briefing['time']}")
 
 
 def test_agent_feedback_weekly_report_job_wiring_and_combination():
@@ -290,6 +310,7 @@ def main():
     test_weekly_occurrence_unchanged()
     test_outage_scenario()
     test_schedule_flags()
+    test_daily_news_runs_before_morning_briefing()
     test_agent_feedback_weekly_report_job_wiring_and_combination()
     test_logger_handler_guard()
     test_import_does_not_open_production_log()

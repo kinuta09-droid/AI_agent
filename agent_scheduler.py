@@ -143,20 +143,6 @@ try:
 except ImportError:
     _HAS_BRIEFING = False
 
-# Calendar sync (optional — missing dependency won't break scheduler)
-try:
-    from tools.tool_calendar import tool_sync_to_daily_note
-    _HAS_CALENDAR = True
-except ImportError:
-    _HAS_CALENDAR = False
-
-# Daily Note generation (optional)
-try:
-    from tools.tool_daily_note import generate_daily_note
-    _HAS_DAILY_NOTE = True
-except ImportError:
-    _HAS_DAILY_NOTE = False
-
 # Future Search / Auto Deep-Dive (optional)
 try:
     from tools.tool_future_search import run_future_search as _future_search
@@ -499,22 +485,6 @@ def _run_morning_briefing() -> str:
 # 相場系のジョブには付けない: 遅れて実行しても古い値動きを「今の分析」として
 #   出すだけで、無いより有害 (現在は暗号資産系ジョブ自体を停止中。下記参照)。
 SCHEDULE = [
-    # Daily Note Generation (template-based with Calendar/Tasks/News)
-    *(
-        [{
-            "time": "07:00",
-            "name": "Daily Note Generation",
-            "func": lambda: generate_daily_note(include_news=False),
-            "catch_up": True,
-        }] if _HAS_DAILY_NOTE else (
-            [{
-                "time": "07:30",
-                "name": "Daily Sync (Calendar/Tasks)",
-                "func": tool_sync_to_daily_note,
-                "catch_up": True,
-            }] if _HAS_CALENDAR else []
-        )
-    ),
     {
         "time": "06:00",
         "name": "X Trend Update",
@@ -545,7 +515,7 @@ SCHEDULE = [
         "func": _run_auto_deep_dive,
         "catch_up": True,
     },
-    # gws認証ヘルスチェック: 06:30の後・06:45の前。壊れていれば朝の連鎖(Daily Sync等)より
+    # gws認証ヘルスチェック: 06:30の後・06:45の前。壊れていれば朝の連鎖(Morning Briefing等)より
     # 先にDiscordへ気付けるようにする。silent=Trueで正常時は無言 (異常時のみ自前で通知)。
     {
         "time": "06:40",
@@ -602,8 +572,11 @@ SCHEDULE = [
         "weekday": 6,  # 日曜
         "catch_up": True,
     },
+    # Morning Briefing (07:30) が News_{date}.md 未生成なら自前で tool_fetch_daily_news()
+    # を呼ぶため、このジョブが07:30より後だと同じ日に2回 (Tavily/RSS/Gemini込みで) 生成し
+    # 直後に上書きされる。07:30より前に置いて先に済ませておく (Briefing側は既存ならそれを読むだけ)。
     {
-        "time": "08:00",
+        "time": "07:15",
         "name": "Daily News",
         "func": tool_fetch_daily_news,
         "catch_up": True,
@@ -952,8 +925,8 @@ def _run_catch_up():
 
     # 予定時刻の早い順に「1本のスレッドで逐次」実行する。
     # 並列に投げてはいけない: 朝の連鎖 (X Trend 06:00 → Auto Deep-Dive 06:30 →
-    # Morning Briefing 07:30) は前段が書いた結果を後段が読むため、順序が崩れると
-    # 後段が前日のデータを掴む。逐次なら通常発火と同じ順序になる。
+    # Daily News 07:15 → Morning Briefing 07:30) は前段が書いた結果を後段が読むため、
+    # 順序が崩れると後段が前日のデータを掴む。逐次なら通常発火と同じ順序になる。
     due.sort(key=lambda item: item[0])
 
     def _run_sequentially():

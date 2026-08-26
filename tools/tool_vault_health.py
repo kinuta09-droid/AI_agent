@@ -34,11 +34,11 @@ HEALTH_NOTE_PATH = os.path.join(VAULT_ROOT, "00_System", "Vault_Health.md")
 # 00_inbox の Fleeting Note は既に status を持つ (tool_list_open_ideas) ので対象外。
 STATUS_GAP_TARGET_SUBDIR = "30_Main"
 
-# 30_Main配下でも Briefing/youtube_Source は人間が書く「決定/知見」ノートではなく
-# 01_Daily等と同じ生成物・クリップ (実測: 30_Main全72件中、status欠落62件は全てこの2種で
-# 手書きノート10件は既に全件status保持済み)。含めると欠落率が生成物側の量で決まってしまい
-# 実態と乖離するため、集計対象から除外する。
-STATUS_GAP_EXCLUDED_DIRS = {"Briefing", "youtube_Source"}
+# 30_Main配下でも youtube_Source は人間が書く「決定/知見」ノートではなく
+# 01_Daily等と同じ生成物・クリップなので集計対象から除外する。
+# (Briefingは2026-08-26のBriefing/Dailynote統合で30_Main/Briefingから01_Dailyへ
+# 生成先ごと移行したため、このリストからも除外した)
+STATUS_GAP_EXCLUDED_DIRS = {"youtube_Source"}
 
 _HEADER = (
     "# Vault Health\n\n"
