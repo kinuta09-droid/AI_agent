@@ -56,6 +56,7 @@ except ImportError:
 from commands import bot_commands_curator
 from commands import bot_commands_agent
 from commands import bot_commands_admin
+from commands import bot_commands_idea
 
 # bot_discord から注入されるヘルパー (Discord 応答系は lib.discord_response を直接 import 済み。
 # _openai_client は bot_discord.py 側で閉じた state のため引き続き注入で受け取る)
@@ -310,16 +311,26 @@ class VoiceSession:
 
 
 # ---------------------------------------------------------
-# 自然文「再起動」検知時のワンクッション確認
-# (/restart スラッシュコマンド自体は明示操作なので対象外。誤爆でプロセスが
-# 落ちる被害が大きいキーワードだけ、確認ボタンを挟んでから bot_commands_admin.
-# cmd_restart を呼ぶ。既存の /restart 実装を丸ごと再利用し、二重実装しない)
+# 自然文検知でのワンクッション確認 (汎用)
+# 誤爆コストが大きい/取り消しにくいアクション (再起動・エージェント起動・
+# 壁打ちセッション開始等) 向け。on_confirm はボタンクリックの Interaction を
+# 受け取る async callable — 呼び出し側の対象アクション本体を丸ごと再利用でき、
+# View 側に個別ロジックを持たせない。
 # ---------------------------------------------------------
 
-class _RestartConfirmView(discord.ui.View):
-    def __init__(self, requester_id: int):
+class _ActionConfirmView(discord.ui.View):
+    def __init__(self, requester_id: int, label: str, on_confirm):
         super().__init__(timeout=120)
         self._requester_id = requester_id
+        self._on_confirm = on_confirm
+
+        confirm_btn = discord.ui.Button(label=label, style=discord.ButtonStyle.primary)
+        confirm_btn.callback = self._confirm
+        self.add_item(confirm_btn)
+
+        cancel_btn = discord.ui.Button(label="キャンセル", style=discord.ButtonStyle.secondary)
+        cancel_btn.callback = self._cancel
+        self.add_item(cancel_btn)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self._requester_id:
@@ -329,17 +340,97 @@ class _RestartConfirmView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="♻️ 再起動する", style=discord.ButtonStyle.danger)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def _confirm(self, interaction: discord.Interaction):
         self.stop()
-        await bot_commands_admin.cmd_restart(interaction, "bot")
+        await self._on_confirm(interaction)
 
-    @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def _cancel(self, interaction: discord.Interaction):
         self.stop()
         for item in self.children:
             item.disabled = True
-        await interaction.response.edit_message(content="キャンセルしました。", view=self)
+        # agent_natural/brainstorm_natural では元メッセージにAIの返信本文が
+        # 入っているため、content を上書きせず末尾に追記する (restart 専用だった
+        # 旧実装は content を "キャンセルしました。" で丸ごと差し替えていたが、
+        # 汎用化に伴いそれだと返信本文が消えてしまう)。
+        original = interaction.message.content if interaction.message else ""
+        await interaction.response.edit_message(
+            content=f"{original}\n\n_(キャンセルしました)_", view=self)
+
+
+async def _confirm_restart(interaction: discord.Interaction):
+    # /restart スラッシュコマンド自体は明示操作なので対象外。誤爆でプロセスが
+    # 落ちる被害が大きいキーワードだけ確認ボタンを挟む。既存の /restart 実装を
+    # 丸ごと再利用し、二重実装しない。
+    await bot_commands_admin.cmd_restart(interaction, "bot")
+
+
+async def _confirm_agent(interaction: discord.Interaction, goal: str):
+    # _dispatch_agent は interaction.followup.send/edit_original_response を使うため
+    # 先に応答を確定させる必要がある (cmd_chat の agent 分岐と同じ手順)。
+    await interaction.response.defer()
+    await _dispatch_agent(interaction, goal)
+
+
+async def _confirm_brainstorm(interaction: discord.Interaction, seed: str):
+    # cmd_brainstorm 自身が defer するので先に defer しない (二重応答エラーになる)。
+    await bot_commands_idea.cmd_brainstorm(interaction, seed)
+
+
+def _oneshot_gemini_reply(message: str) -> str:
+    """セッション履歴を持たない単発の /chat 呼び出し用 Gemini 応答 (cmd_chat の
+    default分岐 と agent_natural/brainstorm_natural 分岐で共用)。"""
+    today_str = datetime.datetime.now().strftime("%Y年%m月%d日")
+    sys_msg = f"今日は{today_str}です。日本語で簡潔に応答してください。"
+    try:
+        response = gemini_client.models.generate_content(
+            model=MODEL_NAME, contents=message,
+            config={"system_instruction": sys_msg},
+        )
+        return (response.text or "").strip() or "(応答なし)"
+    except Exception as e:
+        return log_command_error("/chat (Gemini)", e, "Gemini API Error")
+
+
+def _build_natural_confirm_text(reply_text: str, prompt_text: str) -> str:
+    """reply_text (AIの返信本文) + prompt_text (確認ボタンの質問文) を結合する。
+
+    2000字制限を超える場合でも prompt_text は必ず末尾に残す — 単純に
+    f"{reply_text}\n\n{prompt_text}"[:1900] のように末尾から切り詰めると、
+    reply_text が長いだけで prompt_text ごと切り落とされ、ボタンだけあって
+    「何を確認しているボタンか」が見えない状態になる。
+    """
+    full = f"{reply_text}\n\n{prompt_text}"
+    if len(full) <= 2000:
+        return full
+    marker = "\n\n*... (truncated)*\n\n"
+    budget = max(1900 - len(prompt_text) - len(marker), 0)
+    return f"{reply_text[:budget]}{marker}{prompt_text}"
+
+
+async def _send_natural_confirm_reply(interaction: discord.Interaction, is_deferred: bool,
+                                       reply_text: str, prompt_text: str, btn_label: str, on_confirm) -> None:
+    """通常の返信文 + 確認ボタンを1通で送る (cmd_chat の agent_natural/brainstorm_natural共通、
+    handle_chat_message の natural_confirm と同じ「まず普通に返信→確認ボタン」方式)。"""
+    view = _ActionConfirmView(requester_id=interaction.user.id, label=btn_label, on_confirm=on_confirm)
+    content = _build_natural_confirm_text(reply_text, prompt_text)
+    if is_deferred:
+        await interaction.followup.send(content, view=view)
+        return
+    try:
+        mention = interaction.user.mention
+        full = f"{mention}\n\n{content}"
+        if len(full) <= 2000:
+            await interaction.channel.send(full, view=view)
+        else:
+            # mention 込みで2000字を超えるときだけファイル添付にする。
+            # prompt_text (確認ボタンの質問文) は本文側に必ず残す (ファイルの
+            # 中に埋もれさせない — ボタンだけあって何のボタンか分からなくなる)。
+            fb_file = _make_discord_file(reply_text, "Chat_Result.md")
+            await interaction.channel.send(
+                content=f"{mention}\n\n(回答が長いため添付ファイルを参照してください)\n\n{prompt_text}",
+                file=fb_file, view=view)
+    except Exception as e:
+        print(f"[Discord] ❌ Failed to send natural-confirm fallback: {e}")
 
 
 # ---------------------------------------------------------
@@ -355,9 +446,12 @@ INTENT_PATTERNS = {
     "scan": r"^(scan|スキャン|市場)",
     "agent": r"^(agent|エージェント|plan)\s*(.*)",
     "gmailcheck": r"^(gmail|gmailcheck|メールチェック|メール確認)",
-    # \b が無いと "ideally"/"idealistic" のような英単語の部分一致まで拾う
-    # (grillで検出)。日本語側の "アイデア" は英字\bの対象外なので不要。
-    "idea": r"^(idea\b|アイデア)\s*(.*)",
+    # "ideally"/"idealistic" だけを除外する否定先読み。末尾 \b は使わない —
+    # Unicode正規表現は日本語も \w 扱いのため、"ideaを保存して" のように直後に
+    # 助詞が続く (=マルチバイト文字と隣接し、間に空白が無い) 極めて自然な書き方で
+    # \b が成立せずマッチしなくなる欠陥が実際に本番で起きていた
+    # (grillで "ideally" 対策として \b を入れた回で混入、後の回で発見・修正、2026-08-26)。
+    "idea": r"^(idea(?!lly|listic)|アイデア)\s*(.*)",
 }
 
 # 自然な会話 (文頭一致しない発言) でも拾うキーワード。日付/銘柄等のパラメータは
@@ -373,12 +467,16 @@ ANYWHERE_INTENT_PATTERNS = {
     "tasks": r"(tasks?|タスク|todo)",
     "calendar": r"(calendar|カレンダー|予定|schedule)",
     "gmailcheck": r"(gmail|メールチェック|メール確認)",
-    "idea": r"(\bidea\b|アイデア)",
-    # restart は誤検知時の被害が大きい (プロセス再起動) ため、文頭一致でも
-    # INTENT_PATTERNS には登録しない — 必ずこの anywhere 経路 (確認ボタン挟み) を通す。
-    "restart": r"(再起動|restart|リスタート)",
+    "idea": r"((?<![a-zA-Z])idea(?!lly|listic)|アイデア)",
 }
 
+# restart は誤検知時の被害が最大 (プロセス再起動、会話そのものが中断される) の
+# キーワードなので、他のどの事前判定よりも先に見る — remind/calendar_add/
+# agent_natural/brainstorm_natural を先にチェックする設計だと、「再起動する前に
+# リマインドして」のように複数キーワードが共存したとき restart 側が一切
+# 判定されず確認ボタンさえ出ない (grillで検出)。restart 自体は即実行せず確認
+# ボタンを挟むだけなので、最優先にしても誤爆コストは低い。
+_RESTART_TRIGGER_RE = re.compile(r"(再起動|restart|リスタート)", re.IGNORECASE)
 
 # カレンダー「登録」は既存の calendar (閲覧) パターンより先に判定する必要がある。
 # calendar パターンは "予定"/"カレンダー" だけで広くマッチするため、通常の
@@ -395,20 +493,37 @@ _CALENDAR_ADD_TRIGGER_RE = re.compile(
 # 無い) ので、compound の nearby チェックは不要。ただし「予定をリマインドして」
 # のように calendar 系の語と共存すると、通常の dict ループでは calendar(閲覧)
 # パターンが先に "予定" にマッチしてしまうため、calendar_add と同じく事前判定にする。
-_REMIND_TRIGGER_RE = re.compile(r"(\bremind|リマインド)", re.IGNORECASE)
+#
+# 全パターン共通の注意: \b は使わない。Unicode正規表現では日本語も \w 扱いのため、
+# 英単語トリガーの直前/直後に日本語が空白無しで続く ("のremindして" 等、日本語
+# 文章として最も自然な書き方) だと \b が英字-日本語の境界で成立せずマッチしない
+# 欠陥がある (grillで "ideally" 対策の \b が誘発、後から発覚・修正、2026-08-26)。
+# 代わりに (?<![a-zA-Z]) / (?![a-zA-Z]) で「直前/直後がASCII英字でない」ことだけを
+# 見る — 日本語文字は英字ではないので常に通る。
+_REMIND_TRIGGER_RE = re.compile(r"((?<![a-zA-Z])remind|リマインド)", re.IGNORECASE)
 
-# 既知の限界 (grillで指摘、未対応): remind の事前判定は restart (ANYWHERE_INTENT_
-# PATTERNS内、最後にチェックされる) より前に走るため、「再起動する前にリマインド
-# しておいて」のように両方のキーワードが共存すると remind が勝ち、restart の
-# 確認ボタンは出ない。calendar_add も同じ構造で以前から restart より優先されており
-# (この行は新しい退行ではない)、どちらの勝ち方でも「意図しない側が実行される」
-# ことはない (restart は確認ボタン、remind/calendar_add も誤爆時はユーザーの
-# 発言内容で判定できない程度の曖昧さなので実害は小さい) ため据え置く。
+# 既知の限界 (未対応): remind/calendar_add の事前判定は agent_natural/brainstorm_
+# natural より先に走るため、「エージェントに調べてもらって、終わったらリマインド
+# して」のように両方が共存すると remind が勝ち、エージェント依頼の方は無視される。
+# restart のような「確認ボタンを出すだけ」ではなく即実行系同士の衝突なので実害は
+# restart より大きいが、正解が一意に決まらない (どちらを優先すべきかは文脈次第)
+# ため据え置く (実害が増えたら見直す)。
+
+# agent/brainstorm の「自然文起動」: 文頭一致 (INTENT_PATTERNS の "agent"、既存の
+# /chat agent 相当の明示コマンド) はそのまま即実行を維持する。文中にキーワードが
+# あるだけの (=文頭一致しなかった) casualな言及は、即実行せず「普通に返信 →
+# 実行しますか？」の確認ボタンに倒す (_ActionConfirmView)。plan は "planet"/
+# "planning"/"plant" だけを否定先読みで除外する。
+_AGENT_NATURAL_RE = re.compile(
+    r"(エージェント|(?<![a-zA-Z])agent|(?<![a-zA-Z])plan(?!et|ning|t))", re.IGNORECASE)
+_BRAINSTORM_NATURAL_RE = re.compile(r"(壁打ち|ブレスト|(?<![a-zA-Z])brainstorm)", re.IGNORECASE)
 
 
 def _parse_chat_intent(message: str) -> tuple:
     """メッセージからインテント（ツール名）とパラメータを抽出する。"""
     message_stripped = message.strip()
+    if _RESTART_TRIGGER_RE.search(message_stripped):
+        return "restart", {"query": ""}
     if _REMIND_TRIGGER_RE.search(message_stripped):
         return "remind", {"query": ""}
     if _CALENDAR_ADD_TRIGGER_RE.search(message_stripped):
@@ -418,6 +533,10 @@ def _parse_chat_intent(message: str) -> tuple:
         if match:
             query = match.group(2).strip() if match.lastindex and match.lastindex >= 2 else ""
             return intent, {"query": query}
+    if _AGENT_NATURAL_RE.search(message_stripped):
+        return "agent_natural", {"query": ""}
+    if _BRAINSTORM_NATURAL_RE.search(message_stripped):
+        return "brainstorm_natural", {"query": ""}
     for intent, pattern in ANYWHERE_INTENT_PATTERNS.items():
         if re.search(pattern, message_stripped, re.IGNORECASE):
             return intent, {"query": ""}
@@ -821,7 +940,8 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
         else:
             result = await asyncio.to_thread(tool_save_idea, idea_text)
     elif intent == "restart":
-        view = _RestartConfirmView(requester_id=interaction.user.id)
+        view = _ActionConfirmView(
+            requester_id=interaction.user.id, label="♻️ 再起動する", on_confirm=_confirm_restart)
         confirm_msg = "♻️ 再起動しますか？(誤検知防止のため確認します)"
         if is_deferred:
             await interaction.followup.send(confirm_msg, view=view)
@@ -831,19 +951,27 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
             except Exception:
                 pass
         return
+    elif intent == "agent_natural":
+        reply_text = await asyncio.to_thread(_oneshot_gemini_reply, message)
+        await _send_natural_confirm_reply(
+            interaction, is_deferred, reply_text,
+            "🤖 この内容でエージェントに依頼しますか？", "🤖 依頼する",
+            lambda i: _confirm_agent(i, message),
+        )
+        await asyncio.to_thread(_log_to_daily_note, "chat", message, reply_text)
+        return
+    elif intent == "brainstorm_natural":
+        reply_text = await asyncio.to_thread(_oneshot_gemini_reply, message)
+        await _send_natural_confirm_reply(
+            interaction, is_deferred, reply_text,
+            "💡 このテーマで壁打ちセッションを始めますか？", "💡 始める",
+            lambda i: _confirm_brainstorm(i, message),
+        )
+        await asyncio.to_thread(_log_to_daily_note, "chat", message, reply_text)
+        return
     else:
         # Default: Gemini chat
-        today_str = datetime.datetime.now().strftime("%Y年%m月%d日")
-        sys_msg = f"今日は{today_str}です。日本語で簡潔に応答してください。"
-        try:
-            response = await asyncio.to_thread(
-                gemini_client.models.generate_content,
-                model=MODEL_NAME, contents=message,
-                config={"system_instruction": sys_msg},
-            )
-            result = (response.text or "").strip() or "(応答なし)"
-        except Exception as e:
-            result = log_command_error("/chat (Gemini)", e, "Gemini API Error")
+        result = await asyncio.to_thread(_oneshot_gemini_reply, message)
 
     # Obsidian にログ
     await asyncio.to_thread(_log_to_daily_note, "chat", message, result)
@@ -910,6 +1038,25 @@ async def handle_chat_message(message: discord.Message):
     # セッション内インテント解析（ツール呼び出しも可能）
     intent, params = _parse_chat_intent(message.content)
 
+    # agent/brainstorm の自然文起動: 誤爆コストが大きい (重いエンジン起動・
+    # スレッドセッション開始) ため即実行せず、「まず普通に会話として返信し、
+    # その下に確認ボタンを添える」通常の chat フローへ合流させる。
+    natural_confirm = None
+    if intent == "agent_natural":
+        goal = message.content
+        natural_confirm = (
+            "🤖 この内容でエージェントに依頼しますか？", "🤖 依頼する",
+            lambda i: _confirm_agent(i, goal),
+        )
+        intent = "chat"
+    elif intent == "brainstorm_natural":
+        seed = message.content
+        natural_confirm = (
+            "💡 このテーマで壁打ちセッションを始めますか？", "💡 始める",
+            lambda i: _confirm_brainstorm(i, seed),
+        )
+        intent = "chat"
+
     if intent != "chat":
         # ツール呼び出し: session 履歴には残さず直接実行
         if intent == "tasks":
@@ -940,7 +1087,8 @@ async def handle_chat_message(message: discord.Message):
         elif intent == "restart":
             await message.reply(
                 "♻️ 再起動しますか？(誤検知防止のため確認します)",
-                view=_RestartConfirmView(requester_id=message.author.id),
+                view=_ActionConfirmView(
+                    requester_id=message.author.id, label="♻️ 再起動する", on_confirm=_confirm_restart),
             )
             return
         else:
@@ -950,8 +1098,10 @@ async def handle_chat_message(message: discord.Message):
             await message.reply(result[:2000])
             return
 
-    # BitNet pre-filter: 挨拶/スパムはGemini API呼び出しなしで即時応答
-    if BITNET_AVAILABLE:
+    # BitNet pre-filter: 挨拶/スパムはGemini API呼び出しなしで即時応答。
+    # natural_confirm があるときはagent/brainstorm宛の実質的な依頼なので、
+    # 挨拶/スパム判定で "reply"/"skip" に落ちて確認機会を逃さないようスキップする。
+    if natural_confirm is None and BITNET_AVAILABLE:
         _filter = quick_filter_discord(message.content)
         if _filter["action"] == "reply":
             await message.reply(_filter["reply"])
@@ -973,8 +1123,15 @@ async def handle_chat_message(message: discord.Message):
     await asyncio.to_thread(_log_to_daily_note, "chat", message.content, result)
 
     # Discord に応答
-    view = _create_obsidian_view(result)
-    if len(result) <= 2000:
-        await message.reply(result, view=view)
+    if natural_confirm:
+        prompt_text, btn_label, on_confirm = natural_confirm
+        view = _ActionConfirmView(requester_id=message.author.id, label=btn_label, on_confirm=on_confirm)
+        reply_text = _build_natural_confirm_text(result, prompt_text)
     else:
-        await message.reply(result[:1900] + "\n\n*... (truncated)*", view=view)
+        view = _create_obsidian_view(result)
+        reply_text = result
+
+    if len(reply_text) <= 2000:
+        await message.reply(reply_text, view=view)
+    else:
+        await message.reply(reply_text[:1900] + "\n\n*... (truncated)*", view=view)
