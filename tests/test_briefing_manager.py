@@ -135,11 +135,60 @@ def test_frontmatter_tags_type_daily():
         check("[4] 旧 type: briefing は含まれない", "type: briefing" not in content, content)
 
 
+def test_get_obsidian_updates_skips_frontmatter():
+    """[5] frontmatterがプレビュー500字を食い潰し本文が丸ごと消えるバグの回帰テスト。"""
+    with _Isolated() as env:
+        main_dir = os.path.join(env.root, "30_Main")
+        os.makedirs(main_dir, exist_ok=True)
+        frontmatter = "---\n" + "\n".join(f"key{i}: value{i}" for i in range(60)) + "\n---\n"
+        note_path = os.path.join(main_dir, "long_note.md")
+        with open(note_path, "w", encoding="utf-8") as f:
+            f.write(frontmatter + "# 本文タイトル\n本文の中身がここに続きます。")
+        result = tbm.get_obsidian_updates()
+        check("[5] frontmatter除去後の本文が含まれる", "本文の中身がここに続きます" in result, result)
+
+
+def test_get_obsidian_updates_is_collapsed_callout():
+    """[6] 新規ノートプレビューがObsidian callout構文で初期折りたたみになっている。"""
+    with _Isolated() as env:
+        main_dir = os.path.join(env.root, "30_Main")
+        os.makedirs(main_dir, exist_ok=True)
+        note_path = os.path.join(main_dir, "note.md")
+        with open(note_path, "w", encoding="utf-8") as f:
+            f.write("本文1行目\n本文2行目")
+        result = tbm.get_obsidian_updates()
+        check("[6] callout見出し ([!note]-) を含む", "> [!note]- note.md" in result, result)
+        check("[6] 本文各行が `> ` で引用されている", "> 本文1行目" in result and "> 本文2行目" in result, result)
+
+
+def test_get_obsidian_updates_handles_huge_frontmatter():
+    """[7] frontmatterが2000字を超えても本文プレビューが潰されない (/grill所見1)。"""
+    with _Isolated() as env:
+        main_dir = os.path.join(env.root, "30_Main")
+        os.makedirs(main_dir, exist_ok=True)
+        frontmatter = "---\n" + "\n".join(f"key{i}: value{i}" for i in range(400)) + "\n---\n"
+        note_path = os.path.join(main_dir, "huge_note.md")
+        with open(note_path, "w", encoding="utf-8") as f:
+            f.write(frontmatter + "本文の中身がここに続きます。")
+        result = tbm.get_obsidian_updates()
+        check("[7] 巨大frontmatterでも本文が含まれる", "本文の中身がここに続きます" in result, result)
+
+
+def test_collapsed_callout_empty_body_has_placeholder():
+    """[8] 本文が空のcalloutが空の折りたたみにならない (/grill所見2)。"""
+    result = tbm._collapsed_callout("empty.md", "")
+    check("[8] 空本文には (内容なし) プレースホルダが入る", "(内容なし)" in result, result)
+
+
 if __name__ == "__main__":
     test_saves_to_01_daily_no_timestamp_suffix()
     test_second_run_preserves_first_file()
     test_news_section_included()
     test_frontmatter_tags_type_daily()
+    test_get_obsidian_updates_skips_frontmatter()
+    test_get_obsidian_updates_is_collapsed_callout()
+    test_get_obsidian_updates_handles_huge_frontmatter()
+    test_collapsed_callout_empty_body_has_placeholder()
     if _FAIL:
         print(f"\nFAILURE: {_FAIL} check(s) failed")
         sys.exit(1)

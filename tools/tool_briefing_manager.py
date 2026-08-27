@@ -6,6 +6,7 @@ Gemini で要約したブリーフィングを生成する。
 """
 
 import os
+import re
 import json
 import datetime
 from typing import Callable
@@ -117,14 +118,23 @@ def get_obsidian_updates() -> str:
     for fname, fpath, mtime in top_files:
         try:
             with open(fpath, 'r', encoding='utf-8') as f:
-                content = f.read(500)
-            sections.append(
-                f"### {fname} (更新: {mtime.strftime('%H:%M')})\n{content}"
-            )
+                content = f.read()
+            # YAML frontmatterを除去してから本文500字を切り出す
+            # (frontmatterだけで500字を食い潰し本文が全く読めなくなるバグの修正。
+            #  frontmatterの長さは予測できないため上限を切らずファイル全体を読む)
+            content = re.sub(r'^---\n.*?\n---\n', '', content, count=1, flags=re.DOTALL)
+            content = content[:500]
+            sections.append(_collapsed_callout(f"{fname} (更新: {mtime.strftime('%H:%M')})", content))
         except Exception as e:
-            sections.append(f"### {fname}\n読み込みエラー: {e}")
+            sections.append(_collapsed_callout(fname, f"読み込みエラー: {e}"))
 
     return "\n\n".join(sections)
+
+
+def _collapsed_callout(title: str, body: str) -> str:
+    """Obsidian callout構文で初期折りたたみ状態のブロックを作る (`[!note]-` の `-` が折りたたみ)。"""
+    quoted = "\n".join(f"> {line}" for line in body.splitlines()) or "> (内容なし)"
+    return f"> [!note]- {title}\n{quoted}"
 
 
 # ---------------------------------------------------------
