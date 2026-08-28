@@ -22,7 +22,12 @@ from engine_plan_execute import (
     _build_critique_schema,
     _build_step_schema,
     _try_planned_args,
+    _sanitize_tool_args,
 )
+
+
+def _dummy_browser_use(url, task="このページの主要な情報を要約して"):
+    pass
 
 
 # ---------------------------------------------------------
@@ -97,6 +102,54 @@ def test_planned_args_create_note_guard():
     }
     assert _try_planned_args(complete) is not None
     print("✅ planned args: tool_create_note 必須キーガード")
+
+
+# ---------------------------------------------------------
+# _sanitize_tool_args — ラッパー剥がし
+# ---------------------------------------------------------
+
+def test_sanitize_args_flat_passthrough():
+    args = {"url": "https://example.com", "task": "在庫を教えて"}
+    assert _sanitize_tool_args("tool_browser_use", _dummy_browser_use, args) == args
+    print("✅ sanitize args: フラットな引数はそのまま通る")
+
+
+def test_sanitize_args_single_key_wrapper():
+    args = {"args": {"url": "https://example.com"}}
+    assert _sanitize_tool_args("tool_browser_use", _dummy_browser_use, args) == {
+        "url": "https://example.com"
+    }
+    print("✅ sanitize args: 単一キーラッパー ({'args': {...}}) は剥がされる")
+
+
+def test_sanitize_args_function_calling_style_wrapper():
+    """Geminiが {"tool_name": "...", "arguments": {...}} という function-calling
+    風の形で応答した場合でも、tool_name をメタデータとして無視し arguments の
+    中身を引数として取り出せること (2026-08-28、実運用でtool_browser_useの
+    url が丸ごと失われて Step failed になった実例の回帰)。"""
+    args = {
+        "tool_name": "tool_browser_use",
+        "arguments": {"url": "https://www.komeri.com/shop/g/g2164370"},
+    }
+    result = _sanitize_tool_args("tool_browser_use", _dummy_browser_use, args)
+    assert result == {"url": "https://www.komeri.com/shop/g/g2164370"}, result
+    print("✅ sanitize args: {tool_name, arguments} 形式でもurlが救済される")
+
+
+def test_sanitize_args_metadata_key_alone_still_fails():
+    """tool_name しか無く実引数が本当に欠けている場合は、従来通り失敗する
+    (メタデータ除去が必須引数チェックを無効化しないことの回帰)。"""
+    args = {"tool_name": "tool_browser_use"}
+    assert _sanitize_tool_args("tool_browser_use", _dummy_browser_use, args) is None
+    print("✅ sanitize args: メタデータキーのみ(実引数無し)は従来通り失敗する")
+
+
+def test_sanitize_args_plan_list_wrapper_rejected():
+    """{"plan": [...]} のように中身がlistの場合は、どのステップの引数か判別
+    できないため剥がさず拒否する (既存動作の回帰)。"""
+    args = {"plan": [{"tool": "tool_browser_use"}]}
+    assert _sanitize_tool_args("tool_browser_use", _dummy_browser_use, args) is None
+    print("✅ sanitize args: plan配列ラッパーは剥がさず拒否する")
 
 
 # ---------------------------------------------------------

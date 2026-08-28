@@ -286,6 +286,13 @@ _ARG_WRAPPER_KEYS = frozenset({
     "parameters", "params", "tool_input", "input",
 })
 
+# Gemini が function-calling 風の {"tool_name": "...", "arguments": {...}} を
+# 返したときに紛れ込むメタデータキー。実引数として使われることはまず無いため、
+# 単一キーラッパー判定の前に取り除いてよい (2026-08-28: tool_browser_use 呼び出しで
+# 実際にこの形が返り、tool_name が同居して2キーになったせいで単一キー判定が
+# 成立せず、url を含む arguments の中身が丸ごと失われた実例で発覚)。
+_ARG_METADATA_KEYS = frozenset({"tool_name", "name"})
+
 
 def _tool_param_spec(func):
     """ツール関数の (受理キー, 必須キー, **kwargs有無) を返す。
@@ -337,17 +344,20 @@ def _sanitize_tool_args(tool_name: str, func, args, _depth: int = 0):
     # ラッパー剥がし: 単一キーがラッパー名かつ中身がdictのときだけ1段潜る。
     # {"plan": [...]} のように中身がlistの場合はどのステップの引数か判別
     # できないため剥がさず拒否し、args_hint 付きの再解決に任せる。
+    # tool_name 等の function-calling 風メタデータキーは実引数になり得ないため、
+    # 単一キー判定の前に取り除く (_ARG_METADATA_KEYS のコメント参照)。
     if (
         _depth < 2
-        and len(args) == 1
         and not (set(args) & accepted)
         and not has_var_kw
     ):
-        key, value = next(iter(args.items()))
-        if key in _ARG_WRAPPER_KEYS:
-            if isinstance(value, dict):
-                return _sanitize_tool_args(tool_name, func, value, _depth + 1)
-            return None
+        candidate = {k: v for k, v in args.items() if k not in _ARG_METADATA_KEYS}
+        if len(candidate) == 1:
+            key, value = next(iter(candidate.items()))
+            if key in _ARG_WRAPPER_KEYS:
+                if isinstance(value, dict):
+                    return _sanitize_tool_args(tool_name, func, value, _depth + 1)
+                return None
 
     if has_var_kw:
         filtered = dict(args)
