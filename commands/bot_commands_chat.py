@@ -89,10 +89,26 @@ MUTE_DURATION = datetime.timedelta(minutes=30)
 # 際限なく伸び続ける恐れがある。一定時間発言が無いセッションは archive_chat_session で
 # 都度退避して history を畳む (セッション自体は終了しない — /chat off とは別物。
 # 常時オンチャンネルではユーザーに再度 /chat on を打たせたくないため)。
-IDLE_ARCHIVE_MINUTES = 60
+IDLE_ARCHIVE_MINUTES = 15
+
+# user_id -> Lock。/save (cmd_save) と _idle_archive_loop はどちらも同じ
+# session["history"] に対して「snapshot取得 → archive await → snapshot分だけ
+# 切り落とす」処理を行う。ロック無しで両者が数秒のarchive実行ウィンドウ内で
+# 重なると、片方が先に短い snapshot 長でリセットした後、もう片方がそれより
+# 長い snapshot 長でスライスしてしまい、間に挟まった新規メッセージが無言で
+# 消える (grillで検出、2026-08-28)。user_id 単位で直列化してこれを防ぐ。
+_archive_locks: dict[int, asyncio.Lock] = {}
 
 
-@tasks.loop(minutes=10)
+def _get_archive_lock(user_id: int) -> asyncio.Lock:
+    lock = _archive_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _archive_locks[user_id] = lock
+    return lock
+
+
+@tasks.loop(minutes=5)
 async def _idle_archive_loop():
     now = datetime.datetime.now()
     for user_id, session in list(_chat_sessions.items()):
@@ -102,20 +118,26 @@ async def _idle_archive_loop():
         last_activity = session.get("last_activity") or session.get("started_at")
         if not last_activity or now - last_activity < datetime.timedelta(minutes=IDLE_ARCHIVE_MINUTES):
             continue
-        # archive_chat_session は Gemini 呼び出しを含み数秒かかりうる。history は
-        # session と共有参照なので、await 中に新しいメッセージが届くと
-        # session["history"] に追記される。ここでスナップショットの長さだけ
-        # 数え、await 後は「アーカイブした分だけ」を切り落とす (無条件で [] に
-        # すると、await 中に届いた新規メッセージまで無言で消える — grillで検出)。
-        snapshot = list(history)
-        try:
-            result = await asyncio.to_thread(archive_chat_session, snapshot)
-            print(f"[Chat] Idle archive (user={user_id}): {result}")
-        except Exception as e:
-            log_command_error("chat idle-archive", e)
-        # 成否に関わらず畳む — Skipped/Error でも snapshot 分は再判定し続けても
-        # 無駄なだけ (turns は増えないので無害)。
-        session["history"] = session["history"][len(snapshot):]
+        async with _get_archive_lock(user_id):
+            # ロック待ち中に /save が同じセッションを畳んでいる可能性があるため
+            # history を取り直す。
+            history = session.get("history", [])
+            if not history:
+                continue
+            # archive_chat_session は Gemini 呼び出しを含み数秒かかりうる。history は
+            # session と共有参照なので、await 中に新しいメッセージが届くと
+            # session["history"] に追記される。ここでスナップショットの長さだけ
+            # 数え、await 後は「アーカイブした分だけ」を切り落とす (無条件で [] に
+            # すると、await 中に届いた新規メッセージまで無言で消える — grillで検出)。
+            snapshot = list(history)
+            try:
+                result = await asyncio.to_thread(archive_chat_session, snapshot)
+                print(f"[Chat] Idle archive (user={user_id}): {result}")
+            except Exception as e:
+                log_command_error("chat idle-archive", e)
+            # 成否に関わらず畳む — Skipped/Error でも snapshot 分は再判定し続けても
+            # 無駄なだけ (turns は増えないので無害)。
+            session["history"] = session["history"][len(snapshot):]
 
 
 def start_idle_archive_loop():
@@ -747,6 +769,66 @@ async def _dispatch_agent(interaction: discord.Interaction, goal: str):
             print(f"[Discord] Failed to send fallback: {e}")
 
     await bot_commands_agent.send_feedback_prompt(interaction.channel, goal, result)
+
+
+# ---------------------------------------------------------
+# /save コマンド本体 (@tree.command デコレータは bot_discord.py 側の薄い
+# ラッパーに付く)
+# ---------------------------------------------------------
+
+async def cmd_save(interaction: discord.Interaction):
+    """/save: 現在のチャットセッションを要約保存し、コンテキストをリセットする。
+    セッション自体は終了しない (/chat off とは別物) — 履歴だけを畳んで会話は継続する。"""
+    user_id = interaction.user.id
+    session = _chat_sessions.get(user_id)
+    history = session.get("history") if session else None
+
+    if not history:
+        await interaction.response.send_message(
+            "⚠️ アクティブなセッションがないか、保存する会話がありません。"
+        )
+        return
+
+    await interaction.response.defer()
+
+    async with _get_archive_lock(user_id):
+        # ロック待ち中に _idle_archive_loop が同じセッションを畳んでいる可能性が
+        # あるため history を取り直す (_get_archive_lock のコメント参照)。
+        history = session.get("history", [])
+        if not history:
+            await interaction.followup.send("💤 保存する会話がありませんでした。")
+            return
+
+        # _idle_archive_loop と同じ安全パターン: await 中に新規メッセージが届いても
+        # 消えないよう、スナップショットの長さだけ切り落とす。
+        snapshot = list(history)
+        try:
+            # lenient=True: /save はユーザーが明示的に保存を指示した操作なので、
+            # 「雑談は保存不要」という通常判定は適用しない(実行ログのみの場合を除く)
+            result = await asyncio.to_thread(archive_chat_session, snapshot, True)
+        except Exception as e:
+            log_command_error("/save", e)
+            result = None  # /chat off と同じ扱い: 例外は失敗扱いにする
+
+        # is_failure_result(None) は isinstance チェックで False を返すため、
+        # result is None を先に弾かないと例外発生時に誤って reset 側へ分岐する。
+        if result is not None and not is_failure_result(result):
+            # Success/Skipped: /save は明示操作なので「新しい話題に入りたい」という
+            # ユーザー意図を優先し、判定結果によらずリセットする。Error のときだけ
+            # 温存するのは _idle_archive_loop / /chat off の「結果非依存で畳む」方針
+            # とは非対称だが、/save はユーザー明示操作でありリトライに価値がある
+            # (例: Gemini日次予算超過で今回失敗、後で /save し直せば成功しうる)。
+            session["history"] = session["history"][len(snapshot):]
+            if result.startswith("Success"):
+                text = f"📝 {result}\nコンテキストをリセットしました。新しい話題からどうぞ。"
+            else:  # "Skipped: ..."
+                text = f"💤 {result}\n(保存の必要なしと判定されましたが、コンテキストはリセットしました)"
+        else:
+            # Error/例外: データ損失を避けるため history は保持し、セッションは継続する。
+            detail = result if result is not None else "(内部エラー: 詳細はログを参照してください)"
+            text = f"⚠️ 保存に失敗しました。セッションは継続します。\n{detail}"
+
+    await interaction.followup.send(text)
 
 
 # ---------------------------------------------------------

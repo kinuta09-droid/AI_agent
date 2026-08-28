@@ -176,6 +176,11 @@ async def cmd_chat(interaction: discord.Interaction, message: str = "on"):
     await bot_commands_chat.cmd_chat(interaction, message)
 
 
+@tree.command(name="save", description="現在のチャットセッションを保存し、コンテキストをリセットする")
+async def cmd_save(interaction: discord.Interaction):
+    await bot_commands_chat.cmd_save(interaction)
+
+
 @tree.command(name="status", description="常駐スタック（Bot / Scheduler / Launcher）の稼働状況")
 async def cmd_status(interaction: discord.Interaction):
     await bot_commands_admin.cmd_status(interaction)

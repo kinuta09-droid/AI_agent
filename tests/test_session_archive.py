@@ -215,6 +215,41 @@ def test_moc_not_determined_falls_back_to_inbox():
     print("--- [7] done ---")
 
 
+# ---------------------------------------------------------
+# [8] lenient=True (/save 用) は緩和されたプロンプトでLLMを呼ぶ
+# ---------------------------------------------------------
+
+def test_lenient_mode_uses_relaxed_prompt():
+    with _SessionDir():
+        with mock.patch.object(tsa.client.models, "generate_content") as m, \
+             mock.patch("tools.tool_bitnet.generate_note_tags", return_value=[]):
+            m.return_value = _resp(
+                '{"should_save": true, "title": "テスト", "summary": "s"}')
+            tsa.archive_chat_session(_history(2), lenient=True)
+        # generate_content は保存判定に続けて _determine_parent_moc 内でも呼ばれるため、
+        # 最初の呼び出し (保存判定プロンプト) を見る。
+        first_call = m.call_args_list[0]
+        prompt = first_call.kwargs.get("contents") or first_call.args[-1]
+        check("[8] lenient時は/save向けの緩和文言を含む", "/save" in prompt, prompt)
+        check("[8] lenient時は「雑談」基準の文言を含まない", "単なる雑談" not in prompt, prompt)
+    print("--- [8] done ---")
+
+
+def test_default_mode_still_uses_strict_prompt():
+    with _SessionDir():
+        with mock.patch.object(tsa.client.models, "generate_content") as m, \
+             mock.patch("tools.tool_bitnet.generate_note_tags", return_value=[]):
+            m.return_value = _resp(
+                '{"should_save": true, "title": "テスト", "summary": "s"}')
+            tsa.archive_chat_session(_history(2))  # lenient未指定 = 既存動作を維持
+        # generate_content は保存判定に続けて _determine_parent_moc 内でも呼ばれるため、
+        # 最初の呼び出し (保存判定プロンプト) を見る。
+        first_call = m.call_args_list[0]
+        prompt = first_call.kwargs.get("contents") or first_call.args[-1]
+        check("[9] デフォルトは従来通り「雑談」基準の文言を含む", "単なる雑談" in prompt, prompt)
+    print("--- [9] done ---")
+
+
 if __name__ == "__main__":
     test_below_threshold_skips_without_llm_call()
     test_should_save_false_skips_and_creates_no_file()
@@ -223,6 +258,8 @@ if __name__ == "__main__":
     test_filename_sanitizes_forbidden_characters()
     test_moc_determined_sets_up_frontmatter()
     test_moc_not_determined_falls_back_to_inbox()
+    test_lenient_mode_uses_relaxed_prompt()
+    test_default_mode_still_uses_strict_prompt()
 
     print(f"\n{len(_PASS)} passed, {len(_FAIL)} failed")
     if _FAIL:
