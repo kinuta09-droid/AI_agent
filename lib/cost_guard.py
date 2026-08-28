@@ -215,3 +215,16 @@ GROUNDING_COUNTER = DailyCounter(
     limit=get_limit("DAILY_GROUNDING_CALL_LIMIT", 30),
     name="Google Search Grounding",
 )
+
+
+# --- Browser Act (ReActループでクリック/フォーム入力を行うブラウジングエージェント) ---
+# 1回の起動が max_steps 分の HEAVY呼び出しを消費しうるため、共有の
+# GEMINI_HEAVY_COUNTER(日次200回共用)とは別に「起動回数」自体を絞る。
+# HEAVY呼び出し自体は既存の _guarded_generate_content 経由で引き続き
+# 自動カウントされる(意図的な二重ガード)。
+BROWSER_ACT_COUNTER_PATH = os.path.join(LOGS_DIR, "browser_act_daily.json")
+BROWSER_ACT_COUNTER = DailyCounter(
+    path=BROWSER_ACT_COUNTER_PATH,
+    limit=get_limit("DAILY_BROWSER_ACT_LIMIT", 10),
+    name="Browser Act",
+)

@@ -69,6 +69,15 @@ def _tool_browser_use_wrapper(url: str, task: str = "このページの主要な
         return f"[browser_use error] {e}"
 
 
+def _tool_browser_act_wrapper(url: str, task: str = "", max_steps: int = 12) -> str:
+    """URLを開き、クリック/フォーム入力を伴うReActループでtaskを遂行する。不可逆操作の手前で自動停止。"""
+    try:
+        from tools.tool_browser_use import browse_and_act
+        return browse_and_act(url, task, max_steps=int(max_steps))
+    except Exception as e:
+        return f"[browser_act error] {e}"
+
+
 def _tool_xtrend_prompt_wrapper(feature_index: int = 1) -> str:
     """XTrendで分析した機能のClaude Code実装指示書を生成する。feature_indexは1始まり。"""
     try:
@@ -284,8 +293,15 @@ TOOL_ENTRIES = [
      "module": "tools.tool_obsidian"},
     {"name": "tool_future_search", "usage": "tool_future_search(topic='AIエージェントの未来')", "description": "未来シナリオ分析: 日本語トピックを英訳→Tavily英語ソース収集→Gemini 10視点マルチレンズ推論→個人化された日本語レポートをObsidianに保存",
      "func": _tool_future_search_wrapper},
-    {"name": "tool_browser_use", "usage": "tool_browser_use(url='https://...', task='このページのXXXを教えて')", "description": "ブラウザでURLを開きJS描画後のページテキストをGeminiで解析（動的サイト・SPA対応）",
+    {"name": "tool_browser_use", "usage": "tool_browser_use(url='https://...', task='このページのXXXを教えて')", "description": "ブラウザでURLを開きJS描画後のページテキストをGeminiで解析（動的サイト・SPA対応）。読み取り専用",
      "func": _tool_browser_use_wrapper},
+    # クリック/フォーム入力を伴うため parallel_safe は付けない (Cookie/セッション状態を
+    # 持つブラウザを1つ使い回すループであり、他ステップと同時実行すると壊れる)。
+    {"name": "tool_browser_act",
+     "usage": "tool_browser_act(url='https://...', task='検索欄にXXXと入力して検索結果を教えて', max_steps=12)",
+     "description": "ブラウザでクリック・フォーム入力・選択まで行うエージェント（読み取りだけならtool_browser_useを使う）。"
+                     "注文確定/購入/決済/送信/削除等の不可逆操作の手前では自動的に停止し人間の確認を促す",
+     "func": _tool_browser_act_wrapper},
     {"name": "tool_xtrend", "usage": "tool_xtrend(query='AI agent,MCP', min_likes=500)", "description": "X(Twitter)のAIバズ投稿を収集し機能名/技術スタック/難易度/ARMS親和性を構造化分析してObsidianに保存",
      "func": _tool_xtrend_wrapper},
     {"name": "tool_xtrend_prompt", "usage": "tool_xtrend_prompt(feature_index=1)", "description": "XTrend分析済み機能(1始まりの番号)のClaude Code実装指示書をGeminiで生成してlogsに保存",

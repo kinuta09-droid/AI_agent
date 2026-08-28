@@ -18,4 +18,5 @@ scipy  # scripts/eval_features.py (spearmanr) — pandas_ta 経由でローカ�
 # requirements-docling.txt に分離してある。未導入でも Paper Radar/Digest は
 # HTML 抽出にフォールバックして動く (lib/docling_client.py)。
 fal_client  # tools/tool_web_design.py (Phase2画像生成/Phase4動画生成、要 .env の FAL_KEY)
+playwright  # tools/tool_browser_use.py (JS描画ページの取得・ブラウザ操作。要 `playwright install chromium`)
 notebooklm-mcp-cli  # tools/tool_notebooklm.py (notebooklm_tools.* を提供、2.7MBと軽量なので docling と違い requirements-docling.txt へ分離しない)

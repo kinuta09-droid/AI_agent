@@ -30,6 +30,10 @@ def _import_browser():
     from tools.tool_browser_use import browse_and_extract
     return browse_and_extract
 
+def _import_browser_act():
+    from tools.tool_browser_use import browse_and_act
+    return browse_and_act
+
 def _import_future_search():
     from tools.tool_future_search import run_future_search
     return run_future_search
@@ -530,6 +534,21 @@ async def cmd_browse(interaction: discord.Interaction, url: str, task: str = "�
 
     if _send_with_fallback:
         await _send_with_fallback(interaction, result, title="Browse & Extract", emoji="🌐")
+    else:
+        await interaction.followup.send(result[:2000])
+
+
+async def cmd_browse_act(interaction: discord.Interaction, url: str, task: str, max_steps: int = 12):
+    """URLを開き、クリック/フォーム入力を伴うReActループでtaskを遂行する（不可逆操作の手前で自動停止）"""
+    await interaction.response.defer()
+    try:
+        browse_and_act = _import_browser_act()
+        result = await asyncio.to_thread(browse_and_act, url, task, max_steps)
+    except Exception as e:
+        result = log_command_error(f"/browse-act {url}", e, "❌ Browse & Act Error")
+
+    if _send_with_fallback:
+        await _send_with_fallback(interaction, result, title="Browse & Act", emoji="🖱️")
     else:
         await interaction.followup.send(result[:2000])
 

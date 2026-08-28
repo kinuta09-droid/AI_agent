@@ -536,8 +536,17 @@ _REMIND_TRIGGER_RE = re.compile(r"((?<![a-zA-Z])remind|リマインド)", re.IGN
 # あるだけの (=文頭一致しなかった) casualな言及は、即実行せず「普通に返信 →
 # 実行しますか？」の確認ボタンに倒す (_ActionConfirmView)。plan は "planet"/
 # "planning"/"plant" だけを否定先読みで除外する。
+#
+# URL / 「サイトに行って」的な表現も agent_natural に含める: ブラウジング系ツール
+# (tool_browser_use/tool_browser_act) は Planner (run_plan_and_execute) 経由でしか
+# 呼べないため、「エージェント」という単語を含まない「〇〇のサイトに行って✕✕を
+# 持ってきて」だけの発言だと、これまでは _parse_chat_intent がどの意図にも
+# 一致せず、ただの雑談応答 (ツール呼び出しなし) で終わっていた。誤爆しても
+# agent_natural は即実行ではなく確認ボタンを挟むだけなので、広めに拾って害は無い。
 _AGENT_NATURAL_RE = re.compile(
-    r"(エージェント|(?<![a-zA-Z])agent|(?<![a-zA-Z])plan(?!et|ning|t))", re.IGNORECASE)
+    r"(エージェント|(?<![a-zA-Z])agent|(?<![a-zA-Z])plan(?!et|ning|t)"
+    r"|https?://"
+    r"|(?:サイト|ページ).{0,10}(?:行って|開いて|見て|見に|アクセス))", re.IGNORECASE)
 _BRAINSTORM_NATURAL_RE = re.compile(r"(壁打ち|ブレスト|(?<![a-zA-Z])brainstorm)", re.IGNORECASE)
 
 

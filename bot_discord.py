@@ -345,6 +345,16 @@ async def cmd_browse(interaction: discord.Interaction, url: str, task: str = "�
     await bot_commands_tools.cmd_browse(interaction, url, task)
 
 
+@tree.command(name="browse-act", description="URLを開いてクリック・フォーム入力まで行うエージェント（不可逆操作の手前で自動停止）")
+@app_commands.describe(
+    url="開くURL",
+    task="達成したいこと (例: 検索欄にXXXと入力して検索結果を教えて)",
+    max_steps="最大アクション数 (既定12)",
+)
+async def cmd_browse_act(interaction: discord.Interaction, url: str, task: str, max_steps: int = 12):
+    await bot_commands_tools.cmd_browse_act(interaction, url, task, max_steps)
+
+
 @tree.command(name="future", description="未来シナリオ分析: Gemini 10視点マルチレンズ推論をObsidianに保存")
 @app_commands.describe(
     topic="調査トピック (日本語OK, 例: AIエージェントの未来)",
