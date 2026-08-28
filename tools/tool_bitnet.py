@@ -497,7 +497,7 @@ def generate_note_tags(title: str, content_preview: str = "", max_tags: int = 5)
         raw = result["text"].strip().splitlines()[0]
         # カンマ区切りでタグを分割し、余分な記号を除去
         tags = [
-            t.strip().lstrip("#").lower()
+            t.strip().lstrip("#").lower().replace(" ", "_")
             for t in raw.split(",")
             if t.strip() and len(t.strip()) < 30
         ][:max_tags]

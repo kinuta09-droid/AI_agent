@@ -33,6 +33,7 @@ description: LLMの出力を判定・要約・検証ロジックに使うコー�
 
 ## パース
 
+- **LLM が生成したタグを下流のYAML frontmatter配列にそのまま書き込むと、タグ内部の半角スペースがYAML側の区切りと衝突して分裂する** (2026-08-28、`tools/tool_bitnet.py` の `generate_note_tags()`)。症状: `/save` でのセッションログ自動保存時、BitNetが `"machine learning"` のような複数語タグを生成すると、`tools/tool_session_archive.py` の frontmatter `tags: [machine learning, ...]` に無加工で書き込まれ、Obsidian側はスペース区切りで `machine` と `learning` の2タグに分割して認識する。例外は出ずログにも残らない無言の破損。真因: `generate_note_tags()` のタグ抽出が `t.strip().lstrip("#").lower()` で `#` と前後空白しか除去しておらず、タグ文字列内部の半角スペースは素通しだった。**この関数は共有ヘルパーなので、直接の発覚経路だった `/save` だけでなく、同じ関数を呼ぶ `tools/tool_obsidian.py` のクリップ自動タグ付け等にも同じ破損が及んでいた** (Category A の「表示層を直したら、その値を渡している層も同じ基準で洗う」と同型 — ただしこちらは表示ではなくフォーマット互換性)。対処: 抽出時に `.replace(" ", "_")` を追加し `machine_learning` のような単一トークンに正規化 (`t.strip().lstrip("#").lower().replace(" ", "_")`)。**一般化**: LLM出力の自由記述テキストを、区切り文字に意味を持つ下流フォーマット (YAML配列、CSV、Markdownテーブルセル等) へ書き込む処理を書く/レビューするときは、その区切り文字がLLM出力の内部に紛れ込んでいないか確認する — JSON配列のパース失敗だけでなく、パースは成功しても中身の文字列が下流で誤分割される経路もある。回帰テストは未実装 (`tests/test_bitnet_new_features.py` のTEST5/TEST6は実BitNet推論を伴う `ARMS_SLOW_TESTS=1` 限定のassertなし目視確認構造で、今回の修正後も未実行のまま。既存TEST1 8/8 greenのみ確認済み)
 - **LLM 出力から JSON 配列を貪欲マッチ1本で取らない**。`\[.*\]` (DOTALL) は「候補[1]と[3]が該当します。\n[1, 3]」で最初の `[` から最後の `]` までを掴んでパースに失敗し、**正解を持っているのにフォールバックする**。Light モデルは「説明を書くな」と指示しても前置きを付ける。ネストしない `\[[^\[\]]*\]` も候補にして後ろから解けるものを採る。なお `lib_shared.safe_json_loads` はトップレベル配列を `{"plan": [...]}` に包む Planner 専用仕様なので、素の配列が欲しい用途で流用しない
 
 ## 汎用のLLMプロンプト系バグ
