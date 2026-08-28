@@ -211,6 +211,41 @@ def test_cmd_brainstorm_loads_idea_seed():
     print("✅ [7] cmd_brainstorm: idea:prefixで元Fleeting Noteを読み込みseedにする")
 
 
+async def _run_cmd_brainstorm_loads_excerpt_source_file():
+    interaction = _make_fake_interaction(1)
+    thread = AsyncMock()
+    thread.id = 90011
+    interaction.channel.create_thread = AsyncMock(return_value=thread)
+
+    excerpt_body = "> [!INFO] コンテキスト\n> from [[元記事ノート]]\n\n抜粋の断片"
+
+    def _fake_read(title):
+        if title == "抜粋メモ":
+            return excerpt_body
+        if title == "元記事ノート":
+            return "元記事ノートの全文"
+        return f"Error: File {title} not found."
+
+    orig_read, orig_gen = idea_mod.tool_read_note, idea_mod.generate_next_question
+    idea_mod.tool_read_note = _fake_read
+    idea_mod.generate_next_question = lambda seed, turns: "Q1"
+    try:
+        await idea_mod.cmd_brainstorm(interaction, "idea:抜粋メモ")
+        session = idea_mod._brainstorm_sessions.get(thread.id)
+        assert session is not None, "セッションが作られていない"
+        assert excerpt_body in session["seed"], session["seed"]
+        assert "元記事ノートの全文" in session["seed"], f"元ファイルの内容がseedに含まれていない: {session['seed']!r}"
+    finally:
+        idea_mod.tool_read_note = orig_read
+        idea_mod.generate_next_question = orig_gen
+        idea_mod._brainstorm_sessions.pop(thread.id, None)
+
+
+def test_cmd_brainstorm_loads_excerpt_source_file():
+    asyncio.run(_run_cmd_brainstorm_loads_excerpt_source_file())
+    print("✅ [7b] cmd_brainstorm: quickadd抜粋メモの引用元(> from [[...]])の元ファイルもseedに読み込む")
+
+
 async def _run_summarize_and_save_links_and_deletes_source():
     session = {"seed": "seed", "turns": [], "source_title": "音声作品"}
     thread = AsyncMock()

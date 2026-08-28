@@ -323,6 +323,19 @@ async def cmd_brainstorm(interaction: discord.Interaction, text: str):
             return
         seed = note_content
 
+        # quickadd抜粋メモ (`> [!INFO] コンテキスト\n> from [[元ファイル]]`) なら、断片だけでなく
+        # 元ファイルの内容もseedに含める (壁打ちの質問が断片だけを見て組み立てられていた問題への対処)。
+        # 元ファイルが見つからない等は副次的失敗として無視し、抜粋メモ本文のみで続行する。
+        citation = extract_excerpt_citation(note_content)
+        if citation:
+            m = _CREATED_FILENAME_RE.search(citation)
+            if m:
+                source_content = await asyncio.to_thread(tool_read_note, m.group(1))
+                if not is_failure_result(source_content):
+                    seed = f"{seed}\n\n---\n## 元ファイルの内容: [[{m.group(1)}]]\n{source_content}"
+                else:
+                    print(f"[bot_commands_idea] ⚠️ Failed to load excerpt source file [[{m.group(1)}]]: {source_content}")
+
     display_title = source_title or text
     try:
         thread = await interaction.channel.create_thread(
