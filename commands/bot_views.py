@@ -241,31 +241,69 @@ class TaskFailureView(AllowedUserView):
 _FEEDBACK_VIEW_TIMEOUT = 3600  # 1時間 (OpenInObsidianView と同じ有限期限パターン)
 
 
-class AgentFeedbackReasonModal(discord.ui.Modal, title="改善点を教えてください"):
-    """👎 選択時に表示する、低評価の理由を任意入力するモーダル。"""
+class AgentFeedbackNoteModal(discord.ui.Modal, title="補足があれば教えてください"):
+    """理由カテゴリ選択後に表示する、任意の自由記入(補足)モーダル。
 
-    reason = discord.ui.TextInput(
-        label="どこが期待と違いましたか？ (任意)",
+    reason (集計対象) は選択式 AgentFeedbackReasonSelectView 側で確定済みで、
+    ここではニュアンスの補足のみを受ける (表記揺れが起きても集計に影響しない)。
+    """
+
+    note = discord.ui.TextInput(
+        label="補足 (任意)",
         style=discord.TextStyle.paragraph,
         required=False,
         max_length=500,
     )
 
-    def __init__(self, goal: str, result: str, parent_view: "AgentFeedbackView"):
+    def __init__(self, goal: str, result: str, reason: str, parent_view: "AgentFeedbackView"):
         super().__init__()
         self._goal = goal
         self._result = result
+        self._reason = reason
         self._parent_view = parent_view
 
     async def on_submit(self, interaction: discord.Interaction):
         from lib.agent_feedback import save_feedback
         ok = await asyncio.to_thread(
-            save_feedback, "bad", self._goal, self._result, reason=self.reason.value,
+            save_feedback, "bad", self._goal, self._result,
+            reason=self._reason, note=self.note.value,
             user_id=interaction.user.id, channel_id=interaction.channel_id,
         )
         msg = ("📝 フィードバックを記録しました。ありがとうございます。" if ok
                else "⚠️ 記録に失敗しました。時間をおいて再度お試しください。")
         await self._parent_view._finish(interaction, msg)
+
+
+class AgentFeedbackReasonSelectView(discord.ui.View):
+    """👎 選択時に表示する、低評価の理由カテゴリを選ばせる中間ステップ。
+
+    理由は固定選択肢 (lib.agent_feedback.BAD_REASON_CHOICES) から選ばせる。
+    自由入力だと同じ意図でも表記が揺れ (「情報が古い」「情報が古かった」等)、
+    summarize_feedback() の bad理由集計が本来1件のバケツに割れて分散していた
+    (表記揺れ問題)。選択後は補足入力用の AgentFeedbackNoteModal を開く。
+    Modal は component (Select) を内包できない (discord.py の制約) ため、
+    ephemeral メッセージ上の Select → Modal の2段構成にする。
+    """
+
+    def __init__(self, goal: str, result: str, parent_view: "AgentFeedbackView"):
+        super().__init__(timeout=_FEEDBACK_VIEW_TIMEOUT)
+        self._goal = goal
+        self._result = result
+        self._parent_view = parent_view
+
+        from lib.agent_feedback import BAD_REASON_CHOICES
+        select = discord.ui.Select(
+            placeholder="どこが期待と違いましたか？",
+            options=[discord.SelectOption(label=c) for c in BAD_REASON_CHOICES],
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        reason = interaction.data["values"][0]
+        await interaction.response.send_modal(
+            AgentFeedbackNoteModal(self._goal, self._result, reason, self._parent_view)
+        )
 
 
 class AgentFeedbackView(AllowedUserView):
@@ -309,8 +347,10 @@ class AgentFeedbackView(AllowedUserView):
 
     @discord.ui.button(label="👎 期待と違う", style=discord.ButtonStyle.danger)
     async def bad(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(
-            AgentFeedbackReasonModal(self._goal, self._result, self)
+        await interaction.response.send_message(
+            "どこが期待と違いましたか？ 理由を選んでください:",
+            view=AgentFeedbackReasonSelectView(self._goal, self._result, self),
+            ephemeral=True,
         )
 
     @discord.ui.button(label="🕐 最新情報で再検索", style=discord.ButtonStyle.secondary)

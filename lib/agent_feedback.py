@@ -25,26 +25,47 @@ from lib.engagement_log import log_event, read_events
 AGENT_FEEDBACK_LOG_PATH = os.path.join(_PROJECT_ROOT, "logs", "agent_feedback.jsonl")
 
 
-def save_feedback(rating: str, goal: str, result: str, reason: str = "",
+BAD_REASON_CHOICES = [
+    "情報が古い/不正確",
+    "求めていることと違う",
+    "説明が分かりにくい",
+    "具体的に実行できない",
+    "その他",
+]
+"""👎 選択時にユーザーに選ばせる理由の固定リスト (Discord Select の選択肢)。
+
+自由入力だと同じ意図でも「情報が古い」「情報が古かった」のように表記が揺れ、
+summarize_feedback() の bad理由集計が本来1件のバケツに割れて分散する
+(表記揺れ問題)。理由を固定選択肢にすることで集計キー自体を有限集合にし、
+根本から表記揺れを起こらなくする。ニュアンスの補足は reason ではなく
+別引数 note (自由記入・集計対象外) で受ける。"""
+
+
+def save_feedback(rating: str, goal: str, result: str, reason: str = "", note: str = "",
                    user_id: int = None, channel_id: int = None,
                    log_path: str = AGENT_FEEDBACK_LOG_PATH) -> bool:
     """フィードバック1件を追記する。rating は "good" か "bad"。
 
+    reason は BAD_REASON_CHOICES から選ばれた固定文字列 (集計対象)、
+    note はユーザー自由記入の補足 (集計対象外、Plannerへのヒントにのみ使う)。
     失敗しても例外は出さず False を返す (log_event と同じ契約)。
     """
-    meta = {"result": result, "reason": reason, "user_id": user_id, "channel_id": channel_id}
+    meta = {
+        "result": result, "reason": reason, "note": note,
+        "user_id": user_id, "channel_id": channel_id,
+    }
     return log_event(
         event=rating, item=goal, source="agent_feedback",
         item_type="agent_answer", meta=meta, log_path=log_path,
     )
 
 
-def _sanitize_reason(reason: str) -> str:
-    """reason はユーザー自由入力＝プロンプトインジェクション面。Plannerプロンプトの
+def _sanitize_text(text: str) -> str:
+    """自由入力文字列(note等)はプロンプトインジェクション面。Plannerプロンプトの
     ブロック構造 (【...】) を壊せないよう改行を潰し全角鉤括弧を除去し120字で切る。"""
-    reason = (reason or "").replace("\n", " ").replace("\r", " ")
-    reason = reason.replace("【", "").replace("】", "").strip()
-    return reason[:120]
+    text = (text or "").replace("\n", " ").replace("\r", " ")
+    text = text.replace("【", "").replace("】", "").strip()
+    return text[:120]
 
 
 def recent_bad_hints(days: int = 90, limit: int = 5,
@@ -52,8 +73,8 @@ def recent_bad_hints(days: int = 90, limit: int = 5,
     """直近の低評価 (bad) から「質問→理由」の1行ヒントを新しい順に返す。
 
     Planner プロンプトへの直接注入用。result 全文 (meta.result) は注入しない
-    (ログの大半を占めプロンプトが爆発するため)。reason が空 (未記入) のものは
-    ヒントとして無意味なので除外する。
+    (ログの大半を占めプロンプトが爆発するため)。reason (選択式カテゴリ) と
+    note (自由記入の補足) が両方とも空のものはヒントとして無意味なので除外する。
     """
     events = read_events(days=days, log_path=log_path)
     bad_events = [e for e in events if e.get("event") == "bad"]
@@ -61,11 +82,13 @@ def recent_bad_hints(days: int = 90, limit: int = 5,
     hints = []
     for e in reversed(bad_events):
         meta = e.get("meta") or {}
-        reason = _sanitize_reason(meta.get("reason", ""))
-        if not reason:
+        reason = str(meta.get("reason") or "").strip()
+        note = _sanitize_text(meta.get("note", ""))
+        if not reason and not note:
             continue
+        detail = f"{reason} ({note})" if reason and note else (reason or note)
         item = str(e.get("item", "")).strip()
-        hints.append(f"「{item}」→ 低評価理由: {reason}")
+        hints.append(f"「{item}」→ 低評価理由: {detail}")
         if len(hints) >= limit:
             break
     return hints
