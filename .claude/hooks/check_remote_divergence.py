@@ -33,9 +33,13 @@ def main() -> int:
         return 0  # gitリポジトリでない
 
     try:
-        subprocess.run(["git", "fetch", "--quiet"], capture_output=True, timeout=15)
+        fetch = subprocess.run(["git", "fetch", "--quiet"], capture_output=True, timeout=15)
     except Exception:
         return 0  # オフライン等。セッション開始を妨げない
+    if fetch.returncode != 0:
+        # fetch失敗 (認証切れ等) を無視して進むと、古いorigin追跡データのまま
+        # 「乖離なし」と誤判定しかねない。何も分からない状態なので黙って抜ける。
+        return 0
 
     try:
         branch = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()

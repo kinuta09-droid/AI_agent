@@ -48,7 +48,7 @@
           {
             "type": "command",
             "command": "py \"${CLAUDE_PROJECT_DIR}/.claude/hooks/check_remote_divergence.py\"",
-            "timeout": 20
+            "timeout": 35
           }
         ]
       }
