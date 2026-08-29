@@ -685,16 +685,9 @@ SCHEDULE = [
         "weekday": 6,  # 日曜
         "catch_up": True,
     },
-    # Vault NotebookLM Sync: 03:25 Activity Index 等と同じ夜間メンテナンス帯の末尾。
-    # 内容ハッシュで前回との差分だけ判定するため、変更が無い日はほぼ即座に終わる
-    # (tools/tool_notebooklm.py の sync_vault_export docstring参照)。同じ帯の日次ジョブ
-    # (Document Conversion/Vault Semantic Index/Activity Index) はどれもcatch_upを
-    # 付けていない慣習に合わせ、こちらも付けない (1晩逃しても翌晩に自然に追いつく)。
-    {
-        "time": "03:35",
-        "name": "Vault NotebookLM Sync",
-        "func": _run_vault_notebooklm_sync,
-    },
+    # Vault NotebookLM Sync: 2026-08-28 夜間定時実行を中止 (notebooklm-mcp-cli の
+    # ブラウザセッション認証が無人実行だと切れやすく不安定なため)。関数・import は
+    # 復活時のため残す。代替は必要なときにMCP経由で対話的に同期する運用へ。
     # Agent Feedback Weekly Report: 03:35 の直後、同じ夜間帯の末尾。
     # /agent 👍👎 と Planner 低信頼性警告が「今どう注入されているか」を人間が
     # 確認するためのスナップショット (plans記載 Phase 3)。Vault Health と同じ
