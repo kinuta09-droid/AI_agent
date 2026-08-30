@@ -462,7 +462,7 @@ async def _send_natural_confirm_reply(interaction: discord.Interaction, is_defer
 INTENT_PATTERNS = {
     "curate": r"^(curate|キュレート|トピック)\s*(.*)",
     "tasks": r"^(tasks?|タスク|todo)",
-    "calendar": r"^(calendar|カレンダー|予定|schedule)\s*(.*)",
+    "calendar": r"^(calendar|カレンダー|schedule)\s*(.*)",
     "news": r"^(news|ニュース)",
     "crypto": r"^(crypto|btc|仮想通貨)\s*(.*)",
     "scan": r"^(scan|スキャン|市場)",
@@ -487,7 +487,7 @@ INTENT_PATTERNS = {
 # ため見送り済み)。実害が増えたら見直す。
 ANYWHERE_INTENT_PATTERNS = {
     "tasks": r"(tasks?|タスク|todo)",
-    "calendar": r"(calendar|カレンダー|予定|schedule)",
+    "calendar": r"(calendar|カレンダー|schedule)",
     "gmailcheck": r"(gmail|メールチェック|メール確認)",
     "idea": r"((?<![a-zA-Z])idea(?!lly|listic)|アイデア)",
 }
@@ -501,9 +501,11 @@ ANYWHERE_INTENT_PATTERNS = {
 _RESTART_TRIGGER_RE = re.compile(r"(再起動|restart|リスタート)", re.IGNORECASE)
 
 # カレンダー「登録」は既存の calendar (閲覧) パターンより先に判定する必要がある。
-# calendar パターンは "予定"/"カレンダー" だけで広くマッチするため、通常の
-# dict イテレーション順に任せると「予定を登録して」が calendar(閲覧) に
-# 先取りされ、tool_get_calendar("を登録して") のような無意味な呼び出しになる。
+# INTENT_PATTERNS/ANYWHERE_INTENT_PATTERNS の calendar からは「予定」を除外済み
+# (日常語すぎて誤爆するため、2026-08-31) だが、本パターンは "予定"+近傍語の
+# 複合マッチなので引き続き "予定を登録して" を拾う。通常の dict イテレーション
+# 順に任せると "カレンダー登録して" が calendar(閲覧) に先取りされ、
+# tool_get_calendar("登録して") のような無意味な呼び出しになるため事前判定にする。
 _CALENDAR_ADD_TRIGGER_RE = re.compile(
     r"(予定|カレンダー|スケジュール|schedule|calendar).{0,15}(登録|追加|入れて)"
     r"|(登録|追加).{0,15}(予定|カレンダー|スケジュール)",
