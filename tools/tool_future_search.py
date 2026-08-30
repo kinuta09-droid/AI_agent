@@ -423,6 +423,9 @@ def _load_user_context() -> str:
             try:
                 with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read().strip()
+                if label == "User Profile":
+                    from tools.tool_obsidian import _strip_section_or_warn, PERSONAL_INFO_SECTION_HEADING
+                    content = _strip_section_or_warn(content, PERSONAL_INFO_SECTION_HEADING, "FutureSearch").strip()
                 if content:
                     parts.append(f"## {label}\n{content}")
             except Exception as e:

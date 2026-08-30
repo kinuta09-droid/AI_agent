@@ -30,6 +30,8 @@ from lib.lib_shared import (
 from tools.tool_obsidian import (
     _extract_and_integrate_sections,
     _determine_parent_moc,
+    _strip_section_or_warn,
+    PERSONAL_INFO_SECTION_HEADING,
 )
 from lib.lib_obsidian_cli import run_obsidian_cli
 
@@ -73,6 +75,7 @@ def read_main_context(max_tokens: int = 30000) -> str:
         try:
             with open(PROFILE_PATH, 'r', encoding='utf-8') as f:
                 profile = f.read()
+            profile = _strip_section_or_warn(profile, PERSONAL_INFO_SECTION_HEADING, "Curator")
             context_parts.append(f"## User Profile (Preferences)\n{profile}\n")
             char_count += len(profile)
         except Exception:

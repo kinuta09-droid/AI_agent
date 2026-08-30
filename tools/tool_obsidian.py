@@ -394,6 +394,38 @@ def _append_list_item_to_section(path: str, section_heading: str, item: str) -> 
     return True
 
 
+# User_Profile.md の手動編集専用セクション名。ここに書かれた内容は _strip_section で
+# 除去してから Gemini プロンプト (tool_curator.read_main_context /
+# tool_future_search._load_user_context) に渡す — 外部API送信からの隔離が目的なので、
+# 呼び出し元を増やすときは必ずこの関数を通すこと。
+PERSONAL_INFO_SECTION_HEADING = "パーソナル情報"
+
+
+def _strip_section(text: str, section_heading: str) -> str:
+    """Markdownの `## {section_heading}` セクション(次の `## ` 見出し直前かEOFまで)を
+    丸ごと除去した文字列を返す。見出しが見つからなければ text をそのまま返す (非破壊)。
+    tool_interest_promotion._extract_memory_section と対の「抽出でなく除去」版。
+    同名見出しが複数あっても (誤って重複作成された場合など) 全て除去する — count=1で
+    最初の1つだけ消すと、2つ目以降が漏れたまま外部送信されるため (grillで指摘)。"""
+    pattern = rf'^## {re.escape(section_heading)}\s*\n.*?(?=^## |\Z)'
+    return re.sub(pattern, '', text, flags=re.MULTILINE | re.DOTALL)
+
+
+def _strip_section_or_warn(text: str, section_heading: str, warn_label: str) -> str:
+    """_strip_section の「見出しがGemini送信前に消えたか」を確認するラッパー。
+
+    見出し行の直後に絵文字や説明文が続く等、書式のわずかな崩れで正規表現が
+    一致しなくなると _strip_section は非破壊 (=何も消さない) ため無音で漏洩する
+    (Known Bug Patterns A系統「無言の死」と同型)。除去前に見出しマーカーが
+    存在したのに除去後もまだ残っているときだけ、ログに警告を出す。"""
+    marker = f"## {section_heading}"
+    stripped = _strip_section(text, section_heading)
+    if marker in text and marker in stripped:
+        print(f"[{warn_label}] ⚠️ 「{marker}」セクションを検出しましたが除去できませんでした"
+              f" (見出し行の書式を確認してください) — このままだと外部APIへ送信されます")
+    return stripped
+
+
 def tag_untagged_clips(limit: int = 20) -> str:
     """00_inbox内の未処理Clipノート(Obsidian Web Clipper由来、frontmatterにsource:を持つ)へ
     BitNetでトピックタグ、GeminiでMOC候補タグ(moc/<name>)を付与する。
