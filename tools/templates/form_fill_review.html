@@ -20,7 +20,7 @@
   <div id="canvas-pane"><canvas id="canvas"></canvas></div>
   <div id="panel">
     <h3>記入内容の確認</h3>
-    <p style="font-size:12px;color:#666;">自動入力された値を確認・修正してください。使わない項目はチェックを外すと印刷時に空欄になります。</p>
+    <p style="font-size:12px;color:#666;">自動入力された値を確認・修正してください。使わない項目はチェックを外すと印刷時に空欄になります。左の枠は内側をドラッグで移動、右下の角をドラッグでサイズ変更できます。</p>
     <div id="rows"></div>
     <button id="submit-btn">この内容で確定する</button>
     <div id="status"></div>
@@ -45,16 +45,76 @@ img.onload = () => {
 };
 img.src = IMAGE_DATA;
 
+const HANDLE_SIZE = 10;
+
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   for (const b of BOXES) {
     const hasValue = !!b.fill_text;
-    ctx.strokeStyle = b.box_id === activeBoxId ? '#ff9800' : (hasValue ? '#2e7d32' : '#9e9e9e');
-    ctx.lineWidth = b.box_id === activeBoxId ? 3 : 1.5;
-    ctx.strokeRect(b.x * scale, b.y * scale, b.w * scale, b.h * scale);
+    const isActive = b.box_id === activeBoxId;
+    ctx.strokeStyle = isActive ? '#ff9800' : (hasValue ? '#2e7d32' : '#9e9e9e');
+    ctx.lineWidth = isActive ? 3 : 1.5;
+    const bx = b.x * scale, by = b.y * scale, bw = b.w * scale, bh = b.h * scale;
+    ctx.strokeRect(bx, by, bw, bh);
+    if (isActive) {
+      // 右下のリサイズハンドル (ドラッグで枠の位置・大きさを調整できることの目印)
+      ctx.fillStyle = '#ff9800';
+      ctx.fillRect(bx + bw - HANDLE_SIZE, by + bh - HANDLE_SIZE, HANDLE_SIZE, HANDLE_SIZE);
+    }
   }
 }
+
+// --- ドラッグでの枠の移動・リサイズ (自動検出のズレを手動で直感的に補正する) ---
+let drag = null;
+
+function canvasPos(evt) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: evt.clientX - rect.left, y: evt.clientY - rect.top };
+}
+
+function boxAt(cx, cy) {
+  for (let i = BOXES.length - 1; i >= 0; i--) {
+    const b = BOXES[i];
+    const bx = b.x * scale, by = b.y * scale, bw = b.w * scale, bh = b.h * scale;
+    if (cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh) {
+      const onHandle = cx >= bx + bw - HANDLE_SIZE && cy >= by + bh - HANDLE_SIZE;
+      return { box: b, mode: onHandle ? 'resize' : 'move' };
+    }
+  }
+  return null;
+}
+
+canvas.addEventListener('mousedown', (evt) => {
+  const pos = canvasPos(evt);
+  const hit = boxAt(pos.x, pos.y);
+  if (!hit) return;
+  drag = { box: hit.box, mode: hit.mode, startX: pos.x, startY: pos.y,
+           orig: { x: hit.box.x, y: hit.box.y, w: hit.box.w, h: hit.box.h } };
+  activeBoxId = hit.box.box_id;
+  draw();
+});
+
+canvas.addEventListener('mousemove', (evt) => {
+  const pos = canvasPos(evt);
+  if (!drag) {
+    const hit = boxAt(pos.x, pos.y);
+    canvas.style.cursor = hit ? (hit.mode === 'resize' ? 'nwse-resize' : 'move') : 'default';
+    return;
+  }
+  const dx = (pos.x - drag.startX) / scale;
+  const dy = (pos.y - drag.startY) / scale;
+  if (drag.mode === 'move') {
+    drag.box.x = Math.round(drag.orig.x + dx);
+    drag.box.y = Math.round(drag.orig.y + dy);
+  } else {
+    drag.box.w = Math.max(10, Math.round(drag.orig.w + dx));
+    drag.box.h = Math.max(10, Math.round(drag.orig.h + dy));
+  }
+  draw();
+});
+
+window.addEventListener('mouseup', () => { drag = null; });
 
 const rowsDiv = document.getElementById('rows');
 const editableBoxes = BOXES.filter(b => b.label_text);
