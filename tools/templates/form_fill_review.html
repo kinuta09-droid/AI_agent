@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>記入補助 - 確認画面</title>
+<style>
+  body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; }
+  #canvas-pane { flex: 1; overflow: auto; background: #eee; padding: 16px; }
+  #panel { width: 380px; overflow-y: auto; border-left: 1px solid #ccc; padding: 12px; box-sizing: border-box; }
+  .row { border-bottom: 1px solid #ddd; padding: 8px 0; }
+  .row.active { background: #fff3cd; }
+  .row label { display: block; font-size: 12px; color: #555; }
+  .row input[type=text] { width: 100%; box-sizing: border-box; padding: 4px; }
+  .row .exclude { font-size: 12px; }
+  #submit-btn { width: 100%; padding: 10px; font-size: 16px; margin-top: 8px; }
+  #status { margin-top: 8px; font-size: 13px; }
+</style>
+</head>
+<body>
+  <div id="canvas-pane"><canvas id="canvas"></canvas></div>
+  <div id="panel">
+    <h3>記入内容の確認</h3>
+    <p style="font-size:12px;color:#666;">自動入力された値を確認・修正してください。使わない項目はチェックを外すと印刷時に空欄になります。</p>
+    <div id="rows"></div>
+    <button id="submit-btn">この内容で確定する</button>
+    <div id="status"></div>
+  </div>
+
+<script>
+const IMAGE_DATA = {{ image_data|tojson }};
+const BOXES = {{ boxes|tojson }};
+const DISPLAY_MAX_WIDTH = 900;
+
+const img = new Image();
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let scale = 1;
+let activeBoxId = null;
+
+img.onload = () => {
+  scale = Math.min(1, DISPLAY_MAX_WIDTH / img.width);
+  canvas.width = img.width * scale;
+  canvas.height = img.height * scale;
+  draw();
+};
+img.src = IMAGE_DATA;
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  for (const b of BOXES) {
+    const hasValue = !!b.fill_text;
+    ctx.strokeStyle = b.box_id === activeBoxId ? '#ff9800' : (hasValue ? '#2e7d32' : '#9e9e9e');
+    ctx.lineWidth = b.box_id === activeBoxId ? 3 : 1.5;
+    ctx.strokeRect(b.x * scale, b.y * scale, b.w * scale, b.h * scale);
+  }
+}
+
+const rowsDiv = document.getElementById('rows');
+const editableBoxes = BOXES.filter(b => b.label_text);
+for (const b of editableBoxes) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.dataset.boxId = b.box_id;
+  row.innerHTML = `
+    <label>[${b.box_id}] ${escapeHtml(b.label_text)} (${escapeHtml(b.category || '不明')})</label>
+    <input type="text" value="${escapeHtml(b.fill_text || '')}">
+    <label class="exclude"><input type="checkbox" ${b.fill_text ? 'checked' : ''}> この内容を使う</label>
+  `;
+  const textInput = row.querySelector('input[type=text]');
+  const checkbox = row.querySelector('input[type=checkbox]');
+  row.addEventListener('mouseenter', () => { activeBoxId = b.box_id; draw(); });
+  row.addEventListener('mouseleave', () => { activeBoxId = null; draw(); });
+  textInput.addEventListener('input', () => {
+    b.fill_text = textInput.value;
+    checkbox.checked = !!textInput.value;
+    draw();
+  });
+  checkbox.addEventListener('change', () => {
+    if (!checkbox.checked) { textInput.value = ''; b.fill_text = ''; }
+    draw();
+  });
+  rowsDiv.appendChild(row);
+}
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+document.getElementById('submit-btn').addEventListener('click', async () => {
+  const status = document.getElementById('status');
+  status.textContent = '送信中...';
+  try {
+    const resp = await fetch('/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ boxes: BOXES }),
+    });
+    if (resp.ok) {
+      status.textContent = '確定しました。このタブは閉じて構いません。';
+      document.getElementById('submit-btn').disabled = true;
+    } else {
+      status.textContent = '送信に失敗しました。';
+    }
+  } catch (e) {
+    status.textContent = '送信に失敗しました: ' + e;
+  }
+});
+</script>
+</body>
+</html>

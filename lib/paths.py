@@ -57,6 +57,11 @@ VAULT_ROOT = os.getenv("OBSIDIAN_VAULT_ROOT", "").strip() or DEFAULT_VAULT_ROOT
 DEFAULT_BITNET_DIR = r"C:\BitNet"
 BITNET_DIR = os.getenv("BITNET_DIR", "").strip() or DEFAULT_BITNET_DIR
 
+# tools/tool_form_fill.py の PDF出力 (render_pdf) が使う日本語フォント。
+# リポジトリ内に配布可能な日本語フォントアセットが無いため、Windows同梱の游ゴシックを直接読む。
+DEFAULT_FORM_FILL_FONT_PATH = r"C:\Windows\Fonts\YuGothM.ttc"
+FORM_FILL_FONT_PATH = os.getenv("FORM_FILL_FONT_PATH", "").strip() or DEFAULT_FORM_FILL_FONT_PATH
+
 # docling のモデルアーティファクト置き場。他の2つと違い既定値を持たない —
 # 未設定なら docling 本体の既定 (HuggingFace Hub から都度解決) に委ね、
 # 「lib/paths.py を経由するだけで挙動が変わる」ことを避ける

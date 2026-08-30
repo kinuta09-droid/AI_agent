@@ -20,3 +20,7 @@ scipy  # scripts/eval_features.py (spearmanr) — pandas_ta 経由でローカ�
 fal_client  # tools/tool_web_design.py (Phase2画像生成/Phase4動画生成、要 .env の FAL_KEY)
 playwright  # tools/tool_browser_use.py (JS描画ページの取得・ブラウザ操作。要 `playwright install chromium`)
 notebooklm-mcp-cli  # tools/tool_notebooklm.py (notebooklm_tools.* を提供、2.7MBと軽量なので docling と違い requirements-docling.txt へ分離しない)
+opencv-python  # tools/tool_form_fill.py (書類画像の罫線・記入枠検出、cv2)
+rapidocr  # tools/tool_form_fill.py (印字ラベルのローカルOCR、pip完結・別バイナリ不要、onnxruntime同梱)
+PyMuPDF  # tools/tool_form_fill.py (fitz、PDFへのテキスト重ね書き出力)
+Flask  # tools/tool_form_fill.py (記入前レビュー画面のローカルサーバ、localhost限定)
