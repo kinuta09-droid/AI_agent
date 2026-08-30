@@ -356,12 +356,23 @@ def parse_personal_info_section(vault_root: str = None) -> dict[str, str]:
     return profile
 
 
+# 「生年月日」は自動入力の対象外。日付欄は「＿年＿月＿日」のように複数の空欄に
+# 分割され、間に年号(令和/西暦)や年月日の漢字が挟まる書式のゆらぎが大きく、
+# どの空欄が年/月/日のどれを指すか、元号か西暦かも書類ごとに異なる。実書類の検証で
+# 断片(「月」だけ等)が誤って生年月日に分類される実例も見つかっており、自信を持って
+# 正しい書式で埋められない以上、誤った値を確信ありげに印刷するより空欄のまま残し、
+# 印刷後にユーザーが手書きするか、Stage 5で手動の枠を追加して入力する方が安全
+# (ユーザーの明示的な判断、2026-08-31)。
+NO_AUTOFILL_CATEGORIES = {"その他", "不明", "生年月日"}
+
+
 def autofill_values(labeled_boxes: list[dict], categories: dict[int, str],
                      profile: dict[str, str]) -> list[dict]:
     """カテゴリ名で profile を引き、各枠に fill_text を追加する (ローカル完結)。
 
-    未一致 (該当カテゴリが無い/プロフィール未記入) は空文字のままとし、Stage 5 の
-    レビュー画面で人間が埋める。fill_text には個人情報が入りうるためログに出力しない。
+    未一致 (該当カテゴリが無い/プロフィール未記入/NO_AUTOFILL_CATEGORIES) は空文字の
+    ままとし、Stage 5 のレビュー画面で人間が埋める。fill_text には個人情報が入りうる
+    ためログに出力しない。
 
     実書類 (個人番号カード交付申請書) のPDF出力で発覚した問題への対処: 「ラベル専用の
     狭いセル」と「実際に書き込む広いセル」が隣接し、両方が同じ label_text に紐付くことが
@@ -385,7 +396,7 @@ def autofill_values(labeled_boxes: list[dict], categories: dict[int, str],
         text = b.get("label_text", "")
         is_widest = widest_box_id_by_label.get(text, (None,))[0] == b["box_id"]
         value = ""
-        if category not in ("その他", "不明") and is_widest:
+        if category not in NO_AUTOFILL_CATEGORIES and is_widest:
             for key in CATEGORY_TO_PROFILE_KEY_ALIASES.get(category, [category]):
                 if key in profile:
                     value = profile[key]

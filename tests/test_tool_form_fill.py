@@ -251,6 +251,21 @@ def test_autofill_values_skips_narrow_duplicate_of_same_label():
     print("✅ 同一ラベルの重複セルは、最も広いものだけが自動入力対象になる")
 
 
+def test_autofill_values_never_fills_birthdate():
+    """ユーザーの明示的な判断(2026-08-31): 「＿年＿月＿日」のように分割・書式のゆれが
+    大きい日付欄は自動入力の対象外とする。カテゴリが正しく「生年月日」に分類され、
+    プロフィールに値があっても、fill_textは空のままであることを確認する。
+    """
+    labeled_boxes = [{"box_id": 0, "label_text": "生年月日2", "w": 800, "h": 100}]
+    categories = {0: "生年月日"}
+    profile = {"生年月日": "1983年10月7日"}
+
+    filled = autofill_values(labeled_boxes, categories, profile)
+    assert filled[0]["fill_text"] == "", \
+        f"生年月日は自動入力しない設計のはずが値が入っている: {filled[0]}"
+    print("✅ 生年月日カテゴリは自動入力されない (書式のゆれが大きいため意図的に除外)")
+
+
 def test_run_review_server_returns_edited_boxes():
     """/submit へのPOSTでブロッキングが解除され、編集後のboxesが返ることを確認する。
     実ブラウザは使わずHTTPリクエストで「確定」操作を模擬する (webbrowser.openは無効化して
@@ -386,6 +401,7 @@ if __name__ == "__main__":
     test_parse_personal_info_section_missing_file_returns_empty()
     test_autofill_values_matching_and_alias()
     test_autofill_values_skips_narrow_duplicate_of_same_label()
+    test_autofill_values_never_fills_birthdate()
     test_run_review_server_returns_edited_boxes()
     test_render_pdf_opacity_changes_output_and_skips_empty_fill_text()
     test_render_pdf_missing_font_warns_instead_of_silent_failure()
