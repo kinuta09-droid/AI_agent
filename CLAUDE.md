@@ -14,6 +14,7 @@
 | `tool_lora_factory.py` | LoRA/ComfyUI image generation |
 | `tool_paper_radar.py` | 注目論文の自動判別 (arXiv × HF upvote × 被引用速度 × 新しさ)。Gemini不使用=課金ゼロ |
 | `tool_paper_digest.py` | 論文本文を docling でキャプチャ→要約→X スレッド/note 記事の下書き生成 |
+| `tool_form_fill.py` | 手書き書類記入補助 (枠検出→OCR→Gemini分類→自動入力→ブラウザ確認→PDF出力)。Discord非対応、スタンドアロン |
 
 ## Coding Standards & Stability
 - **Python**: PEP8. Always `# -*- coding: utf-8 -*-` and explicit `encoding='utf-8'` on file I/O.
@@ -28,6 +29,7 @@
 py verify_project.py           # Pre-flight check (MANDATORY before release)
 py scripts\run_test_sweep.py   # tests/test_*.py を8並列でスイープ (CI と同じ実装)
 scripts\arms.bat               # ワンクリック制御 (引数なし=メニュー / start|stop|restart|status|logs)
+scripts\form_fill.bat          # 手書き書類記入補助 (画像/PDFをドラッグ&ドロップ、または起動後にパス入力)
 py main.py                     # Universal launcher
 py tools/tool_paper_radar.py --field ai_agent --top 5   # 注目論文レーダー (課金ゼロ)
 py tools/tool_paper_digest.py --index 1 --mode both     # 本文キャプチャ→要約→SNS/note下書き
