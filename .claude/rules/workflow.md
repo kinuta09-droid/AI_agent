@@ -39,7 +39,7 @@
 | Agent (`.claude/agents/`) | 使いどころ |
 |---|---|
 | `verifier` | PR説明文/最終要約/ドキュメントの主張が証跡に基づいているか検査 (コミット/投稿前) |
-| `test-writer` | 新規バグ修正・機能に対応するテストを既存作法 (LEVEL 0 encoding, ast静的検査) で追加 |
+| `test-writer` | 新規バグ修正・機能に対応するテストを既存作法 (LEVEL 0 encoding, ast静的検査) で追加。**新規 `test_*.py` を追加したら同じコミットで `scripts/run_test_sweep.py` の `SERIAL_TESTS`/`PARALLEL_TESTS` への分類登録も行う** (登録漏れは `tests/test_sweep_runner.py` がCIで赤にする、2026-08-31 `test_tool_form_fill.py` で実例 → `known-bug-patterns.md` Category D) |
 | `bug-pattern-archivist` | バグ修正後の教訓を CLAUDE.md 本体か該当 skill かを判断して追記 (肥大化防止) |
 
 **委譲する条件**: 3ファイル以上に及ぶ / プロジェクト全域のスキャン (`/techdebt`, 全ファイル grep) /
