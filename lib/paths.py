@@ -60,7 +60,7 @@ BITNET_DIR = os.getenv("BITNET_DIR", "").strip() or DEFAULT_BITNET_DIR
 # tools/tool_form_fill.py の PDF出力 (render_pdf) が使う日本語フォント。
 # リポジトリ内に配布可能な日本語フォントアセットが無いため、Windows同梱フォントを直接読む。
 # 明朝体にしているのは、日本で公的書類を書くときに明朝体が好まれるため (ユーザー要望)。
-# 游明朝 (yumin.ttf) が無い環境向けに MS明朝 → 游ゴシック の順でフォールバックする。
+# 游明朝 (yumin.ttf) が無い環境向けに MS明朝 → BIZ UD明朝 → 游ゴシック の順でフォールバックする。
 DEFAULT_FORM_FILL_FONT_PATH = r"C:\Windows\Fonts\yumin.ttf"
 FORM_FILL_FONT_FALLBACKS = (
     r"C:\Windows\Fonts\msmincho.ttc",       # MS明朝

@@ -705,7 +705,11 @@ def render_pdf(image_path: str, boxes: list[dict], output_path: str, opacity: fl
         if not text:
             continue
         box_w_pt = b["w"] * scale
-        base = max(8.0, min(14.0, b["h"] * scale * 0.6))
+        # 下限をMIN_FONTSIZE_PT(6pt、_fit_fontsizeの幅方向の下限と同じ)にしておく。
+        # 固定8ptだと、手動追加した極端に低い枠でフォントの実高さ(ascent+descent)が
+        # 枠の高さを超えて縦にはみ出す (grillで発見)。8pt起点よりは軽減されるが、
+        # なお極端に低い枠では起こりうる — 完全な防止には枠自体の最小高さ制約が要る。
+        base = max(MIN_FONTSIZE_PT, min(14.0, b["h"] * scale * 0.6))
         fontsize = _fit_fontsize(text, box_w_pt, base, measure_font)
         x, y = _centered_text_origin(b, scale, text, fontsize, measure_font)
         page.insert_text((x, y), text, fontname=fontname, fontfile=use_font_file,

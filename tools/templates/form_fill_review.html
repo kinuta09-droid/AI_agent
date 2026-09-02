@@ -94,7 +94,9 @@ function draw() {
       //   PDF: 1画像px = PT_PER_PX pt / キャンバス: 1画像px = scale キャンバスpx
       const ptToCanvas = scale / PT_PER_PX;                    // pt -> キャンバスpx
       const padding = PDF_TEXT_PADDING_PT * ptToCanvas;
-      const basePt = Math.max(8, Math.min(14, b.h * PT_PER_PX * 0.6));
+      // render_pdf 側と同じ下限 (PDF_MIN_FONTSIZE_PT=6pt)。8pt固定だと極端に低い枠で
+      // フォントが縦にはみ出す (grillで発見)。
+      const basePt = Math.max(PDF_MIN_FONTSIZE_PT, Math.min(14, b.h * PT_PER_PX * 0.6));
       let fontSize = basePt * ptToCanvas;
       const minSize = PDF_MIN_FONTSIZE_PT * ptToCanvas;
       const maxWidth = bw - padding * 2;
@@ -280,18 +282,25 @@ for (const b of BOXES) {
 const opacityFullBtn = document.getElementById('opacity-full');
 const opacityLightBtn = document.getElementById('opacity-light');
 
-function setOpacity(value) {
-  currentOpacity = value;
+function highlightOpacityButton(value) {
   opacityFullBtn.classList.toggle('active', value === OPACITY_FULL);
   opacityLightBtn.classList.toggle('active', value !== OPACITY_FULL);
+}
+
+function setOpacity(value) {
+  currentOpacity = value;
+  highlightOpacityButton(value);
   draw();
 }
 
 opacityFullBtn.addEventListener('click', () => setOpacity(OPACITY_FULL));
 opacityLightBtn.addEventListener('click', () => setOpacity(OPACITY_LIGHT));
-// サーバから渡された初期値がどちらのボタンに近いかでハイライトする
-// (--opacity にカスタム値を渡した場合もどちらかは選ばれた状態にする)。
-setOpacity(currentOpacity >= (OPACITY_FULL + OPACITY_LIGHT) / 2 ? OPACITY_FULL : OPACITY_LIGHT);
+// サーバから渡された初期値がどちらのボタンに近いかでハイライト**だけ**する。
+// setOpacity() を呼ぶと currentOpacity 自体が1.0/0.15のどちらかに強制されてしまい、
+// --opacity にカスタム値 (例: 0.5) を渡してもユーザーがボタンを一度も押さないうちに
+// 値が書き換わってしまう (grillで発見)。ハイライトはあくまで見た目の初期状態で、
+// 実際に送信される値はユーザーがトグルを操作するまで渡された初期値のまま保つ。
+highlightOpacityButton(currentOpacity >= (OPACITY_FULL + OPACITY_LIGHT) / 2 ? OPACITY_FULL : OPACITY_LIGHT);
 
 function escapeHtml(s) {
   const div = document.createElement('div');
