@@ -20,12 +20,8 @@
   <div id="canvas-pane"><canvas id="canvas"></canvas></div>
   <div id="panel">
     <h3>記入内容の確認</h3>
-    <p style="font-size:12px;color:#666;">自動入力された値を確認・修正してください。使わない項目はチェックを外すと印刷時に空欄になります。左の枠は内側をドラッグで移動、右下の角をドラッグでサイズ変更できます。何もない場所をドラッグすると新しい記入欄(青枠)を追加できます(生年月日など自動入力していない欄に使えます)。</p>
+    <p style="font-size:12px;color:#666;">検出された記入欄が書類の上から順に並んでいます。使わない項目はチェックを外すと印刷時に空欄になります。左の枠は内側をドラッグで移動、右下の角をドラッグでサイズ変更できます。何もない場所をドラッグすると新しい記入欄(青枠)を追加できます。薄い破線の枠は「右の欄の説明」用のラベルなので一覧には出しません。</p>
     <div id="rows"></div>
-    <details id="other-details">
-      <summary style="font-size:12px;color:#666;cursor:pointer;">説明ラベル欄・その他の検出枠 (<span id="other-count">0</span>件)</summary>
-      <div id="other-rows"></div>
-    </details>
     <button id="submit-btn">この内容で確定する</button>
     <button id="cancel-btn" style="width:100%;padding:6px;margin-top:6px;font-size:13px;">キャンセル (何も出力しない)</button>
     <div id="status"></div>
@@ -36,6 +32,10 @@ const IMAGE_DATA = {{ image_data|tojson }};
 const BOXES = {{ boxes|tojson }};
 const DISPLAY_MAX_WIDTH = 900;
 const OPACITY_PREVIEW = 0.85;  // プレビューの文字。枠線と区別がつく程度に濃く出す
+// render_pdf の既定フォント (游明朝) に近い見た目にする。PDF出力自体はサーバ側の
+// FORM_FILL_FONT_PATH で決まるので、ここはあくまでプレビュー用の近似 (ブラウザの
+// canvas fillText はローカルフォントファイルを直接指定できないため総称ファミリーで代用)。
+const PREVIEW_FONT_FAMILY = "'Yu Mincho', 'YuMincho', 'MS Mincho', serif";
 // render_pdf 側の定数と対にすること (ずれるとプレビューが印刷結果と食い違う)
 const PDF_PAGE_WIDTH_PT = 595.0;
 const PDF_TEXT_PADDING_PT = 4.0;
@@ -85,10 +85,10 @@ function draw() {
       let fontSize = basePt * ptToCanvas;
       const minSize = PDF_MIN_FONTSIZE_PT * ptToCanvas;
       const maxWidth = bw - padding * 2;
-      ctx.font = `${fontSize}px sans-serif`;
+      ctx.font = `${fontSize}px ${PREVIEW_FONT_FAMILY}`;
       while (fontSize > minSize && ctx.measureText(b.fill_text).width > maxWidth) {
         fontSize -= 0.5 * ptToCanvas;
-        ctx.font = `${fontSize}px sans-serif`;
+        ctx.font = `${fontSize}px ${PREVIEW_FONT_FAMILY}`;
       }
       ctx.fillStyle = '#000';
       ctx.globalAlpha = OPACITY_PREVIEW;
@@ -196,22 +196,14 @@ window.addEventListener('mouseup', () => {
 });
 
 const rowsDiv = document.getElementById('rows');
-const otherRowsDiv = document.getElementById('other-rows');
-const otherDetails = document.getElementById('other-details');
-const otherCount = document.getElementById('other-count');
-const SECONDARY_CATEGORIES = new Set(['不明', 'その他']);
 
-// 分類できた記入欄を上に、それ以外 (説明ラベル欄・注記文の誤検出) は折りたたみに入れる。
-// 実書類では後者が大半で、確認すべき十数件が埋もれていた。
 // role==='label' は「右の欄に何を書くかを説明する欄」(「氏名」と印字された左のセル) で、
-// そもそも書き込む場所ではない。
-function isPrimary(b) {
-  if (b.kind === 'manual') return true;
-  if (b.role === 'label') return false;
-  return !!b.label_text && !SECONDARY_CATEGORIES.has(b.category || '不明');
-}
-
+// そもそも書き込む場所ではない。一覧には出さない (キャンバス上には薄い破線で参考表示する)。
+// それ以外の検出枠 (role==='input') は、自動入力の有無・分類の成否によらず全て一覧に出す
+// (ユーザー要望: 自動入力されていない枠も上から順にテキストボックス表示する)。
 function addRow(b) {
+  if (b.role === 'label') return null;
+
   const row = document.createElement('div');
   row.className = 'row';
   row.dataset.boxId = b.box_id;
@@ -234,9 +226,7 @@ function addRow(b) {
     if (!checkbox.checked) { textInput.value = ''; b.fill_text = ''; }
     draw();
   });
-  const container = isPrimary(b) ? rowsDiv : otherRowsDiv;
-  insertRowInDocumentOrder(container, row, b);
-  if (container === otherRowsDiv) otherCount.textContent = otherRowsDiv.children.length;
+  insertRowInDocumentOrder(rowsDiv, row, b);
   return row;
 }
 
@@ -256,11 +246,10 @@ function insertRowInDocumentOrder(container, row, b) {
 }
 
 // キャンバス上で枠をクリックしたとき、対応する行を見えるところまでスクロールする
+// (ラベル欄には行が無いので何もしない)
 function revealRow(boxId) {
   const row = document.querySelector(`.row[data-box-id="${boxId}"]`);
-  if (!row) return;
-  if (otherRowsDiv.contains(row)) otherDetails.open = true;
-  row.scrollIntoView({ block: 'nearest' });
+  if (row) row.scrollIntoView({ block: 'nearest' });
 }
 
 for (const b of BOXES) {
