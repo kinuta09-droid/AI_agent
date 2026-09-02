@@ -234,13 +234,25 @@ function addRow(b) {
     if (!checkbox.checked) { textInput.value = ''; b.fill_text = ''; }
     draw();
   });
-  if (isPrimary(b)) {
-    rowsDiv.appendChild(row);
-  } else {
-    otherRowsDiv.appendChild(row);
-    otherCount.textContent = otherRowsDiv.children.length;
-  }
+  const container = isPrimary(b) ? rowsDiv : otherRowsDiv;
+  insertRowInDocumentOrder(container, row, b);
+  if (container === otherRowsDiv) otherCount.textContent = otherRowsDiv.children.length;
   return row;
+}
+
+// 一覧の並び順を書類上の実際の位置 (上から下、同じ高さなら左から右) に合わせる。
+// 個人番号→氏名→住所のように、書類を見ながら上から順に埋められるようにするため
+// (ユーザー要望)。box_id は検出順であって書類上の位置とは一致しない。
+function insertRowInDocumentOrder(container, row, b) {
+  for (const existing of container.children) {
+    const other = BOXES.find(o => o.box_id === Number(existing.dataset.boxId));
+    if (!other) continue;
+    if (b.y < other.y - 5 || (Math.abs(b.y - other.y) <= 5 && b.x < other.x)) {
+      container.insertBefore(row, existing);
+      return;
+    }
+  }
+  container.appendChild(row);
 }
 
 // キャンバス上で枠をクリックしたとき、対応する行を見えるところまでスクロールする
