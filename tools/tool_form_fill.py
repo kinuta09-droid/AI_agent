@@ -167,7 +167,10 @@ def detect_boxes(image_path: str, min_area: int = 2000, min_line_length: int = 1
                              minLineLength=min_line_length, maxLineGap=10)
     if lines is not None:
         for line in lines:
-            x1, y1, x2, y2 = (int(v) for v in line[0])
+            # cv2.HoughLinesPの戻り値shapeはバージョンにより (N,1,4) と (N,4) の両方がある
+            # (opencv-python 5.0.0 で (N,4) に変わり、line[0] がスカラーになりTypeErrorが実測された)。
+            # reshape(-1) でどちらでも4要素の1次元配列に揃えてから展開する。
+            x1, y1, x2, y2 = (int(v) for v in np.asarray(line).reshape(-1))
             if abs(y2 - y1) > 5:
                 continue  # 水平線のみ (縦線・斜め線を除外)
             length = abs(x2 - x1)
