@@ -29,7 +29,7 @@
 py verify_project.py           # Pre-flight check (MANDATORY before release)
 py scripts\run_test_sweep.py   # tests/test_*.py を8並列でスイープ (CI と同じ実装)
 scripts\arms.bat               # ワンクリック制御 (引数なし=メニュー / start|stop|restart|status|logs)
-scripts\form_fill.bat          # 手書き書類記入補助 (画像/PDFをドラッグ&ドロップ、または起動後にパス入力)
+scripts\form_fill.bat          # 手書き書類記入補助 (画像/PDFをドラッグ&ドロップ。完全印刷/薄文字/文字のみの3択)
 py main.py                     # Universal launcher
 py tools/tool_paper_radar.py --field ai_agent --top 5   # 注目論文レーダー (課金ゼロ)
 py tools/tool_paper_digest.py --index 1 --mode both     # 本文キャプチャ→要約→SNS/note下書き

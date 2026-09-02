@@ -15,6 +15,7 @@ import os
 import sys
 import tempfile
 import shutil
+import socket
 import threading
 import time
 
@@ -159,12 +160,20 @@ def test_classify_labels_live():
         {"box_id": 0, "label_text": "氏名"},
         {"box_id": 1, "label_text": "住所"},
         {"box_id": 2, "label_text": long_text},
+        # 実書類で「本人の値をそのまま書いてはいけない欄」に値を入れてしまった実例。
+        # プロンプトはこれらを「その他」に落とすよう指示している。
+        {"box_id": 3, "label_text": "ふりがな"},        # 別表記 (カナ) を求める欄
+        {"box_id": 4, "label_text": "旧氏又は通称"},     # 現在の氏名とは別の値
+        {"box_id": 5, "label_text": "代理人氏名"},       # 本人以外について書く欄
     ]
     categories = classify_labels(boxes)
     assert categories.get(0) == "氏名", f"「氏名」が氏名カテゴリに分類されなかった: {categories}"
     assert categories.get(1) == "住所", f"「住所」が住所カテゴリに分類されなかった: {categories}"
     assert 2 not in categories, f"20文字超のラベルは分類対象から除外されるはず: {categories}"
-    print(f"✅ 実際のGemini分類で正しいカテゴリが返ってきた: {categories}")
+    for box_id, label in ((3, "ふりがな"), (4, "旧氏又は通称"), (5, "代理人氏名")):
+        assert categories.get(box_id) in ("その他", "不明"), \
+            f"「{label}」は本人の値をそのまま書けない欄なので自動入力対象にしてはいけない: {categories}"
+    print(f"✅ 実際のGemini分類: 本人の値をそのまま書ける欄だけにカテゴリが付く: {categories}")
 
 
 def test_parse_personal_info_section_parses_key_value_bullets():
@@ -390,6 +399,188 @@ def test_review_html_escapes_label_text_against_xss():
     print("✅ label_textにHTML特殊文字が含まれてもtojson経由で安全にエスケープされる")
 
 
+def test_underline_rejects_inked_region_and_duplicates_inside_rect():
+    """実書類で下線候補223件の大半が本文の文字列だった問題の回帰テスト。
+    (a) 線の上にインクが多い (=文字が並んでいる) 下線候補は捨てる、
+    (b) 矩形枠の辺が水平線として拾われて矩形の内側に生まれる下線は捨てる、
+    (c) 上が空白の本物の下線は残す。
+    """
+    tmp = tempfile.mkdtemp(prefix="form_fill_underline_test_")
+    try:
+        img = np.full((400, 600, 3), 255, dtype=np.uint8)
+        cv2.rectangle(img, (50, 50), (250, 100), (0, 0, 0), 2)     # 矩形枠 (辺が下線候補になる)
+        cv2.line(img, (50, 250), (300, 250), (0, 0, 0), 2)         # 本物の下線 (上は空白)
+        cv2.line(img, (350, 250), (580, 250), (0, 0, 0), 2)        # 文字列の直下の線
+        cv2.putText(img, "TEXTTEXTTEXTTEXT", (350, 246),               # その上に文字が並ぶ = 本文の行
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+        img_path = os.path.join(tmp, "underlines.png")
+        cv2.imwrite(img_path, img)
+
+        boxes = detect_boxes(img_path, min_area=500, min_line_length=100)
+        underlines = [b for b in boxes if b["kind"] == "underline"]
+        rects = [b for b in boxes if b["kind"] == "rect"]
+        band = lambda b: 215 < b["y"] < 235  # y=250 の線の上に置かれる記入領域 (高さ25) の位置
+        assert len(rects) == 1, f"矩形枠は1つのはず: {rects}"
+        assert any(b["x"] < 320 and band(b) for b in underlines), \
+            f"上が空白の本物の下線が残っていない: {underlines}"
+        assert not any(b["x"] >= 320 and band(b) for b in underlines), \
+            f"文字列直下の線 (上がインクで埋まっている) が下線として残っている: {underlines}"
+        assert not any(b["y"] < 110 for b in underlines), \
+            f"矩形枠の辺由来の下線が矩形の内側に残っている: {underlines}"
+        print("✅ 下線検出: 本文の行と矩形の辺は捨て、上が空白の本物の下線だけ残す")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_autofill_skips_choice_labels_and_label_only_cells():
+    """実書類で「男・女」の選択欄に「男」を、「性別※2」の見出しセルに値を印字しかけた
+    問題の回帰テスト。選択肢ラベル (区切り記号入り) とラベル占有率の高い枠は自動入力しない。
+    """
+    labeled_boxes = [
+        {"box_id": 0, "label_text": "男·女", "w": 212, "h": 55, "label_area_ratio": 0.0},     # U+00B7
+        {"box_id": 1, "label_text": "性别2", "w": 192, "h": 55, "label_area_ratio": 0.34},   # 見出しセル
+        {"box_id": 2, "label_text": "氏名2", "w": 866, "h": 125, "label_area_ratio": 0.05},  # 記入セル
+    ]
+    categories = {0: "性別", 1: "性別", 2: "氏名"}
+    profile = {"性別": "男", "氏名": "テスト太郎"}
+    by_id = {b["box_id"]: b["fill_text"] for b in autofill_values(labeled_boxes, categories, profile)}
+    assert by_id[0] == "", f"選択肢ラベルの枠に値を入れてはいけない: {by_id}"
+    assert by_id[1] == "", f"ラベル専用セルに値を入れてはいけない: {by_id}"
+    assert by_id[2] == "テスト太郎", f"通常の記入セルは入力されるはず: {by_id}"
+    print("✅ 選択肢ラベル (男·女) とラベル専用セルは自動入力しない")
+
+
+def test_fit_fontsize_shrinks_to_box_width():
+    """長い住所が枠の右端からはみ出す問題の回帰テスト。"""
+    font = fitz.Font("helv")
+    short = form_fill._fit_fontsize("abc", 200.0, 14.0, font)
+    assert short == 14.0, f"収まるテキストは縮めない: {short}"
+
+    # 縮めれば収まる長さ: 実際に収まるところまで縮む
+    medium = "a" * 30
+    size = form_fill._fit_fontsize(medium, 200.0, 14.0, font)
+    assert form_fill.MIN_FONTSIZE_PT <= size < 14.0, f"はみ出すテキストは縮める: {size}"
+    assert font.text_length(medium, fontsize=size) <= 200.0 - form_fill.TEXT_PADDING_PT * 2, \
+        "縮小後も幅に収まっていない"
+
+    # 下限まで縮めても収まらない長さ: 読めなくなるので下限で止める (はみ出しは許容)
+    floored = form_fill._fit_fontsize("a" * 200, 200.0, 14.0, font)
+    assert floored == form_fill.MIN_FONTSIZE_PT, f"下限を下回っている: {floored}"
+    print("✅ 枠の幅に収まらないテキストはフォントを縮める (下限で打ち切り)")
+
+
+def test_render_pdf_no_background_omits_image():
+    """--no-background (原本をプリンタに通して薄文字だけ印刷する用) は書類画像を敷かない。"""
+    tmp = tempfile.mkdtemp(prefix="form_fill_nobg_test_")
+    try:
+        img_path = os.path.join(tmp, "dummy.png")
+        cv2.imwrite(img_path, np.random.randint(0, 255, (200, 300, 3), dtype=np.uint8))
+        boxes = [{"box_id": 0, "x": 10, "y": 10, "w": 100, "h": 20, "kind": "rect", "fill_text": "test"}]
+        with_bg = os.path.join(tmp, "bg.pdf")
+        no_bg = os.path.join(tmp, "nobg.pdf")
+        render_pdf(img_path, boxes, with_bg, background=True)
+        render_pdf(img_path, boxes, no_bg, background=False)
+        doc_bg, doc_nobg = fitz.open(with_bg), fitz.open(no_bg)
+        try:
+            assert len(doc_bg[0].get_images()) == 1, "背景ありは画像が1枚埋め込まれるはず"
+            assert len(doc_nobg[0].get_images()) == 0, "背景なしに画像が埋め込まれている"
+            assert abs(doc_bg[0].rect.width - doc_nobg[0].rect.width) < 0.01, "ページ幅は両者で同じはず"
+            assert "test" in doc_nobg[0].get_text(), "背景なしでも文字は出力されるはず"
+        finally:
+            doc_bg.close()
+            doc_nobg.close()
+        print("✅ --no-background は画像を敷かず、同じ座標系で文字だけ出力する")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_render_pdf_subsets_font_to_keep_size_small():
+    """日本語フォントを丸ごと埋め込むと文字だけのPDFが13.7MBになった実例の回帰テスト。
+    使った文字だけにサブセット化して保存する (メール添付・コンビニ印刷での取り回し)。
+    """
+    tmp = tempfile.mkdtemp(prefix="form_fill_size_test_")
+    try:
+        img_path = os.path.join(tmp, "dummy.png")
+        cv2.imwrite(img_path, np.full((400, 600, 3), 255, dtype=np.uint8))
+        boxes = [{"box_id": 0, "x": 10, "y": 10, "w": 400, "h": 40, "kind": "rect",
+                  "fill_text": "ダミー県ダミー市中央町1-2-3"}]
+        out = os.path.join(tmp, "out.pdf")
+        render_pdf(img_path, boxes, out, background=False)
+        size_mb = os.path.getsize(out) / 1024 / 1024
+        assert size_mb < 2.0, f"フォントがサブセット化されておらずPDFが大きすぎる: {size_mb:.1f}MB"
+        doc = fitz.open(out)
+        try:
+            assert "ダミー県" in doc[0].get_text(), "サブセット化後に文字が失われている"
+        finally:
+            doc.close()
+        print(f"✅ PDFはフォントをサブセット化して保存される ({size_mb:.2f}MB)")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_run_review_server_port_fallback_and_cancel():
+    """(a) 指定ポートが塞がっていたら隣のポートへ退避する (前回の残骸で課金後に落ちた実害)、
+    (b) /cancel でブロッキングが解除され None が返る。
+    """
+    tmp = tempfile.mkdtemp(prefix="form_fill_cancel_test_")
+    original_open = form_fill.webbrowser.open
+    form_fill.webbrowser.open = lambda url: None
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    base_port = 15251
+    try:
+        blocker.bind(("127.0.0.1", base_port))
+        blocker.listen(1)
+        img_path = os.path.join(tmp, "dummy.png")
+        cv2.imwrite(img_path, np.full((50, 50, 3), 255, dtype=np.uint8))
+        boxes = [{"box_id": 0, "x": 1, "y": 1, "w": 10, "h": 10, "kind": "rect",
+                  "label_text": "T", "label_score": 1.0, "category": "その他", "fill_text": ""}]
+        holder = {}
+
+        def _run():
+            holder["result"] = run_review_server(img_path, boxes, port=base_port)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        resp = None
+        for _ in range(50):
+            try:
+                resp = requests.post(f"http://127.0.0.1:{base_port + 1}/cancel", timeout=1)
+                break
+            except requests.exceptions.ConnectionError:
+                time.sleep(0.1)
+        assert resp is not None and resp.status_code == 200, "退避先ポートでサーバが起動していない"
+        t.join(timeout=5)
+        assert "result" in holder and holder["result"] is None, f"キャンセル時は None を返すはず: {holder}"
+        print("✅ ポートが塞がっていれば隣へ退避し、/cancel で None を返して抜ける")
+    finally:
+        blocker.close()
+        form_fill.webbrowser.open = original_open
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_prepare_working_image_resizes_and_rejects_unreadable():
+    """スマホ写真 (巨大) は作業用に縮小し、読めない形式は無言の検出0件ではなく ValueError で止める。"""
+    tmp = tempfile.mkdtemp(prefix="form_fill_prepare_test_")
+    try:
+        big = os.path.join(tmp, "big.jpg")
+        cv2.imwrite(big, np.full((3000, 4000, 3), 255, dtype=np.uint8))
+        working = form_fill.prepare_working_image(big, tmp)
+        h, w = cv2.imread(working).shape[:2]
+        assert w == form_fill.MAX_WORKING_WIDTH and h == 1500, f"縮小後のサイズが想定外: {w}x{h}"
+
+        bogus = os.path.join(tmp, "photo.heic")
+        with open(bogus, "wb") as f:
+            f.write(b"not an image")
+        try:
+            form_fill.prepare_working_image(bogus, tmp)
+            raise AssertionError("読めない画像で ValueError が出ていない")
+        except ValueError as e:
+            assert "HEIC" in str(e)
+        print("✅ 作業用画像は最大幅に縮小され、読めない形式は明確なエラーで止まる")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_detect_boxes_on_synthetic_image()
     test_detect_boxes_missing_file_returns_empty()
@@ -406,4 +597,11 @@ if __name__ == "__main__":
     test_render_pdf_opacity_changes_output_and_skips_empty_fill_text()
     test_render_pdf_missing_font_warns_instead_of_silent_failure()
     test_review_html_escapes_label_text_against_xss()
+    test_underline_rejects_inked_region_and_duplicates_inside_rect()
+    test_autofill_skips_choice_labels_and_label_only_cells()
+    test_fit_fontsize_shrinks_to_box_width()
+    test_render_pdf_no_background_omits_image()
+    test_render_pdf_subsets_font_to_keep_size_small()
+    test_run_review_server_port_fallback_and_cancel()
+    test_prepare_working_image_resizes_and_rejects_unreadable()
     print("\n🎉 ALL TOOL_FORM_FILL TESTS PASSED")

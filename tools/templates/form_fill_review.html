@@ -22,7 +22,12 @@
     <h3>記入内容の確認</h3>
     <p style="font-size:12px;color:#666;">自動入力された値を確認・修正してください。使わない項目はチェックを外すと印刷時に空欄になります。左の枠は内側をドラッグで移動、右下の角をドラッグでサイズ変更できます。何もない場所をドラッグすると新しい記入欄(青枠)を追加できます(生年月日など自動入力していない欄に使えます)。</p>
     <div id="rows"></div>
+    <details id="other-details">
+      <summary style="font-size:12px;color:#666;cursor:pointer;">その他の検出枠 (<span id="other-count">0</span>件)</summary>
+      <div id="other-rows"></div>
+    </details>
     <button id="submit-btn">この内容で確定する</button>
+    <button id="cancel-btn" style="width:100%;padding:6px;margin-top:6px;font-size:13px;">キャンセル (何も出力しない)</button>
     <div id="status"></div>
   </div>
 
@@ -30,6 +35,12 @@
 const IMAGE_DATA = {{ image_data|tojson }};
 const BOXES = {{ boxes|tojson }};
 const DISPLAY_MAX_WIDTH = 900;
+const OPACITY_PREVIEW = 0.85;  // プレビューの文字。枠線と区別がつく程度に濃く出す
+// render_pdf 側の定数と対にすること (ずれるとプレビューが印刷結果と食い違う)
+const PDF_PAGE_WIDTH_PT = 595.0;
+const PDF_TEXT_PADDING_PT = 4.0;
+const PDF_MIN_FONTSIZE_PT = 6.0;
+let PT_PER_PX = 1;  // 画像1pxが何ptか。画像ロード後に確定する
 
 const img = new Image();
 const canvas = document.getElementById('canvas');
@@ -39,6 +50,7 @@ let activeBoxId = null;
 
 img.onload = () => {
   scale = Math.min(1, DISPLAY_MAX_WIDTH / img.width);
+  PT_PER_PX = PDF_PAGE_WIDTH_PT / img.width;
   canvas.width = img.width * scale;
   canvas.height = img.height * scale;
   draw();
@@ -58,6 +70,26 @@ function draw() {
     ctx.lineWidth = isActive ? 3 : 1.5;
     const bx = b.x * scale, by = b.y * scale, bw = b.w * scale, bh = b.h * scale;
     ctx.strokeRect(bx, by, bw, bh);
+    if (b.fill_text) {
+      // 実際に印刷される文字をその場に描く。render_pdf と同じ規則で計算するので、
+      // ここでの見た目が印刷結果になる (枠からはみ出す/小さすぎる文字を出す前に気付ける)。
+      //   PDF: 1画像px = PT_PER_PX pt / キャンバス: 1画像px = scale キャンバスpx
+      const ptToCanvas = scale / PT_PER_PX;                    // pt -> キャンバスpx
+      const padding = PDF_TEXT_PADDING_PT * ptToCanvas;
+      const basePt = Math.max(8, Math.min(14, b.h * PT_PER_PX * 0.6));
+      let fontSize = basePt * ptToCanvas;
+      const minSize = PDF_MIN_FONTSIZE_PT * ptToCanvas;
+      const maxWidth = bw - padding * 2;
+      ctx.font = `${fontSize}px sans-serif`;
+      while (fontSize > minSize && ctx.measureText(b.fill_text).width > maxWidth) {
+        fontSize -= 0.5 * ptToCanvas;
+        ctx.font = `${fontSize}px sans-serif`;
+      }
+      ctx.fillStyle = '#000';
+      ctx.globalAlpha = OPACITY_PREVIEW;
+      ctx.fillText(b.fill_text, bx + padding, by + bh * 0.7);
+      ctx.globalAlpha = 1.0;
+    }
     if (isActive) {
       // 右下のリサイズハンドル (ドラッグで枠の位置・大きさを調整できることの目印)
       ctx.fillStyle = '#ff9800';
@@ -104,6 +136,7 @@ canvas.addEventListener('mousedown', (evt) => {
     drag = { box: hit.box, mode: hit.mode, startX: pos.x, startY: pos.y,
              orig: { x: hit.box.x, y: hit.box.y, w: hit.box.w, h: hit.box.h } };
     activeBoxId = hit.box.box_id;
+    revealRow(hit.box.box_id);
   } else {
     drag = { mode: 'create', startX: pos.x, startY: pos.y };
   }
@@ -150,6 +183,7 @@ window.addEventListener('mouseup', () => {
     BOXES.push(b);
     addRow(b);
     activeBoxId = b.box_id;
+    revealRow(b.box_id);
   }
   drag = null;
   creatingRect = null;
@@ -157,13 +191,24 @@ window.addEventListener('mouseup', () => {
 });
 
 const rowsDiv = document.getElementById('rows');
+const otherRowsDiv = document.getElementById('other-rows');
+const otherDetails = document.getElementById('other-details');
+const otherCount = document.getElementById('other-count');
+const SECONDARY_CATEGORIES = new Set(['不明', 'その他']);
+
+// 分類できた欄 (氏名・住所など) を上に、それ以外 (注記文の誤検出・ラベル無しの枠) は
+// 折りたたみに入れる。実書類では後者が100件以上になり、確認すべき十数件が埋もれた。
+function isPrimary(b) {
+  return b.kind === 'manual' || (b.label_text && !SECONDARY_CATEGORIES.has(b.category || '不明'));
+}
 
 function addRow(b) {
   const row = document.createElement('div');
   row.className = 'row';
   row.dataset.boxId = b.box_id;
+  const label = b.label_text || '(ラベルなし)';
   row.innerHTML = `
-    <label>[${b.box_id}] ${escapeHtml(b.label_text)} (${escapeHtml(b.category || '不明')})</label>
+    <label>[${b.box_id}] ${escapeHtml(label)} (${escapeHtml(b.category || '不明')})</label>
     <input type="text" value="${escapeHtml(b.fill_text || '')}">
     <label class="exclude"><input type="checkbox" ${b.fill_text ? 'checked' : ''}> この内容を使う</label>
   `;
@@ -180,11 +225,24 @@ function addRow(b) {
     if (!checkbox.checked) { textInput.value = ''; b.fill_text = ''; }
     draw();
   });
-  rowsDiv.appendChild(row);
+  if (isPrimary(b)) {
+    rowsDiv.appendChild(row);
+  } else {
+    otherRowsDiv.appendChild(row);
+    otherCount.textContent = otherRowsDiv.children.length;
+  }
+  return row;
+}
+
+// キャンバス上で枠をクリックしたとき、対応する行を見えるところまでスクロールする
+function revealRow(boxId) {
+  const row = document.querySelector(`.row[data-box-id="${boxId}"]`);
+  if (!row) return;
+  if (otherRowsDiv.contains(row)) otherDetails.open = true;
   row.scrollIntoView({ block: 'nearest' });
 }
 
-for (const b of BOXES.filter(b => b.label_text)) {
+for (const b of BOXES) {
   addRow(b);
 }
 
@@ -211,6 +269,19 @@ document.getElementById('submit-btn').addEventListener('click', async () => {
     }
   } catch (e) {
     status.textContent = '送信に失敗しました: ' + e;
+  }
+});
+
+document.getElementById('cancel-btn').addEventListener('click', async () => {
+  if (!confirm('キャンセルして終了します。PDFは出力されません。よろしいですか？')) return;
+  const status = document.getElementById('status');
+  try {
+    await fetch('/cancel', { method: 'POST' });
+    status.textContent = 'キャンセルしました。このタブは閉じて構いません。';
+    document.getElementById('submit-btn').disabled = true;
+    document.getElementById('cancel-btn').disabled = true;
+  } catch (e) {
+    status.textContent = 'キャンセルに失敗しました: ' + e;
   }
 });
 </script>
