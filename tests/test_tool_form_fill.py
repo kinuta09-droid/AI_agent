@@ -276,9 +276,10 @@ def test_autofill_values_never_fills_birthdate():
 
 
 def test_run_review_server_returns_edited_boxes():
-    """/submit へのPOSTでブロッキングが解除され、編集後のboxesが返ることを確認する。
-    実ブラウザは使わずHTTPリクエストで「確定」操作を模擬する (webbrowser.openは無効化して
-    テスト実行中に実ブラウザが開かないようにする)。画像・値はテスト専用のダミー。
+    """/submit へのPOSTでブロッキングが解除され、編集後のboxesと選択したopacityが
+    返ることを確認する。実ブラウザは使わずHTTPリクエストで「確定」操作を模擬する
+    (webbrowser.openは無効化してテスト実行中に実ブラウザが開かないようにする)。
+    画像・値はテスト専用のダミー。
     """
     tmp = tempfile.mkdtemp(prefix="form_fill_review_test_")
     original_open = form_fill.webbrowser.open
@@ -293,7 +294,9 @@ def test_run_review_server_returns_edited_boxes():
         result_holder = {}
 
         def _run():
-            result_holder["boxes"] = run_review_server(img_path, boxes, port=test_port)
+            # 初期opacityは1.0で起動し、画面側 (このテストではHTTP経由) で0.15に変更する
+            # ことを模擬する (ユーザー要望: 確認画面で黒字/薄字を切り替えられる)。
+            result_holder["result"] = run_review_server(img_path, boxes, port=test_port, opacity=1.0)
 
         server_thread = threading.Thread(target=_run, daemon=True)
         server_thread.start()
@@ -303,16 +306,19 @@ def test_run_review_server_returns_edited_boxes():
         for _ in range(50):
             try:
                 resp = requests.post(f"http://127.0.0.1:{test_port}/submit",
-                                      json={"boxes": edited}, timeout=1)
+                                      json={"boxes": edited, "opacity": 0.15}, timeout=1)
                 break
             except requests.exceptions.ConnectionError:
                 time.sleep(0.1)
         assert resp is not None and resp.status_code == 200, "レビューサーバが起動しなかった"
 
         server_thread.join(timeout=5)
-        assert result_holder["boxes"][0]["fill_text"] == "EDITED", \
+        result_boxes, result_opacity = result_holder["result"]
+        assert result_boxes[0]["fill_text"] == "EDITED", \
             f"確定後の編集内容が反映されていない: {result_holder}"
-        print("✅ レビュー画面の確定 (/submit) でブロッキングが解除され、編集後の内容が返ってくる")
+        assert result_opacity == 0.15, \
+            f"画面で選んだopacityが反映されていない (初期値1.0のまま): {result_opacity}"
+        print("✅ レビュー画面の確定 (/submit) でブロッキングが解除され、編集内容と選択opacityが返ってくる")
     finally:
         form_fill.webbrowser.open = original_open
         shutil.rmtree(tmp, ignore_errors=True)
@@ -399,7 +405,7 @@ def test_review_html_escapes_label_text_against_xss():
                          "label_text": '</script><script>alert(1)</script>', "fill_text": ""}]
     with app.app_context(), app.test_request_context():
         html = render_template("form_fill_review.html", image_data="data:image/png;base64,",
-                                boxes=malicious_boxes)
+                                boxes=malicious_boxes, opacity=1.0)
 
     # 意図した唯一の </script> (scriptブロック自体の終端) 以外に出現しないこと
     assert html.count("</script>") == 1, \
@@ -503,6 +509,40 @@ def test_fit_fontsize_shrinks_to_box_width():
     print("✅ 枠の幅に収まらないテキストはフォントを縮める (下限で打ち切り)")
 
 
+def test_centered_text_origin_centers_both_axes():
+    """ユーザー要望: 空欄に印字する文字は縦・横とも枠の中央に配置する。
+    横方向は文字列幅の半分ぶん、縦方向はフォントのascender/descenderを使って
+    (単純に箱の中央をベースラインにすると下寄りに見えるため) 中央に来ることを確認する。
+    """
+    font = fitz.Font(fontfile=form_fill.FORM_FILL_FONT_PATH)
+    box = {"x": 100, "y": 200, "w": 300, "h": 60}
+    scale = 1.0
+    text = "テスト"
+    fontsize = 14.0
+
+    x, y = form_fill._centered_text_origin(box, scale, text, fontsize, font)
+
+    text_w = font.text_length(text, fontsize=fontsize)
+    expected_x = box["x"] + (box["w"] - text_w) / 2
+    assert abs(x - expected_x) < 0.01, f"横方向が中央になっていない: x={x}, 期待={expected_x}"
+
+    ascent = font.ascender * fontsize
+    descent = -font.descender * fontsize
+    text_visual_height = ascent + descent
+    # ベースラインの上に ascent、下に descent があるので、文字全体の中心は
+    # y - ascent + text_visual_height/2 になる。これが箱の中心と一致するはず。
+    text_center_y = y - ascent + text_visual_height / 2
+    box_center_y = box["y"] + box["h"] / 2
+    assert abs(text_center_y - box_center_y) < 0.01, \
+        f"縦方向が中央になっていない: 文字の中心={text_center_y}, 箱の中心={box_center_y}"
+
+    # scale (画像px -> PDF pt の変換係数) が変わっても中央揃えの式は一貫している
+    x2, _y2 = form_fill._centered_text_origin(box, 0.5, text, fontsize, font)
+    expected_x2 = box["x"] * 0.5 + (box["w"] * 0.5 - text_w) / 2
+    assert abs(x2 - expected_x2) < 0.01, f"scale適用後の横中央がずれている: {x2} != {expected_x2}"
+    print("✅ 印字位置が枠の縦横中央になる (ascender/descenderを使った正確な中央揃え)")
+
+
 def test_render_pdf_no_background_omits_image():
     """--no-background (原本をプリンタに通して薄文字だけ印刷する用) は書類画像を敷かない。"""
     tmp = tempfile.mkdtemp(prefix="form_fill_nobg_test_")
@@ -603,8 +643,10 @@ def test_run_review_server_port_fallback_and_cancel():
                 time.sleep(0.1)
         assert resp is not None and resp.status_code == 200, "退避先ポートでサーバが起動していない"
         t.join(timeout=5)
-        assert "result" in holder and holder["result"] is None, f"キャンセル時は None を返すはず: {holder}"
-        print("✅ ポートが塞がっていれば隣へ退避し、/cancel で None を返して抜ける")
+        assert "result" in holder, f"結果が格納されていない: {holder}"
+        cancelled_boxes, _cancelled_opacity = holder["result"]
+        assert cancelled_boxes is None, f"キャンセル時のboxesは None のはず: {holder}"
+        print("✅ ポートが塞がっていれば隣へ退避し、/cancel で (None, opacity) を返して抜ける")
     finally:
         blocker.close()
         form_fill.webbrowser.open = original_open
@@ -655,6 +697,7 @@ if __name__ == "__main__":
     test_autofill_skips_choice_labels_and_label_only_cells()
     test_render_pdf_uses_mincho_font()
     test_fit_fontsize_shrinks_to_box_width()
+    test_centered_text_origin_centers_both_axes()
     test_render_pdf_no_background_omits_image()
     test_render_pdf_subsets_font_to_keep_size_small()
     test_run_review_server_port_fallback_and_cancel()

@@ -526,14 +526,18 @@ def _find_free_port(start_port: int, attempts: int = PORT_SEARCH_RANGE) -> int:
         "以前の実行が残っている可能性があります。")
 
 
-def run_review_server(image_path: str, boxes: list[dict], port: int = 5151) -> list[dict]:
+def run_review_server(image_path: str, boxes: list[dict], port: int = 5151,
+                       opacity: float = 1.0) -> tuple[list[dict] | None, float]:
     """印刷前に人間が確認・修正するレビュー画面を起動する (Flask, localhost限定、ブロッキング)。
 
     自動検出・自動分類・自動入力の結果はどの段階でも誤りうる (実書類の検証で「月」が
     誤って生年月日に分類されたケース等)。この確認を経ずに印刷しないことが安全設計の核。
     画像とラベル・自動入力値はページ内に埋め込んで127.0.0.1でのみ配信するため、
     ブラウザとの通信もこの端末の外には一切出ない。「確定」が押されるまでブロックし、
-    人間が編集した結果 (boxes と同じ形式、fill_text を上書き済み) を返す。
+    (編集後のboxes, 画面で選んだopacity) を返す。opacityは黒字(1.0)/薄字トレース(0.15程度)を
+    画面上のトグルで切り替えられ、事前に --opacity で渡した値はその初期状態になるだけで
+    最終的な出力濃度は確認画面での選択が優先される (ユーザー要望)。
+    キャンセル時は (None, opacity) を返す。
     """
     with open(image_path, "rb") as f:
         image_b64 = base64.b64encode(f.read()).decode("ascii")
@@ -541,7 +545,7 @@ def run_review_server(image_path: str, boxes: list[dict], port: int = 5151) -> l
     mime = "image/png" if ext == "png" else "image/jpeg"
     image_data_uri = f"data:{mime};base64,{image_b64}"
 
-    result: dict = {"boxes": None, "cancelled": False}
+    result: dict = {"boxes": None, "cancelled": False, "opacity": opacity}
     done = threading.Event()
 
     logging.getLogger("werkzeug").setLevel(logging.ERROR)  # アクセスログ (200 OK等) だけ抑制、エラーは出す
@@ -552,7 +556,8 @@ def run_review_server(image_path: str, boxes: list[dict], port: int = 5151) -> l
         # boxes には印字物からOCRで読んだ文字列 (label_text) が入っており、外部由来の
         # 信用できないテキストとして扱う。Jinja2の tojson フィルタ (Flask拡張、</script> 等を
         # HTMLエスケープする) で埋め込み、生JSON文字列を |safe で埋めるようなXSSの穴を作らない。
-        return render_template("form_fill_review.html", image_data=image_data_uri, boxes=boxes)
+        return render_template("form_fill_review.html", image_data=image_data_uri, boxes=boxes,
+                                opacity=opacity)
 
     @app.route("/submit", methods=["POST"])
     def submit():
@@ -561,6 +566,9 @@ def run_review_server(image_path: str, boxes: list[dict], port: int = 5151) -> l
             # 壊れたリクエストで done を立ててしまうと未確認のまま印刷に進む。待ち続ける。
             return jsonify({"ok": False, "error": "invalid payload"}), 400
         result["boxes"] = payload["boxes"]
+        submitted_opacity = payload.get("opacity")
+        if isinstance(submitted_opacity, (int, float)) and 0.0 <= submitted_opacity <= 1.0:
+            result["opacity"] = float(submitted_opacity)
         done.set()
         return jsonify({"ok": True})
 
@@ -592,8 +600,8 @@ def run_review_server(image_path: str, boxes: list[dict], port: int = 5151) -> l
         thread.join(timeout=5)
 
     if result["cancelled"]:
-        return None
-    return result["boxes"] if result["boxes"] is not None else boxes
+        return None, opacity
+    return (result["boxes"] if result["boxes"] is not None else boxes), result["opacity"]
 
 
 TEXT_PADDING_PT = 4.0   # 枠の左端からの余白 (pt)
@@ -613,6 +621,27 @@ def _fit_fontsize(text: str, box_width_pt: float, base_fontsize: float, font: "f
             break
         fontsize -= 0.5
     return max(MIN_FONTSIZE_PT, fontsize)
+
+
+def _centered_text_origin(box: dict, scale: float, text: str, fontsize: float,
+                           font: "fitz.Font") -> tuple[float, float]:
+    """枠(box, 画像px座標)の中に text を縦横とも中央揃えで置いたときの insert_text() 原点(x,y)を返す。
+
+    横方向: 文字列幅ぶん左にずらすだけ。
+    縦方向: ベースライン位置の指定が必要な insert_text() で単純に「箱の中央」を渡すと
+    文字が下寄りに見える (ベースラインの下にも descender 分の高さがあるため)。
+    フォント自身の ascender/descender (em に対する比率、fitz.Font が実測値を持つ) を使い、
+    「文字が実際に占める高さ (ascent+descent)」を箱の高さから引いた残りを均等に配分する
+    (ユーザー要望: 空欄の縦横中央に配置したい)。
+    """
+    box_w_pt, box_h_pt = box["w"] * scale, box["h"] * scale
+    text_w = font.text_length(text, fontsize=fontsize)
+    x = box["x"] * scale + max(0.0, (box_w_pt - text_w) / 2)
+
+    ascent = font.ascender * fontsize
+    descent = -font.descender * fontsize  # descenderは負値 (ベースラインより下)
+    y = box["y"] * scale + (box_h_pt - (ascent + descent)) / 2 + ascent
+    return x, y
 
 
 def _resolve_font(font_path: str = None) -> str | None:
@@ -675,8 +704,7 @@ def render_pdf(image_path: str, boxes: list[dict], output_path: str, opacity: fl
         box_w_pt = b["w"] * scale
         base = max(8.0, min(14.0, b["h"] * scale * 0.6))
         fontsize = _fit_fontsize(text, box_w_pt, base, measure_font)
-        x = b["x"] * scale + TEXT_PADDING_PT
-        y = (b["y"] + b["h"] * 0.7) * scale  # 枠の下寄りをベースライン目安にする
+        x, y = _centered_text_origin(b, scale, text, fontsize, measure_font)
         page.insert_text((x, y), text, fontname=fontname, fontfile=use_font_file,
                           fontsize=fontsize, color=(0, 0, 0), fill_opacity=opacity)
 
@@ -814,13 +842,16 @@ def main():
                 print(f"  [{b['box_id']}] category={categories.get(b['box_id'])} -> 入力あり")
 
     if args.review:
-        reviewed = run_review_server(image_path, boxes, port=args.review_port)
+        reviewed, chosen_opacity = run_review_server(image_path, boxes, port=args.review_port,
+                                                       opacity=args.opacity)
         if reviewed is None:
             print("キャンセルされました。PDFは出力していません。")
             return 2
         boxes = reviewed
+        args.opacity = chosen_opacity  # 確認画面のトグルで選んだ濃度を後段のPDF出力に使う
         confirmed = sum(1 for b in boxes if b["fill_text"])
-        print(f"確認画面での確定を受け取りました。使用する枠: {confirmed}/{len(boxes)}")
+        print(f"確認画面での確定を受け取りました。使用する枠: {confirmed}/{len(boxes)} "
+              f"(opacity={chosen_opacity})")
 
     if args.output:
         render_pdf(image_path, boxes, args.output, opacity=args.opacity,
