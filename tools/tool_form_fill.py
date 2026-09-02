@@ -46,7 +46,7 @@ from rapidocr import RapidOCR
 from werkzeug.serving import make_server
 
 from lib.lib_shared import MODEL_NAME, client, safe_json_loads
-from lib.paths import FORM_FILL_FONT_PATH, VAULT_ROOT
+from lib.paths import FORM_FILL_FONT_FALLBACKS, FORM_FILL_FONT_PATH, VAULT_ROOT
 from tools.tool_obsidian import PERSONAL_INFO_SECTION_HEADING
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
@@ -321,13 +321,17 @@ def ocr_labels_near_boxes(image_path: str, boxes: list[dict], search_margin: int
         entry = dict(b)
         entry["label_text"] = best["text"] if best else ""
         entry["label_score"] = best["score"] if best else 0.0
-        # ラベルが枠の内側にある場合、その占有率を残す。占有率が高い枠は「ラベルを
-        # 印字するためだけの狭いセル」であり、値を書き込む場所ではない (autofill_values で使う)。
+        # ラベル文字が枠の内側にあるか、内側ならどれだけの面積を占めるか。
         if best and best_rank == 0:
             label_area = max(0.0, best["x2"] - best["x1"]) * max(0.0, best["y2"] - best["y1"])
             entry["label_area_ratio"] = label_area / max(1, b["w"] * b["h"])
         else:
             entry["label_area_ratio"] = 0.0
+        # 「右の欄に何を書くかを説明するためのセル」(「氏名」と印字された左の狭いセル) と、
+        # 実際に書き込む空白のセルを区別する。実書類での実測は綺麗に分かれた:
+        #   ラベル欄 0.13〜0.59 / 記入欄 0.00〜0.07 (その間に値が無い)
+        # ラベル欄は自動入力の対象外にし、確認画面でも記入欄と分けて表示する。
+        entry["role"] = "label" if entry["label_area_ratio"] >= LABEL_ROLE_RATIO else "input"
         labeled.append(entry)
 
     return labeled
@@ -448,10 +452,10 @@ NO_AUTOFILL_CATEGORIES = {"その他", "不明", "生年月日"}
 # OCRは中黒を U+30FB(・) / U+FF65(･) / U+00B7(·) のどれで返すか安定しないので全部見る
 # (実書類で「男·女」が U+00B7 で返り、判定をすり抜けて「男」を印字しかけた)。
 CHOICE_SEPARATORS = ("・", "･", "·", "•", "／", "/")
-# ラベル文字がこれ以上の面積を占める枠は「ラベル専用セル」とみなして自動入力しない
-# (性別※2 のような短い見出しセルに値を印字してしまった実例への対処。実書類での実測は
-# ラベル専用セル 0.28〜0.59、実際の記入セル 0.00〜0.16)。
-LABEL_CELL_AREA_RATIO = 0.25
+# ラベル文字がこれ以上の面積を占める枠は「右の欄の説明をするためのラベル欄」とみなす。
+# 実書類での実測: ラベル欄 0.13〜0.59 / 実際の記入欄 0.00〜0.07 (間に値が無いので
+# この1つの指標で分離できる)。role="label" の枠は自動入力せず、確認画面でも別枠にする。
+LABEL_ROLE_RATIO = 0.10
 
 
 def _is_choice_label(label: str) -> bool:
@@ -489,7 +493,7 @@ def autofill_values(labeled_boxes: list[dict], categories: dict[int, str],
         category = categories.get(b["box_id"], "不明")
         text = b.get("label_text", "")
         is_widest = widest_box_id_by_label.get(text, (None,))[0] == b["box_id"]
-        is_label_cell = b.get("label_area_ratio", 0.0) > LABEL_CELL_AREA_RATIO
+        is_label_cell = b.get("role") == "label"
         value = ""
         if (category not in NO_AUTOFILL_CATEGORIES and is_widest
                 and not is_label_cell and not _is_choice_label(text)):
@@ -611,6 +615,26 @@ def _fit_fontsize(text: str, box_width_pt: float, base_fontsize: float, font: "f
     return max(MIN_FONTSIZE_PT, fontsize)
 
 
+def _resolve_font(font_path: str = None) -> str | None:
+    """実在する日本語フォントのパスを返す。1つも無ければ None。
+
+    既定は明朝体 (公的書類では明朝体が好まれる)。指定 → 既定 → フォールバックの順に
+    実在するものを探す。1つも無いと "helv" (日本語グリフを持たない) にフォールバックし、
+    「PDFを出力しました」と表示しながら中身が空という無言の失敗になるので警告を出す
+    (known-bug-patterns.md Category A と同型)。
+    """
+    candidates = [font_path] if font_path else []
+    candidates += [FORM_FILL_FONT_PATH, *FORM_FILL_FONT_FALLBACKS]
+    for path in candidates:
+        if path and os.path.exists(path):
+            if path != candidates[0]:
+                print(f"[FormFill] ℹ️ フォントにフォールバックしました: {path}")
+            return path
+    print(f"[FormFill] ⚠️ 日本語フォントが見つかりません ({candidates[0]})。"
+          f"fill_text が正しく描画されない可能性があります。")
+    return None
+
+
 def render_pdf(image_path: str, boxes: list[dict], output_path: str, opacity: float = 1.0,
                 font_path: str = None, background: bool = True) -> str:
     """書類画像を背景に、各枠の fill_text を重ねてPDF出力する (ローカル完結)。
@@ -640,14 +664,7 @@ def render_pdf(image_path: str, boxes: list[dict], output_path: str, opacity: fl
     if background:
         page.insert_image(page.rect, pixmap=pix)
 
-    resolved_font_path = font_path or FORM_FILL_FONT_PATH
-    use_font_file = resolved_font_path if os.path.exists(resolved_font_path) else None
-    if use_font_file is None:
-        # "helv"は日本語グリフを持たないラテン文字専用フォント。フォントが無いことに
-        # 気付かず「PDFを出力しました」だけ表示すると、値が文字化け/空白のまま印刷される
-        # 無言の失敗になる (known-bug-patterns.md Category A と同型)。
-        print(f"[FormFill] ⚠️ 日本語フォントが見つかりません ({resolved_font_path})。"
-              f"fill_text が正しく描画されない可能性があります。")
+    use_font_file = _resolve_font(font_path)
     fontname = "formfill-jp" if use_font_file else "helv"
     measure_font = fitz.Font(fontfile=use_font_file) if use_font_file else fitz.Font("helv")
 
@@ -771,9 +788,11 @@ def main():
     if args.ocr:
         boxes = ocr_labels_near_boxes(image_path, boxes)
         matched = sum(1 for b in boxes if b["label_text"])
-        print(f"ラベルが見つかった枠: {matched}/{len(boxes)}")
+        inputs = sum(1 for b in boxes if b["role"] == "input")
+        print(f"ラベルが見つかった枠: {matched}/{len(boxes)} "
+              f"(記入欄 {inputs} / 説明ラベル欄 {len(boxes) - inputs})")
         for b in boxes:
-            if b["label_text"]:
+            if b["label_text"] and b["role"] == "input":
                 print(f"  [{b['box_id']}] {b['label_text']!r} (score={b['label_score']:.2f})")
 
     categories = {}

@@ -358,24 +358,32 @@ def test_render_pdf_missing_font_warns_instead_of_silent_failure():
     """
     tmp = tempfile.mkdtemp(prefix="form_fill_font_test_")
     original_stdout = sys.stdout
+    # 既定・フォールバックとも実在しない状況を作る。tool_form_fill は lib.paths から
+    # 値コピーで import しているので、モジュール自身の名前を差し替える
+    # (known-bug-patterns.md Category C「from import は連動しない」)。
+    saved_default = form_fill.FORM_FILL_FONT_PATH
+    saved_fallbacks = form_fill.FORM_FILL_FONT_FALLBACKS
+    form_fill.FORM_FILL_FONT_PATH = os.path.join(tmp, "no_such_default.ttf")
+    form_fill.FORM_FILL_FONT_FALLBACKS = (os.path.join(tmp, "no_such_fallback.ttc"),)
     try:
         img_path = os.path.join(tmp, "dummy.png")
         cv2.imwrite(img_path, np.full((100, 100, 3), 255, dtype=np.uint8))
         boxes = [{"box_id": 0, "x": 10, "y": 10, "w": 50, "h": 20, "kind": "rect", "fill_text": "test"}]
         out_path = os.path.join(tmp, "out.pdf")
-        bogus_font = os.path.join(tmp, "no_such_font.ttc")
 
         captured = io.StringIO()
         sys.stdout = captured
-        render_pdf(img_path, boxes, out_path, font_path=bogus_font)
+        render_pdf(img_path, boxes, out_path, font_path=os.path.join(tmp, "no_such_font.ttc"))
         sys.stdout = original_stdout
 
         assert os.path.exists(out_path), "フォントが無くてもPDF自体は例外を投げず生成されるはず"
         assert "⚠️" in captured.getvalue() and "フォント" in captured.getvalue(), \
             f"フォント欠落時に警告が出ていない (無言の失敗): {captured.getvalue()!r}"
-        print("✅ フォントが見つからない場合、無言で失敗せず警告を出す")
+        print("✅ フォントが1つも無い場合、無言で失敗せず警告を出す")
     finally:
         sys.stdout = original_stdout
+        form_fill.FORM_FILL_FONT_PATH = saved_default
+        form_fill.FORM_FILL_FONT_FALLBACKS = saved_fallbacks
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -432,20 +440,46 @@ def test_underline_rejects_inked_region_and_duplicates_inside_rect():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_role_separates_label_cells_from_input_cells():
+    """「氏名」と印字された左の狭いセル (右の欄の説明) と、実際に書き込む右の空白セルを
+    role で区別する。ユーザー指摘「説明欄も入力欄としてカウントされている」への対処。
+    実書類での実測はラベル欄 0.13〜0.59 / 記入欄 0.00〜0.07 で綺麗に分離した。
+    """
+    tmp = tempfile.mkdtemp(prefix="form_fill_role_test_")
+    try:
+        img = np.full((300, 700, 3), 255, dtype=np.uint8)
+        # 左: ラベル欄 (文字がセルの大部分を占める) / 右: 記入欄 (空白)
+        cv2.rectangle(img, (30, 50), (180, 110), (0, 0, 0), 2)
+        cv2.putText(img, "NAME", (45, 95), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 0), 3)
+        cv2.rectangle(img, (180, 50), (660, 110), (0, 0, 0), 2)
+        img_path = os.path.join(tmp, "label_and_input.png")
+        cv2.imwrite(img_path, img)
+
+        boxes = ocr_labels_near_boxes(img_path, detect_boxes(img_path, min_area=500))
+        by_role = {b["role"]: b for b in boxes if b["kind"] == "rect"}
+        assert "label" in by_role and "input" in by_role, \
+            f"ラベル欄と記入欄が分離できていない: {[(b['w'], b['role'], b['label_area_ratio']) for b in boxes]}"
+        assert by_role["label"]["w"] < by_role["input"]["w"], \
+            "狭い方がラベル欄、広い方が記入欄になるはず"
+        print("✅ 説明ラベル欄と記入欄を role で区別できる")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_autofill_skips_choice_labels_and_label_only_cells():
     """実書類で「男・女」の選択欄に「男」を、「性別※2」の見出しセルに値を印字しかけた
     問題の回帰テスト。選択肢ラベル (区切り記号入り) とラベル占有率の高い枠は自動入力しない。
     """
     labeled_boxes = [
-        {"box_id": 0, "label_text": "男·女", "w": 212, "h": 55, "label_area_ratio": 0.0},     # U+00B7
-        {"box_id": 1, "label_text": "性别2", "w": 192, "h": 55, "label_area_ratio": 0.34},   # 見出しセル
-        {"box_id": 2, "label_text": "氏名2", "w": 866, "h": 125, "label_area_ratio": 0.05},  # 記入セル
+        {"box_id": 0, "label_text": "男·女", "w": 212, "h": 55, "role": "input"},   # U+00B7 の中黒
+        {"box_id": 1, "label_text": "性别2", "w": 192, "h": 55, "role": "label"},   # 説明ラベル欄
+        {"box_id": 2, "label_text": "氏名2", "w": 866, "h": 125, "role": "input"},  # 記入欄
     ]
     categories = {0: "性別", 1: "性別", 2: "氏名"}
     profile = {"性別": "男", "氏名": "テスト太郎"}
     by_id = {b["box_id"]: b["fill_text"] for b in autofill_values(labeled_boxes, categories, profile)}
     assert by_id[0] == "", f"選択肢ラベルの枠に値を入れてはいけない: {by_id}"
-    assert by_id[1] == "", f"ラベル専用セルに値を入れてはいけない: {by_id}"
+    assert by_id[1] == "", f"説明ラベル欄に値を入れてはいけない: {by_id}"
     assert by_id[2] == "テスト太郎", f"通常の記入セルは入力されるはず: {by_id}"
     print("✅ 選択肢ラベル (男·女) とラベル専用セルは自動入力しない")
 
@@ -492,6 +526,25 @@ def test_render_pdf_no_background_omits_image():
         print("✅ --no-background は画像を敷かず、同じ座標系で文字だけ出力する")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_render_pdf_uses_mincho_font():
+    """公的書類では明朝体が好まれるため、既定フォントは明朝体にする (ユーザー要望)。
+    明朝体が1つも無い環境ではゴシックへフォールバックし、無言で英字フォントに
+    落ちない (日本語が消えたPDFを「出力しました」と言わない) ことも確認する。
+    """
+    from lib.paths import FORM_FILL_FONT_FALLBACKS, FORM_FILL_FONT_PATH
+
+    assert "min" in os.path.basename(FORM_FILL_FONT_PATH).lower(), \
+        f"既定フォントが明朝体ではない: {FORM_FILL_FONT_PATH}"
+    resolved = form_fill._resolve_font()
+    assert resolved is not None, "この環境で日本語フォントが1つも見つからない"
+    assert resolved in (FORM_FILL_FONT_PATH, *FORM_FILL_FONT_FALLBACKS)
+
+    # 指定フォントが存在しない場合はフォールバックが選ばれる (None にはならない)
+    assert form_fill._resolve_font(r"C:\no\such\font.ttf") is not None, \
+        "存在しないフォント指定でフォールバックが働いていない"
+    print(f"✅ 既定フォントは明朝体、解決先: {os.path.basename(resolved)}")
 
 
 def test_render_pdf_subsets_font_to_keep_size_small():
@@ -598,7 +651,9 @@ if __name__ == "__main__":
     test_render_pdf_missing_font_warns_instead_of_silent_failure()
     test_review_html_escapes_label_text_against_xss()
     test_underline_rejects_inked_region_and_duplicates_inside_rect()
+    test_role_separates_label_cells_from_input_cells()
     test_autofill_skips_choice_labels_and_label_only_cells()
+    test_render_pdf_uses_mincho_font()
     test_fit_fontsize_shrinks_to_box_width()
     test_render_pdf_no_background_omits_image()
     test_render_pdf_subsets_font_to_keep_size_small()
