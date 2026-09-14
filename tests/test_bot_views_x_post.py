@@ -105,10 +105,26 @@ def test_view_inherits_allowed_user_view():
 
 
 def test_view_has_15_buttons_for_5_slots():
+    """slots引数無し(登録専用、bot.add_view向け)は全5スロット分。"""
     async def go():
         view = bv.XPostApprovalView()
         check("view has 15 buttons (5 slots x 3)", len(view.children) == 15, len(view.children))
     _run(go())
+    print("✅ test_view_has_15_buttons_for_5_slots")
+
+
+def test_view_with_single_slot_has_only_3_buttons():
+    """実際にメッセージへ添付するView(slots=[N])は、そのスロットの3ボタンだけを持つこと
+    (5スロット分15個が丸ごと出てしまっていた実機バグの回帰テスト)。
+    """
+    async def go():
+        view = bv.XPostApprovalView(slots=[2])
+        check("view has exactly 3 buttons for a single slot", len(view.children) == 3, len(view.children))
+        custom_ids = {b.custom_id for b in view.children}
+        check("buttons are all for slot 2",
+              custom_ids == {"xpost_approve:2", "xpost_edit:2", "xpost_reject:2"}, custom_ids)
+    _run(go())
+    print("✅ test_view_with_single_slot_has_only_3_buttons")
 
 
 # --------------------------------------------------------------------------
@@ -312,6 +328,7 @@ if __name__ == "__main__":
     tests = [
         test_view_inherits_allowed_user_view,
         test_view_has_15_buttons_for_5_slots,
+        test_view_with_single_slot_has_only_3_buttons,
         test_approve_callback_success_transitions_to_posted,
         test_approve_callback_double_click_second_is_rejected,
         test_approve_callback_needs_review_on_communication_failure,

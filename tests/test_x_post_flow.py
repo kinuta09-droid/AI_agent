@@ -21,6 +21,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 import commands.bot_views as bv  # noqa: E402
+import commands.bot_commands_x_post as bxp  # noqa: E402
 import lib.x_post_store as store  # noqa: E402
 import tools.tool_article_project as tap  # noqa: E402
 from lib.cost_guard import DailyCounter  # noqa: E402
@@ -250,6 +251,41 @@ def test_communication_failure_stays_needs_review_without_auto_resend():
     print("✅ test_communication_failure_stays_needs_review_without_auto_resend")
 
 
+# --------------------------------------------------------------------------
+# 6) 実機バグ回帰: /x-post が表示するViewは新規スロットの3ボタンだけを持つこと
+#    (5スロット分15個が丸ごと1メッセージに出てしまっていた不具合の再発防止)
+# --------------------------------------------------------------------------
+
+def test_cmd_x_post_sends_view_with_only_the_new_slots_buttons():
+    async def go():
+        with _Sandbox() as ctx:
+            filename, _ = tap.create_project("目標Y")
+            tap.update_project_fields(filename, status="completed", promoted_filename="記事Y.md")
+            ctx.write_main_note("記事Y.md")
+
+            import lib.lib_shared as ls
+            orig_gen = ls.client.models.generate_content
+            try:
+                ls.client.models.generate_content = lambda model=None, contents=None, config=None: (
+                    type("R", (), {"text": "短い投稿文"})()
+                )
+                interaction = _make_fake_interaction()
+                await bxp.cmd_x_post(interaction, filename)
+            finally:
+                ls.client.models.generate_content = orig_gen
+
+            check("followup.send called", interaction.followup.send.await_args is not None)
+            _, kwargs = interaction.followup.send.await_args
+            view = kwargs.get("view")
+            check("view is an XPostApprovalView", isinstance(view, bv.XPostApprovalView))
+            check("view has exactly 3 buttons (not 15 for all slots)", len(view.children) == 3, len(view.children))
+            custom_ids = {b.custom_id for b in view.children}
+            check("all 3 buttons belong to the same slot",
+                  len({cid.split(":")[1] for cid in custom_ids}) == 1, custom_ids)
+    _run(go())
+    print("✅ test_cmd_x_post_sends_view_with_only_the_new_slots_buttons")
+
+
 if __name__ == "__main__":
     tests = [
         test_generate_edit_approve_posts_and_writes_back_to_obsidian,
@@ -257,6 +293,7 @@ if __name__ == "__main__":
         test_double_click_via_view_buttons_posts_only_once,
         test_restart_recovery_blocks_reapproval_of_stuck_slot,
         test_communication_failure_stays_needs_review_without_auto_resend,
+        test_cmd_x_post_sends_view_with_only_the_new_slots_buttons,
     ]
     for t in tests:
         t()

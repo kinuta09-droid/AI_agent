@@ -57,5 +57,5 @@ async def cmd_x_post(interaction: discord.Interaction, note: str):
     x_post_store.try_transition(slot, "draft", "pending_approval")
     entry = x_post_store.get_slot(slot)
     await interaction.followup.send(
-        content=format_xpost_message(slot, entry), view=XPostApprovalView()
+        content=format_xpost_message(slot, entry), view=XPostApprovalView(slots=[slot])
     )

@@ -747,19 +747,25 @@ class XPostEditModal(discord.ui.Modal, title="X投稿文を修正"):
             return
         entry = x_post_store.get_slot(self._slot)
         await interaction.response.edit_message(
-            content=format_xpost_message(self._slot, entry), view=XPostApprovalView()
+            content=format_xpost_message(self._slot, entry), view=XPostApprovalView(slots=[self._slot])
         )
 
 
 class XPostApprovalView(AllowedUserView):
-    """X投稿承認キューのボタン (承認して投稿/修正/却下)。/x-post が新規下書きを
-    表示する際に添付する永続View。アーキテクチャはNotePromotionView等と同一
-    (スロット固定・on_readyで単一インスタンスを再登録)だが、ボタンは3種類。
+    """X投稿承認キューのボタン (承認して投稿/修正/却下)。
+
+    NotePromotionView等(1メッセージに複数件を同時にリストする設計)と異なり、
+    X投稿は「1メッセージ=1件の下書き」なので、表示は対象スロットの3ボタンだけに
+    絞る(slots引数)。一方 discord.py の永続View登録(bot.add_view)は起動時に
+    存在しうる全custom_idパターンを一度に登録する必要があるため、on_readyからは
+    slots=None(全スロット分のcallbackを持つが、どのメッセージにも表示はしない
+    "登録専用"インスタンス)で呼ぶ。
     """
 
-    def __init__(self):
+    def __init__(self, slots: list[int] | None = None):
         super().__init__(timeout=None)
-        for slot in range(x_post_store.X_POST_SLOTS):
+        target_slots = range(x_post_store.X_POST_SLOTS) if slots is None else slots
+        for slot in target_slots:
             approve = discord.ui.Button(
                 label="✅ 承認して投稿", style=discord.ButtonStyle.success,
                 custom_id=f"xpost_approve:{slot}",
