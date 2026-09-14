@@ -217,6 +217,18 @@ GROUNDING_COUNTER = DailyCounter(
 )
 
 
+# --- X投稿 日次上限カウンタ ------------------------------------------------
+# X API v2投稿は従量課金 (投稿1件$0.015、plans/sns-monetization-roadmap.md)。
+# 承認フロー側 (commands/bot_views.py) は投稿試行の直前にこれを消費し、
+# 上限到達時はまだposting状態へ遷移する前なので二重投稿リスクなく据え置ける。
+X_POST_COUNTER_PATH = os.path.join(LOGS_DIR, "x_post_daily.json")
+X_POST_COUNTER = DailyCounter(
+    path=X_POST_COUNTER_PATH,
+    limit=get_limit("DAILY_X_POST_LIMIT", 3),
+    name="X投稿",
+)
+
+
 # --- Browser Act (ReActループでクリック/フォーム入力を行うブラウジングエージェント) ---
 # 1回の起動が max_steps 分の HEAVY呼び出しを消費しうるため、共有の
 # GEMINI_HEAVY_COUNTER(日次200回共用)とは別に「起動回数」自体を絞る。

@@ -32,6 +32,10 @@ from tools.tool_reference_promotion import (
 from tools.tool_interest_promotion import (
     INTEREST_PROMOTION_SLOTS, tool_approve_interest_promotion, tool_reject_interest_promotion,
 )
+from lib import x_post_store
+from lib.cost_guard import X_POST_COUNTER, GeminiBudgetExceeded
+from tools.tool_twitter_post import post_tweet_for_approval
+from tools.tool_article_project import record_x_post_result
 
 # ---------------------------------------------------------
 # 認可付き基底 View
@@ -611,6 +615,171 @@ class OrphanRelinkView(AllowedUserView):
                 await interaction.channel.send(f"{icon} {result}")
 
         return callback
+
+
+# ---------------------------------------------------------
+# X投稿承認キュー (/x-post が下書きを表示する際に添付する永続View)
+# ---------------------------------------------------------
+
+_xpost_running: set[int] = set()
+
+
+def format_xpost_message(slot: int, entry: dict) -> str:
+    """下書き/承認待ち表示・修正後の再表示で共有する本文フォーマット。"""
+    text = entry["text"]
+    return (
+        f"### 🐦 X投稿下書き (slot {slot})\n"
+        f"**本文** ({len(text)}字):\n{text}\n\n"
+        f"**参照元**: {entry['source_note']}\n"
+        f"**状態**: {entry['status']}"
+    )
+
+
+def _execute_x_post(slot: int) -> str:
+    """posting状態のスロットを実際にXへ投稿し、結果に応じてstatusを確定する。
+    戻り値はDiscordへそのまま送る日本語メッセージ。
+    """
+    entry = x_post_store.get_slot(slot)
+    if entry is None or entry["status"] != "posting":
+        return "⚠️ 投稿処理の状態が想定外です(既に他の操作で状態が変わった可能性があります)。"
+
+    result = post_tweet_for_approval(entry["text"])
+    outcome = result["outcome"]
+
+    if outcome == "posted":
+        x_post_store.try_transition(slot, "posting", "posted", tweet_url=result["url"])
+        posted_at = datetime.datetime.now().isoformat(timespec="seconds")
+        synced = record_x_post_result(entry["source_note"], result["url"], posted_at, entry["text"])
+        if synced:
+            x_post_store.mark_obsidian_synced(slot)
+        sync_note = "" if synced else "\n⚠️ Obsidianへの記録には失敗しました(投稿自体は成功、後で手動記録してください)。"
+        return f"✅ Xに投稿しました: {result['url']}{sync_note}"
+
+    if outcome == "failed":
+        x_post_store.try_transition(slot, "posting", "failed", error_detail=result["detail"])
+        return f"❌ 投稿に失敗しました: {result['detail']}"
+
+    # needs_review: 通信不明。自動再送はしない (要確認のまま留め置く)。
+    x_post_store.try_transition(slot, "posting", "needs_review", error_detail=result["detail"])
+    return f"⚠️ 投稿の成否が確認できませんでした(要確認): {result['detail']}"
+
+
+def _make_xpost_approve_callback(slot: int):
+    async def callback(interaction: discord.Interaction):
+        if slot in _xpost_running:
+            await interaction.response.send_message("⏳ この投稿は処理中です。", ephemeral=True)
+            return
+        _xpost_running.add(slot)
+        await interaction.response.defer()
+        message = None
+        try:
+            if not x_post_store.try_transition(slot, "pending_approval", "posting"):
+                message = "⚠️ この投稿は既に処理済み、または処理中です。"
+            else:
+                try:
+                    X_POST_COUNTER.check_and_increment()
+                except GeminiBudgetExceeded as e:
+                    print(f"[XPost] ⛔ slot={slot}: {e}")
+                    x_post_store.try_transition(slot, "posting", "pending_approval")
+                    message = f"⛔ {e}"
+                else:
+                    message = await asyncio.to_thread(_execute_x_post, slot)
+        except Exception as e:
+            message = log_command_error(f"X投稿承認 (slot={slot})", e)
+            x_post_store.try_transition(slot, "posting", "needs_review", error_detail=str(e))
+        finally:
+            _xpost_running.discard(slot)
+        if interaction.channel is not None:
+            await interaction.channel.send(message)
+
+    return callback
+
+
+def _make_xpost_edit_callback(slot: int):
+    async def callback(interaction: discord.Interaction):
+        entry = x_post_store.get_slot(slot)
+        if entry is None or entry["status"] != "pending_approval":
+            await interaction.response.send_message(
+                "⚠️ この投稿は修正できません(承認待ち以外の状態、または見つかりません)。", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(XPostEditModal(slot))
+
+    return callback
+
+
+def _make_xpost_reject_callback(slot: int):
+    async def callback(interaction: discord.Interaction):
+        entry = x_post_store.get_slot(slot)
+        if entry is None or entry["status"] not in ("draft", "pending_approval"):
+            await interaction.response.send_message(
+                "⚠️ この投稿は却下できません(既に処理が進んでいる可能性があります)。", ephemeral=True
+            )
+            return
+        x_post_store.release_slot(slot)
+        await interaction.response.edit_message(content=f"❌ 却下しました (slot {slot})。", view=None)
+
+    return callback
+
+
+class XPostEditModal(discord.ui.Modal, title="X投稿文を修正"):
+    """修正ボタンから開くモーダル。保存後もstatusはpending_approvalのまま維持し、
+    承認ボタンを改めて押させることで「修正したら再承認必須」を満たす。
+    """
+
+    text = discord.ui.TextInput(
+        label="投稿本文 (280字以内)",
+        style=discord.TextStyle.paragraph,
+        max_length=280,
+        required=True,
+    )
+
+    def __init__(self, slot: int):
+        super().__init__()
+        self._slot = slot
+
+    async def on_submit(self, interaction: discord.Interaction):
+        ok = x_post_store.update_text(self._slot, self.text.value)
+        if not ok:
+            await interaction.response.send_message(
+                "⚠️ 保存できませんでした(承認待ち以外の状態に変わった可能性があります)。", ephemeral=True
+            )
+            return
+        entry = x_post_store.get_slot(self._slot)
+        await interaction.response.edit_message(
+            content=format_xpost_message(self._slot, entry), view=XPostApprovalView()
+        )
+
+
+class XPostApprovalView(AllowedUserView):
+    """X投稿承認キューのボタン (承認して投稿/修正/却下)。/x-post が新規下書きを
+    表示する際に添付する永続View。アーキテクチャはNotePromotionView等と同一
+    (スロット固定・on_readyで単一インスタンスを再登録)だが、ボタンは3種類。
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        for slot in range(x_post_store.X_POST_SLOTS):
+            approve = discord.ui.Button(
+                label="✅ 承認して投稿", style=discord.ButtonStyle.success,
+                custom_id=f"xpost_approve:{slot}",
+            )
+            approve.callback = _make_xpost_approve_callback(slot)
+            self.add_item(approve)
+
+            edit = discord.ui.Button(
+                label="✏️ 修正", style=discord.ButtonStyle.secondary,
+                custom_id=f"xpost_edit:{slot}",
+            )
+            edit.callback = _make_xpost_edit_callback(slot)
+            self.add_item(edit)
+
+            reject = discord.ui.Button(
+                label="❌ 却下", style=discord.ButtonStyle.danger,
+                custom_id=f"xpost_reject:{slot}",
+            )
+            reject.callback = _make_xpost_reject_callback(slot)
+            self.add_item(reject)
 
 
 # ---------------------------------------------------------

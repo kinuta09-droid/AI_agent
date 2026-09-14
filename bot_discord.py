@@ -52,6 +52,7 @@ from lib.lib_shared import (
 
 # 新機能: 記事生成 UI
 from commands import bot_commands_article
+from commands import bot_commands_article_project
 from commands import bot_commands_idea
 from commands import bot_commands_curator
 from commands import bot_commands_calendar
@@ -60,7 +61,9 @@ from commands import bot_commands_agent
 from commands import bot_commands_client
 from commands import bot_commands_admin
 from commands import bot_commands_chat
+from commands import bot_commands_x_post
 from commands import bot_views
+from lib import x_post_store
 
 import discord
 from discord import app_commands
@@ -478,6 +481,16 @@ async def cmd_article(interaction: discord.Interaction):
     await bot_commands_article.cmd_article(interaction)
 
 
+@tree.command(name="article-project", description="目標を立て、Vaultの知識を検索・採用してから記事を作成する")
+async def cmd_article_project(interaction: discord.Interaction):
+    await bot_commands_article_project.cmd_article_project(interaction)
+
+
+@tree.command(name="article-project-list", description="記事プロジェクトの一覧・進捗を表示する")
+async def cmd_article_project_list(interaction: discord.Interaction):
+    await bot_commands_article_project.cmd_article_project_list(interaction)
+
+
 @tree.command(name="idea", description="雑なアイデアを1文のままVaultに即保存する")
 @app_commands.describe(text="思いついたことをそのまま（曖昧でOK）")
 async def cmd_idea(interaction: discord.Interaction, text: str):
@@ -496,6 +509,13 @@ async def cmd_brainstorm(interaction: discord.Interaction, text: str):
 @app_commands.autocomplete(title=bot_commands_idea.permanent_idea_autocomplete)
 async def cmd_idea_relink(interaction: discord.Interaction, title: str):
     await bot_commands_idea.cmd_idea_relink(interaction, title)
+
+
+@tree.command(name="x-post", description="昇格済み記事からX投稿下書きを生成し、承認キューに追加する")
+@app_commands.describe(note="対象の記事（候補から選択、昇格済み=status:completedのみ）")
+@app_commands.autocomplete(note=bot_commands_x_post.x_post_autocomplete)
+async def cmd_x_post(interaction: discord.Interaction, note: str):
+    await bot_commands_x_post.cmd_x_post(interaction, note)
 # ---------------------------------------------------------
 # Webhook Listener (HTTP Shortcuts → Obsidian)
 # ---------------------------------------------------------
@@ -523,6 +543,7 @@ async def on_message(message: discord.Message):
     # --- 記事生成スレッドのメッセージ処理 ---
     if isinstance(message.channel, discord.Thread):
         await bot_commands_article.handle_article_reply(message)
+        await bot_commands_article_project.handle_project_reply(message)
         await bot_commands_idea.handle_brainstorm_reply(message)
 
     # --- Chat Session Handler ---
@@ -568,6 +589,13 @@ async def on_ready():
     bot.add_view(bot_views.OrphanRelinkView())
     bot.add_view(bot_views.ReferencePromotionView())
     bot.add_view(bot_views.InterestPromotionView())
+    bot.add_view(bot_views.XPostApprovalView())
+    bot.add_view(bot_commands_article_project.ArticleProjectCompleteView())
+    # 前回終了時にX投稿処理中(posting)のまま残ったスロットは成否不明のため
+    # needs_review へ強制遷移させ、再クリックによる二重投稿を防ぐ (再接続でも安全に冪等)。
+    _recovered = x_post_store.recover_stuck_posting()
+    if _recovered:
+        print(f"[Discord] ⚠️ X投稿キューの再起動復旧: slot {_recovered} を needs_review へ")
     try:
         if GUILD_ID:
             guild = discord.Object(id=int(GUILD_ID))
@@ -584,6 +612,10 @@ async def on_ready():
     # /restart で自分を閉じていた場合、その報告先へ完了を伝える。
     # (要求時の interaction はプロセスごと消えているのでファイル経由で引き継ぐ)
     await bot_commands_admin.announce_restart_complete(bot)
+
+    # 記事プロジェクトの進行状態(管理ノートのfrontmatter)からセッションを復元する。
+    # 内部で1件ずつ例外catchするため、復元失敗がBot起動自体を止めることはない。
+    await bot_commands_article_project.restore_sessions(bot)
 
 
 # ---------------------------------------------------------

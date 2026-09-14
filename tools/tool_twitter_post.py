@@ -51,6 +51,39 @@ def tool_post_tweet(text: str) -> str:
         return f"Error posting tweet: {e}"
 
 
+def post_tweet_for_approval(text: str) -> dict:
+    """Discord承認フロー専用の投稿関数。成否を3値に分類して返す
+    (戻り値契約: {"outcome": "posted"|"failed"|"needs_review", "detail": str, "url": str|None})。
+
+    「わからないものは失敗と決めつけない」という要求に合わせ、レスポンスが
+    受け取れず投稿されたかどうか確認できないケース (タイムアウト・接続エラー・
+    5xx・想定外の例外) は安全側に倒して needs_review にする。4xx (レスポンスは
+    受け取れており、サーバーが明確に拒否した = 未投稿と判断できる) だけを
+    failed とする。
+    """
+    print(f"[Tool] 🐦 Posting to X (approval flow): {text[:50]}...")
+    auth = _get_auth()
+    if auth is None:
+        return {"outcome": "failed", "detail": "X APIの認証情報(.env の X_CONSUMER_KEY等)が未設定です。", "url": None}
+
+    try:
+        response = requests.post(_TWEET_URL, auth=auth, json={"text": text}, timeout=15)
+        if response.status_code >= 500:
+            return {"outcome": "needs_review",
+                    "detail": f"サーバーエラー(status={response.status_code})、投稿成否が確認できません。",
+                    "url": None}
+        response.raise_for_status()
+        tweet_id = response.json()["data"]["id"]
+        return {"outcome": "posted", "detail": "投稿成功",
+                "url": f"https://x.com/i/web/status/{tweet_id}"}
+    except requests.exceptions.HTTPError as e:
+        return {"outcome": "failed", "detail": f"{e} - {response.text}", "url": None}
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+        return {"outcome": "needs_review", "detail": f"通信エラー(投稿成否不明): {e}", "url": None}
+    except Exception as e:
+        return {"outcome": "needs_review", "detail": f"予期しないエラー(投稿成否不明、安全側判定): {e}", "url": None}
+
+
 if __name__ == "__main__":
     import sys
 
