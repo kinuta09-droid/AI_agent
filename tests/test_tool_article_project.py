@@ -732,7 +732,7 @@ def test_generate_x_post_draft_success_within_limit():
         check("gemini called exactly once (no retry needed)", len(stub.calls) == 1, len(stub.calls))
 
 
-def test_generate_x_post_draft_without_url_uses_full_280_limit():
+def test_generate_x_post_draft_without_url_uses_full_limit():
     with _TmpProjectsDir() as ctx:
         filename, _ = tap.create_project("目標NoURL")
         tap.update_project_fields(filename, status="completed", promoted_filename="記事NoURL.md")
@@ -743,7 +743,7 @@ def test_generate_x_post_draft_without_url_uses_full_280_limit():
         check("no-url draft succeeds", error is None and draft is not None, error)
         if draft:
             check("no-url draft text has no appended url", draft["text"] == "本文のみ", draft["text"])
-        check("prompt uses the full 280-char limit when no url is given",
+        check("prompt uses the full X_POST_MAX_CHARS limit when no url is given",
               f"{tap.X_POST_MAX_CHARS}字以内" in stub.calls[0], stub.calls[0])
 
 
@@ -774,7 +774,7 @@ def test_generate_x_post_draft_retries_once_when_over_limit():
         tap.update_project_fields(filename, status="completed", promoted_filename="記事E.md")
         _write_main_note(ctx.main_root, "記事E.md")
 
-        long_text = "あ" * 300
+        long_text = "あ" * (tap.X_POST_MAX_CHARS + 50)
         short_text = "縮めた投稿文"
         with _StubGemini([long_text, short_text]) as stub:
             draft, error = tap.generate_x_post_draft(filename)
@@ -790,7 +790,7 @@ def test_generate_x_post_draft_fails_when_still_over_limit_after_retry():
         tap.update_project_fields(filename, status="completed", promoted_filename="記事F.md")
         _write_main_note(ctx.main_root, "記事F.md")
 
-        long_text = "あ" * 300
+        long_text = "あ" * (tap.X_POST_MAX_CHARS + 50)
         with _StubGemini([long_text, long_text]) as stub:
             draft, error = tap.generate_x_post_draft(filename)
         check("still-over-limit returns error", draft is None and error is not None, error)
@@ -881,7 +881,7 @@ if __name__ == "__main__":
     test_generate_x_post_draft_missing_promoted_filename()
     test_generate_x_post_draft_missing_main_note_file()
     test_generate_x_post_draft_success_within_limit()
-    test_generate_x_post_draft_without_url_uses_full_280_limit()
+    test_generate_x_post_draft_without_url_uses_full_limit()
     test_generate_x_post_draft_with_url_appends_url_and_shrinks_body_limit()
     test_generate_x_post_draft_retries_once_when_over_limit()
     test_generate_x_post_draft_fails_when_still_over_limit_after_retry()

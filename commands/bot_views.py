@@ -722,19 +722,20 @@ def _make_xpost_reject_callback(slot: int):
     return callback
 
 
-_XPOST_EDIT_MAX_LENGTH = X_POST_MAX_CHARS + X_URL_WEIGHTED_LENGTH + 1  # 本文280字+URL分(weighted)+区切り改行の余裕
+_XPOST_EDIT_MAX_LENGTH = X_POST_MAX_CHARS + X_URL_WEIGHTED_LENGTH + 1  # 本文+URL分(weighted)+区切り改行の余裕
 
 
 class XPostEditModal(discord.ui.Modal, title="X投稿文を修正"):
     """修正ボタンから開くモーダル。保存後もstatusはpending_approvalのまま維持し、
     承認ボタンを改めて押させることで「修正したら再承認必須」を満たす。
 
-    max_lengthは本文280字にURL付き下書き(末尾にURLが付加されている場合)の
-    余裕を持たせた値 — /x-post の url引数で生成された下書きも編集できるようにする。
+    max_lengthは本文(X_POST_MAX_CHARS字)にURL付き下書き(末尾にURLが付加されて
+    いる場合)の余裕を持たせた値 — /x-post の url引数で生成された下書きも
+    編集できるようにする。
     """
 
     text = discord.ui.TextInput(
-        label="投稿本文 (URL込みで280字相当まで)",
+        label=f"投稿本文 (URL込みで{X_POST_MAX_CHARS}字相当まで)",
         style=discord.TextStyle.paragraph,
         max_length=_XPOST_EDIT_MAX_LENGTH,
         required=True,

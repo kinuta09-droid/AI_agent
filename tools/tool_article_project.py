@@ -687,7 +687,7 @@ def build_dashboard_text(projects: list[dict]) -> str:
 # 投稿成功後にfrontmatterへ結果を書き戻す。
 # ---------------------------------------------------------
 
-X_POST_MAX_CHARS = 280
+X_POST_MAX_CHARS = 1000
 
 # Xのt.co短縮URLは実長に関わらず常にこの重み付き文字数として数えられる(公式仕様)。
 # URLを付ける場合、本文の生成上限はここから逆算して縮める。
@@ -695,12 +695,13 @@ X_URL_WEIGHTED_LENGTH = 23
 
 
 def _generate_x_post_text(article_body: str, url: str | None = None) -> tuple[str | None, str | None]:
-    """記事本文からX投稿文(280字以内)を1本生成する。280字超過時は1回だけ詰め直す。
+    """記事本文からX投稿文(X_POST_MAX_CHARS字以内)を1本生成する。超過時は1回だけ詰め直す。
 
-    url が指定された場合、本文はその分(X_URL_WEIGHTED_LENGTH + 区切り1字)だけ
-    短く生成し、末尾に改行区切りで付加した最終テキストを返す(投稿全体が280字
-    相当に収まるようにするため。本文自体にURLを書かせるとX側のweighted length
-    計算と二重に消費してしまう)。戻り値 (text, error)。"""
+    note誘導用のフックとして使うため本文自体は短めでよい(X Premiumの長文投稿
+    機能=最大25,000字は使わない)。url が指定された場合、本文はその分
+    (X_URL_WEIGHTED_LENGTH + 区切り1字)だけ短く生成し、末尾に改行区切りで
+    付加した最終テキストを返す(本文自体にURLを書かせるとX側のweighted
+    length計算と二重に消費してしまうため)。戻り値 (text, error)。"""
     from lib.lib_shared import client, MODEL_NAME
 
     body_limit = X_POST_MAX_CHARS - (X_URL_WEIGHTED_LENGTH + 1) if url else X_POST_MAX_CHARS
