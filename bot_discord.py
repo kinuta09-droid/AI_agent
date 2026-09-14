@@ -512,10 +512,13 @@ async def cmd_idea_relink(interaction: discord.Interaction, title: str):
 
 
 @tree.command(name="x-post", description="昇格済み記事からX投稿下書きを生成し、承認キューに追加する")
-@app_commands.describe(note="対象の記事（候補から選択、昇格済み=status:completedのみ）")
+@app_commands.describe(
+    note="対象の記事（候補から選択、昇格済み=status:completedのみ）",
+    url="本文末尾に付けるURL（任意。指定時は本文をその分短く生成する）",
+)
 @app_commands.autocomplete(note=bot_commands_x_post.x_post_autocomplete)
-async def cmd_x_post(interaction: discord.Interaction, note: str):
-    await bot_commands_x_post.cmd_x_post(interaction, note)
+async def cmd_x_post(interaction: discord.Interaction, note: str, url: str = None):
+    await bot_commands_x_post.cmd_x_post(interaction, note, url)
 # ---------------------------------------------------------
 # Webhook Listener (HTTP Shortcuts → Obsidian)
 # ---------------------------------------------------------

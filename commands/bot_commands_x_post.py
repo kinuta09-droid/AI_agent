@@ -34,10 +34,10 @@ async def x_post_autocomplete(
     return choices[:25]
 
 
-async def cmd_x_post(interaction: discord.Interaction, note: str):
+async def cmd_x_post(interaction: discord.Interaction, note: str, url: str = None):
     await interaction.response.defer()
 
-    draft, error = await asyncio.to_thread(generate_x_post_draft, note)
+    draft, error = await asyncio.to_thread(generate_x_post_draft, note, url)
     if error:
         await interaction.followup.send(f"❌ {error}")
         return

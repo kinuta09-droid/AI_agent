@@ -35,7 +35,7 @@ from tools.tool_interest_promotion import (
 from lib import x_post_store
 from lib.cost_guard import X_POST_COUNTER, GeminiBudgetExceeded
 from tools.tool_twitter_post import post_tweet_for_approval
-from tools.tool_article_project import record_x_post_result
+from tools.tool_article_project import record_x_post_result, X_POST_MAX_CHARS, X_URL_WEIGHTED_LENGTH
 
 # ---------------------------------------------------------
 # 認可付き基底 View
@@ -722,15 +722,21 @@ def _make_xpost_reject_callback(slot: int):
     return callback
 
 
+_XPOST_EDIT_MAX_LENGTH = X_POST_MAX_CHARS + X_URL_WEIGHTED_LENGTH + 1  # 本文280字+URL分(weighted)+区切り改行の余裕
+
+
 class XPostEditModal(discord.ui.Modal, title="X投稿文を修正"):
     """修正ボタンから開くモーダル。保存後もstatusはpending_approvalのまま維持し、
     承認ボタンを改めて押させることで「修正したら再承認必須」を満たす。
+
+    max_lengthは本文280字にURL付き下書き(末尾にURLが付加されている場合)の
+    余裕を持たせた値 — /x-post の url引数で生成された下書きも編集できるようにする。
     """
 
     text = discord.ui.TextInput(
-        label="投稿本文 (280字以内)",
+        label="投稿本文 (URL込みで280字相当まで)",
         style=discord.TextStyle.paragraph,
-        max_length=280,
+        max_length=_XPOST_EDIT_MAX_LENGTH,
         required=True,
     )
 

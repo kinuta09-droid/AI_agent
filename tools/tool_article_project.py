@@ -689,17 +689,29 @@ def build_dashboard_text(projects: list[dict]) -> str:
 
 X_POST_MAX_CHARS = 280
 
+# Xのt.co短縮URLは実長に関わらず常にこの重み付き文字数として数えられる(公式仕様)。
+# URLを付ける場合、本文の生成上限はここから逆算して縮める。
+X_URL_WEIGHTED_LENGTH = 23
 
-def _generate_x_post_text(article_body: str) -> tuple[str | None, str | None]:
-    """記事本文からX投稿文(280字以内・URL無し)を1本生成する。280字超過時は1回だけ詰め直す。
-    戻り値 (text, error)。"""
+
+def _generate_x_post_text(article_body: str, url: str | None = None) -> tuple[str | None, str | None]:
+    """記事本文からX投稿文(280字以内)を1本生成する。280字超過時は1回だけ詰め直す。
+
+    url が指定された場合、本文はその分(X_URL_WEIGHTED_LENGTH + 区切り1字)だけ
+    短く生成し、末尾に改行区切りで付加した最終テキストを返す(投稿全体が280字
+    相当に収まるようにするため。本文自体にURLを書かせるとX側のweighted length
+    計算と二重に消費してしまう)。戻り値 (text, error)。"""
     from lib.lib_shared import client, MODEL_NAME
 
+    body_limit = X_POST_MAX_CHARS - (X_URL_WEIGHTED_LENGTH + 1) if url else X_POST_MAX_CHARS
+    url_rule = (
+        "- URLは本文に書かない(別途こちらで末尾に付加するため)\n" if url else "- URLは一切含めない\n"
+    )
     prompt = (
         "以下の記事本文から、X(旧Twitter)投稿用の文章を1つ作成してください。\n"
         "条件:\n"
-        f"- 日本語で{X_POST_MAX_CHARS}字以内(厳守)\n"
-        "- URLは一切含めない\n"
+        f"- 日本語で{body_limit}字以内(厳守)\n"
+        f"{url_rule}"
         "- 記事の一番刺さる要点を1つだけ伝え、読者の興味を引く文にする\n"
         "- ハッシュタグは最大2個まで、本文の末尾に付けてよい\n"
         "- 本文のみを出力し、前置きや説明・囲み記号は一切付けない\n\n"
@@ -711,28 +723,31 @@ def _generate_x_post_text(article_body: str) -> tuple[str | None, str | None]:
     except Exception as e:
         return None, f"X投稿文の生成に失敗しました: {e}"
 
-    if len(text) > X_POST_MAX_CHARS:
+    if len(text) > body_limit:
         retry_prompt = (
-            f"以下の文章を、意味を保ったまま{X_POST_MAX_CHARS}字以内に短縮してください。"
+            f"以下の文章を、意味を保ったまま{body_limit}字以内に短縮してください。"
             f"本文のみを出力してください。\n\n{text}"
         )
         try:
             response = client.models.generate_content(model=MODEL_NAME, contents=retry_prompt)
             text = (response.text or "").strip()
         except Exception as e:
-            return None, f"{X_POST_MAX_CHARS}字への詰め直しに失敗しました: {e}"
-        if len(text) > X_POST_MAX_CHARS:
-            return None, f"{X_POST_MAX_CHARS}字以内に収まりませんでした({len(text)}字)。手動で作成してください。"
+            return None, f"{body_limit}字への詰め直しに失敗しました: {e}"
+        if len(text) > body_limit:
+            return None, f"{body_limit}字以内に収まりませんでした({len(text)}字)。手動で作成してください。"
 
+    if url:
+        text = f"{text}\n{url}"
     return text, None
 
 
-def generate_x_post_draft(management_filename: str) -> tuple[dict | None, str | None]:
+def generate_x_post_draft(management_filename: str, url: str | None = None) -> tuple[dict | None, str | None]:
     """昇格済み(status=completed)の管理ノートから、X投稿用の下書きを生成する。
 
     対象記事は管理ノートの frontmatter.promoted_filename (30_Main直下のベース名) から
     読む — find_file_in_vault のパス区切り混入バグ(既知の教訓)を避けるため直接
-    MAIN_DIR と結合する。戻り値 (draft, error)、
+    MAIN_DIR と結合する。url を指定すると本文末尾に付加した状態で返す
+    (_generate_x_post_text 参照)。戻り値 (draft, error)、
     draft = {"text": str, "source_note": str, "char_count": int}。
     """
     project = load_project(management_filename)
@@ -753,7 +768,7 @@ def generate_x_post_draft(management_filename: str) -> tuple[dict | None, str | 
         return None, f"正式ノートの読み込みに失敗しました: {promoted_filename}"
     _, article_body = _split_frontmatter(main_text)
 
-    text, error = _generate_x_post_text(article_body)
+    text, error = _generate_x_post_text(article_body, url=url)
     if error:
         return None, error
     return {"text": text, "source_note": promoted_filename, "char_count": len(text)}, None

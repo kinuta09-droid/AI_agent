@@ -732,6 +732,42 @@ def test_generate_x_post_draft_success_within_limit():
         check("gemini called exactly once (no retry needed)", len(stub.calls) == 1, len(stub.calls))
 
 
+def test_generate_x_post_draft_without_url_uses_full_280_limit():
+    with _TmpProjectsDir() as ctx:
+        filename, _ = tap.create_project("目標NoURL")
+        tap.update_project_fields(filename, status="completed", promoted_filename="記事NoURL.md")
+        _write_main_note(ctx.main_root, "記事NoURL.md")
+
+        with _StubGemini(["本文のみ"]) as stub:
+            draft, error = tap.generate_x_post_draft(filename)
+        check("no-url draft succeeds", error is None and draft is not None, error)
+        if draft:
+            check("no-url draft text has no appended url", draft["text"] == "本文のみ", draft["text"])
+        check("prompt uses the full 280-char limit when no url is given",
+              f"{tap.X_POST_MAX_CHARS}字以内" in stub.calls[0], stub.calls[0])
+
+
+def test_generate_x_post_draft_with_url_appends_url_and_shrinks_body_limit():
+    with _TmpProjectsDir() as ctx:
+        filename, _ = tap.create_project("目標URL")
+        tap.update_project_fields(filename, status="completed", promoted_filename="記事URL.md")
+        _write_main_note(ctx.main_root, "記事URL.md")
+
+        url = "https://example.com/article"
+        with _StubGemini(["短い本文"]) as stub:
+            draft, error = tap.generate_x_post_draft(filename, url=url)
+        check("url draft succeeds", error is None and draft is not None, error)
+        if draft:
+            check("draft text ends with the url on its own line", draft["text"].endswith(f"\n{url}"), draft["text"])
+            check("draft text still contains the generated body", "短い本文" in draft["text"], draft["text"])
+
+        expected_body_limit = tap.X_POST_MAX_CHARS - (tap.X_URL_WEIGHTED_LENGTH + 1)
+        check("prompt shrinks the body limit to leave room for the url (weighted length)",
+              f"{expected_body_limit}字以内" in stub.calls[0], stub.calls[0])
+        check("prompt tells the model not to write a url itself",
+              "URLは本文に書かない" in stub.calls[0], stub.calls[0])
+
+
 def test_generate_x_post_draft_retries_once_when_over_limit():
     with _TmpProjectsDir() as ctx:
         filename, _ = tap.create_project("目標E")
@@ -845,6 +881,8 @@ if __name__ == "__main__":
     test_generate_x_post_draft_missing_promoted_filename()
     test_generate_x_post_draft_missing_main_note_file()
     test_generate_x_post_draft_success_within_limit()
+    test_generate_x_post_draft_without_url_uses_full_280_limit()
+    test_generate_x_post_draft_with_url_appends_url_and_shrinks_body_limit()
     test_generate_x_post_draft_retries_once_when_over_limit()
     test_generate_x_post_draft_fails_when_still_over_limit_after_retry()
     test_generate_x_post_draft_gemini_exception_returns_error()
