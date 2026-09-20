@@ -501,10 +501,16 @@ def test_score_paper_jev_relevance_none_treated_as_absent():
 
 
 def test_enrich_with_jev_relevance_per_paper_failure_is_skipped_not_fatal():
-    """1論文の jev_score 呼び出しが失敗しても他論文に影響せず、例外も外に出ないこと。"""
+    """1論文の jev_score 呼び出しが失敗しても他論文に影響せず、例外も外に出ないこと。
+
+    jev_score は公式APIの必須criteria契約により (state, instructions, criteria) の
+    3引数で呼ばれる。score=0.7 は _JEV_RELEVANCE_LEVELS (3水準・最大インデックス2) を
+    基準に 0.7/2=0.35 へ正規化される。
+    """
     papers = [_paper("2401.00004", title="broken"), _paper("2401.00005", title="ok")]
 
-    def _flaky(state, instructions):
+    def _flaky(state, instructions, criteria):
+        assert criteria == radar._JEV_RELEVANCE_LEVELS, criteria
         if "broken" in state:
             raise RuntimeError("jev down")
         return {"score": 0.7, "confidence": 0.6}
@@ -518,7 +524,7 @@ def test_enrich_with_jev_relevance_per_paper_failure_is_skipped_not_fatal():
 
     by_id = {p["arxiv_id"]: p for p in papers}
     assert by_id["2401.00004"]["jev_relevance"] is None, by_id["2401.00004"]
-    assert by_id["2401.00005"]["jev_relevance"] == 0.7, by_id["2401.00005"]
+    assert by_id["2401.00005"]["jev_relevance"] == 0.35, by_id["2401.00005"]
     print("✅ [13d] _enrich_with_jev_relevance: 1論文の失敗は他論文を巻き込まない")
 
 

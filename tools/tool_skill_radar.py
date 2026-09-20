@@ -488,9 +488,10 @@ def evaluate_fit_ja(candidates: list, local_inventory: list) -> dict:
 
 def evaluate_fit_jev(candidates: list, local_inventory: list) -> dict:
     """evaluate_fit_ja の Jev (Choice) 版。ARMSへの導入適性を fit (high/medium/low/
-    not_applicable) で判定する。1候補につき1回 Jev を呼ぶ (Jev がevaluate_fit_ja
-    のような複数候補の一括判定をサポートするかは未検証のため、まずは逐次呼び出しで
-    実装する — 候補数が多いと呼び出し回数が線形に増える点に注意)。
+    not_applicable) で判定する。1候補につき1回 Jev を呼ぶ (公式APIの `questions` は
+    同一 `state` に対する複数の質問をまとめる仕組みであり、候補ごとに state (リポジトリ
+    情報) が異なるこのユースケースでは候補間のバッチ化はできない — 候補数が多いと
+    呼び出し回数が線形に増える点に注意)。
 
     戻り値/失敗時の契約は evaluate_fit_ja と同じ:
     {full_name: {"fit": "...", "comment_ja": "..."}}、失敗時(候補単位)はその候補を

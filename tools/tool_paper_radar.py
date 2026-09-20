@@ -601,6 +601,11 @@ def _enrich_with_metrics(papers: list, days: int = 7) -> list:
     return papers
 
 
+# jev_score の criteria は公式仕様で必須 (順序付き尺度水準、2〜10件)。3水準にして
+# 0〜2 の score を 0.0〜1.0 に正規化する (_JEV_RELEVANCE_LEVELS のインデックス基準)。
+_JEV_RELEVANCE_LEVELS = ["ユーザーの興味キーワードと無関係", "やや関連する", "強く関連する"]
+
+
 def _enrich_with_jev_relevance(papers: list, interests: list) -> None:
     """興味キーワードとの関連度を Jev (Score) で補助的に付与する (in-place)。
 
@@ -612,6 +617,7 @@ def _enrich_with_jev_relevance(papers: list, interests: list) -> None:
     if not papers or jev_score is None:
         return
     interests_text = "、".join(interests) if interests else "(特になし)"
+    max_level = len(_JEV_RELEVANCE_LEVELS) - 1
     for p in papers:
         try:
             state = json.dumps(
@@ -621,9 +627,12 @@ def _enrich_with_jev_relevance(papers: list, interests: list) -> None:
             result = jev_score(
                 state,
                 f"この論文はユーザーの興味キーワード ({interests_text}) にどれだけ関連するか",
+                _JEV_RELEVANCE_LEVELS,
             )
-            score = result.get("score", 0.0)
-            p["jev_relevance"] = max(0.0, min(1.0, float(score)))
+            # score は水準インデックス (0..max_level) 基準の確率加重値なので max_level で
+            # 割って 0.0〜1.0 に正規化する (score_paper 側は 0..1 のスコアを期待する)。
+            normalized = float(result.get("score", 0.0)) / max_level
+            p["jev_relevance"] = max(0.0, min(1.0, normalized))
         except Exception as e:
             print(f"[PaperRadar] ⚠️ Jev関連度判定に失敗 ({p.get('arxiv_id', '?')}): {e} — 0点扱いで続行")
             p["jev_relevance"] = None

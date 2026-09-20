@@ -116,8 +116,10 @@ def _tool_jev_wrapper(question_type: str, state: str, instructions: str, criteri
             if not opts:
                 return "[jev error] choice には criteria (カンマ区切りの選択肢) が必要です"
             result = jev_choice(state, instructions, opts)
-            return f"[jev] choice={result['choice']} (probability={result['probability']:.2f})"
+            return f"[jev] choice={result['choice']} (confidence={result['confidence']:.2f})"
         elif qtype == "score":
+            if not opts or not (2 <= len(opts) <= 10):
+                return "[jev error] score には criteria (カンマ区切りの尺度水準、2〜10件) が必要です"
             result = jev_score(state, instructions, criteria=opts)
             return f"[jev] score={result['score']:.2f} (confidence={result['confidence']:.2f})"
         elif qtype == "noul":
