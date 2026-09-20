@@ -101,6 +101,34 @@ def _tool_paper_radar_wrapper(field: str = "", top_k: int = 5, days: int = 7) ->
         return f"[paper_radar error] {e}"
 
 
+def _tool_jev_wrapper(question_type: str, state: str, instructions: str, criteria: str = "") -> str:
+    """Jev (TypeSafe AI System One model) に型付き判断を1問問い合わせる。
+
+    question_type は "choice"/"score"/"noul"。criteria はカンマ区切り
+    (choice の選択肢、score の尺度水準説明。noul は不要なので空のままでよい)。
+    読み取り専用の判断API呼び出しのみで副作用が無い (parallel_safe 参照)。
+    """
+    try:
+        from tools.tool_jev import jev_choice, jev_score, jev_noul
+        opts = [c.strip() for c in criteria.split(",") if c.strip()] or None
+        qtype = question_type.strip().lower()
+        if qtype == "choice":
+            if not opts:
+                return "[jev error] choice には criteria (カンマ区切りの選択肢) が必要です"
+            result = jev_choice(state, instructions, opts)
+            return f"[jev] choice={result['choice']} (probability={result['probability']:.2f})"
+        elif qtype == "score":
+            result = jev_score(state, instructions, criteria=opts)
+            return f"[jev] score={result['score']:.2f} (confidence={result['confidence']:.2f})"
+        elif qtype == "noul":
+            result = jev_noul(state, instructions)
+            return f"[jev] probability={result['probability']:.2f}"
+        else:
+            return f"[jev error] 不明な question_type: {question_type} (choice/score/noul のいずれか)"
+    except Exception as e:
+        return f"[jev error] {e}"
+
+
 def _tool_paper_digest_wrapper(index: int = 1, arxiv_id: str = "", mode: str = "sns") -> str:
     """注目論文を docling でキャプチャ→要約→SNS/note下書きまで作る。"""
     try:
@@ -306,6 +334,15 @@ TOOL_ENTRIES = [
      "func": _tool_xtrend_wrapper},
     {"name": "tool_xtrend_prompt", "usage": "tool_xtrend_prompt(feature_index=1)", "description": "XTrend分析済み機能(1始まりの番号)のClaude Code実装指示書をGeminiで生成してlogsに保存",
      "func": _tool_xtrend_prompt_wrapper},
+    # Jev (TypeSafe AI) への型付き判断の直接問い合わせ。ファイル書き込み等の副作用が
+    # 無い読み取り専用の判断API呼び出しのみなので parallel_safe (集合は
+    # tests/test_tool_registry.py がピン留め、同じコミットで更新済み)。
+    {"name": "tool_jev",
+     "usage": "tool_jev(question_type='noul', state='...', instructions='...', criteria='a,b,c')",
+     "description": "Jev (TypeSafe AI の判断特化AI) に型付き判断を1問問い合わせる。"
+                     "question_type='choice'(criteria必須の選択肢から1つ)/'score'(尺度上の度合い)/"
+                     "'noul'(ある条件が真である確率)。文章は生成せず確率付きの判断のみを返す",
+     "func": _tool_jev_wrapper, "parallel_safe": True},
     # 論文レーダー/ダイジェスト。radar は Gemini を呼ばない (arXiv/HF/S2 の公開API
     # のみ・課金ゼロ) が、Obsidian と候補JSONへ書くので parallel_safe は付けない。
     {"name": "tool_paper_radar", "usage": "tool_paper_radar(field='ai_agent', top_k=5, days=7)",

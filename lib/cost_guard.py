@@ -217,6 +217,19 @@ GROUNDING_COUNTER = DailyCounter(
 )
 
 
+# --- Jev (TypeSafe AI System One model) 呼び出し回数カウンタ -----------------
+# $0.042/M入力トークン・出力無料と極めて安価だが、Gemini系カウンタと同様
+# 「セーフティネット」として日次上限を持たせる (実行系バグでループした場合の歯止め)。
+# Critic クロスチェック (engine_plan_execute._jev_goal_check) と Skill/Paper Radar
+# のオプトイン判断シグナルが共有する単一カウンタ (用途別に分けるほどの実績が無いため)。
+JEV_COUNTER_PATH = os.path.join(LOGS_DIR, "jev_daily_calls.json")
+JEV_COUNTER = DailyCounter(
+    path=JEV_COUNTER_PATH,
+    limit=get_limit("DAILY_JEV_CALL_LIMIT", 500),
+    name="Jev API",
+)
+
+
 # --- Browser Act (ReActループでクリック/フォーム入力を行うブラウジングエージェント) ---
 # 1回の起動が max_steps 分の HEAVY呼び出しを消費しうるため、共有の
 # GEMINI_HEAVY_COUNTER(日次200回共用)とは別に「起動回数」自体を絞る。

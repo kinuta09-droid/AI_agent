@@ -42,6 +42,14 @@ except ImportError:
     def _get_memory_block(*args, **kwargs):
         return ""
 
+# Jev (TypeSafe AI) クロスチェックも任意機能: 不在・障害でも Critic 本体は止めない
+try:
+    from tools.tool_jev import jev_noul, JevAPIError
+except Exception as _jev_err:
+    print(f"[Engine] ⚠️ tools.tool_jev unavailable ({_jev_err}) — Jev cross-check disabled.")
+    jev_noul = None
+    JevAPIError = Exception
+
 
 @retry(max_retries=3, initial_delay=2)
 def _gemini_call(model: str, prompt: str):
@@ -1025,6 +1033,41 @@ def critique_results(user_query: str, plan: list, results: list) -> dict:
         return {"status": "ok", "feedback": f"Critic evaluation failed ({e}), accepting results."}
 
 
+def _jev_goal_check(user_query: str, results: list) -> float | None:
+    """Critic (critique_results) とは独立の「2つ目の意見」を Jev (Noul) に聞く。
+
+    既存の Critic は制御フロー (revise/finish) を決める必要があり、Gemini の
+    自由な文章生成 (feedback・revised_plan) にも依存しているため Jev では代替できない。
+    このため v1 では Jev を**置き換えではなく追加**にとどめ、制御フロー・最終レポートは
+    一切変えず learning_db への記録のみに使う (Known Bug Patterns Category A:
+    「自己申告の要約を最終判定に使わない」原則— Jev の意見も新たな自己申告の1つに
+    過ぎないので、同じ理由でこちらも最終判定には使わない)。
+
+    失敗 (Jev未設定・API障害・予算超過等) は None を返し、呼び出し元は
+    黙ってスキップする (パイプラインを絶対に止めない・クラッシュさせない)。
+    """
+    if jev_noul is None:
+        return None
+    try:
+        state = json.dumps(
+            [
+                {
+                    "step": r.get("step"),
+                    "tool": r.get("tool"),
+                    "success": r.get("success"),
+                    "observation": str(r.get("observation", ""))[:200],
+                }
+                for r in results
+            ],
+            ensure_ascii=False,
+        )
+        result = jev_noul(state, f"ユーザーの目標「{user_query}」は、この実行結果によって達成されたか")
+        return result.get("probability")
+    except Exception as e:
+        print(f"[P&E] ⚠️ Jev goal check failed: {e}")
+        return None
+
+
 MAX_REVISIONS = 1  # 品質向上のため1回に制限（2回は時間浪費の原因）
 
 
@@ -1107,6 +1150,9 @@ def run_plan_and_execute(user_query: str, step_callback=None,
             step_callback({"phase": "critique", "status": "evaluating"})
 
         critique = critique_results(user_query, plan, exec_result["results"])
+        # Jev クロスチェックは診断目的のみ (learning_db 記録専用)。critique["status"]
+        # の分岐ロジックには一切関与させない (_jev_goal_check の docstring参照)。
+        critique["_jev_probability"] = _jev_goal_check(user_query, exec_result["results"])
         last_critique = critique
         print(f"[P&E] 🔍 Critic: {critique.get('status')} - {critique.get('feedback', '')[:100]}")
 
@@ -1416,6 +1462,15 @@ def log_execution(query: str, plan: list, results: list,
     now = datetime.datetime.now()
     exec_id = _next_exec_id(db)
 
+    # Jev クロスチェック (診断専用、outcome の計算には一切使わない — 上の
+    # all_success/any_success は Jev 追加前と完全に同じロジックのまま)。
+    jev_probability = critique.get("_jev_probability")
+    jev_disagreement = (
+        jev_probability is not None
+        and critique.get("status") == "ok"
+        and jev_probability < 0.4
+    )
+
     entry = {
         "id": exec_id,
         "timestamp": now.isoformat(timespec="seconds"),
@@ -1428,6 +1483,8 @@ def log_execution(query: str, plan: list, results: list,
         "duration_seconds": round(duration_seconds, 1),
         "tools_used": tools_used,
         "critique_status": critique.get("status", "unknown"),
+        "jev_probability": jev_probability,
+        "jev_disagreement": jev_disagreement,
     }
     if parallel and parallel.get("waves"):
         entry["parallel"] = {

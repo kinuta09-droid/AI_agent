@@ -29,6 +29,7 @@ Usage:
   py tools/tool_skill_radar.py --no-save         # Obsidian に書かない
   py tools/tool_skill_radar.py --no-comment      # AI適合度判定/コメントを付けない (Gemini呼び出しゼロ、stars/keywordのみでスコアリング)
   py tools/tool_skill_radar.py --include-seen    # 既出候補も含める
+  py tools/tool_skill_radar.py --fit-engine jev  # AI適合度判定にGeminiではなくJev(TypeSafe AI)を使う (実験的)
 """
 import argparse
 import datetime
@@ -53,6 +54,13 @@ from dotenv import load_dotenv
 load_dotenv(ENV_PATH)
 
 from lib.lib_shared import MODEL_NAME, client, safe_json_loads
+
+# Jev (TypeSafe AI) 版 AI適合度判定は任意機能: 不在・障害でも Skill Radar 本体は止めない
+try:
+    from tools.tool_jev import jev_choice
+except Exception as _jev_err:
+    print(f"[SkillRadar] ⚠️ tools.tool_jev unavailable ({_jev_err}) — fit_engine='jev' disabled.")
+    jev_choice = None
 
 # ---------------------------------------------------------
 # CONFIGURATION
@@ -478,6 +486,62 @@ def evaluate_fit_ja(candidates: list, local_inventory: list) -> dict:
     return out
 
 
+def evaluate_fit_jev(candidates: list, local_inventory: list) -> dict:
+    """evaluate_fit_ja の Jev (Choice) 版。ARMSへの導入適性を fit (high/medium/low/
+    not_applicable) で判定する。1候補につき1回 Jev を呼ぶ (Jev がevaluate_fit_ja
+    のような複数候補の一括判定をサポートするかは未検証のため、まずは逐次呼び出しで
+    実装する — 候補数が多いと呼び出し回数が線形に増える点に注意)。
+
+    戻り値/失敗時の契約は evaluate_fit_ja と同じ:
+    {full_name: {"fit": "...", "comment_ja": "..."}}、失敗時(候補単位)はその候補を
+    結果に含めない (ai_fit=None 相当、加点なしで続行)。Jev は文章を生成しないため
+    comment_ja は常に空文字になる。
+    """
+    if not candidates or jev_choice is None:
+        return {}
+    existing = [
+        {"name": s["name"], "description": s.get("description", "")}
+        for s in local_inventory if s.get("name")
+    ]
+    base_state = {
+        "arms_summary": _ARMS_ARCHITECTURE_SUMMARY,
+        "existing_skills": existing,
+    }
+    instructions = (
+        "candidate は GitHub で見つかったClaude Code向けSkillリポジトリ候補。"
+        "arms_summary (ARMSの技術構成) と existing_skills (既存Skill/Command) を踏まえて、"
+        "candidate をARMSの .claude/skills/ に導入する価値があるかを判定する。"
+        "high=ARMSの構成に直接合い既存Skillと被らない具体的な価値がある、"
+        "medium=関連はあるが優先度は低い、low=関連が薄い、"
+        "not_applicable=そもそも導入可能な粒度のSkillではない"
+        "(単体の完成されたアプリ/製品、ARMSと無関係な汎用チャットUI等)"
+    )
+    out = {}
+    for c in candidates:
+        full_name = c.get("full_name", "")
+        if not full_name:
+            continue
+        state = dict(base_state)
+        state["candidate"] = {
+            "full_name": full_name,
+            "description": c.get("description", ""),
+            "topics": c.get("topics", []),
+        }
+        try:
+            result = jev_choice(
+                json.dumps(state, ensure_ascii=False),
+                instructions,
+                ["high", "medium", "low", "not_applicable"],
+            )
+            fit = result.get("choice")
+            if fit in _AI_FIT_BONUS:
+                out[full_name] = {"fit": fit, "comment_ja": ""}
+        except Exception as e:
+            print(f"[SkillRadar] ⚠️ Jev適合度判定に失敗 ({full_name}): {e} — この候補は加点なしで続行")
+            continue
+    return out
+
+
 # ---------------------------------------------------------
 # 既出管理
 # ---------------------------------------------------------
@@ -545,9 +609,15 @@ def load_latest_candidates() -> list:
 # ---------------------------------------------------------
 
 def run_skill_radar(top_k: int = 10, save: bool = True, include_seen: bool = False,
-                    comment: bool = True) -> str:
+                    comment: bool = True, fit_engine: str = "gemini") -> str:
     """GitHubを巡回してARMS向けのSkill候補を判別し、レポートを返す
-    (ツール層の戻り値契約: 失敗は "Error: ...")。"""
+    (ツール層の戻り値契約: 失敗は "Error: ...")。
+
+    fit_engine: "gemini" (既定、従来どおり evaluate_fit_ja) または "jev"
+    (evaluate_fit_jev。TypeSafe AI の型付き判断APIを使う実験的な代替経路)。
+    comment=False のときは fit_engine に関わらず AI適合度判定は行わない
+    (従来どおり呼び出しゼロ)。
+    """
     print("[Tool] 🛰️ Skill Radar 起動中...")
     now = datetime.datetime.now()
 
@@ -573,7 +643,10 @@ def run_skill_radar(top_k: int = 10, save: bool = True, include_seen: bool = Fal
     fit_results = {}
     if comment:
         candidates = _filter_candidates(repos, local_inventory, exclude)
-        fit_results = evaluate_fit_ja(candidates, local_inventory)
+        if fit_engine == "jev":
+            fit_results = evaluate_fit_jev(candidates, local_inventory)
+        else:
+            fit_results = evaluate_fit_ja(candidates, local_inventory)
     ai_fit_map = {name: v["fit"] for name, v in fit_results.items()}
 
     ranked = rank_repos(repos, local_inventory, now, top_k=top_k,
@@ -625,6 +698,8 @@ def main():
     parser.add_argument("--no-save", action="store_true", help="Obsidian に書かない")
     parser.add_argument("--include-seen", action="store_true", help="既出候補も含める")
     parser.add_argument("--no-comment", action="store_true", help="AI適合度判定/コメントを付けない (Gemini呼び出しゼロ、stars/keywordのみでスコアリング)")
+    parser.add_argument("--fit-engine", choices=["gemini", "jev"], default="gemini",
+                        help="AI適合度判定に使うエンジン (既定: gemini。jev は TypeSafe AI の型付き判断APIを使う実験的な代替経路)")
     args = parser.parse_args()
 
     result = run_skill_radar(
@@ -632,6 +707,7 @@ def main():
         save=not args.no_save,
         include_seen=args.include_seen,
         comment=not args.no_comment,
+        fit_engine=args.fit_engine,
     )
     print("\n" + result)
 

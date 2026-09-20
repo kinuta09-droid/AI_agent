@@ -10,10 +10,15 @@ Flow:
   5. Obsidian へレポート保存 + logs/paper_radar_latest.json に候補を残す
      (tool_paper_digest がこの JSON から本文キャプチャ対象を選ぶ)
 
-スコアリング自体は Gemini を呼ばない (API課金ゼロ)。表示用のタイトル・要旨の
-日本語訳のみ、絞り込み後の上位 top_k 件 (既定5件) に限定して Gemini (LIGHT) を
-呼ぶ (--no-translate で無効化可、翻訳失敗時も英語表示にフォールバックしレーダー
-自体は止めない)。要約・記事生成は引き続き tool_paper_digest 側の責務。
+スコアリング自体は既定では Gemini/Jev いずれも呼ばない (API課金ゼロ)。表示用の
+タイトル・要旨の日本語訳のみ、絞り込み後の上位 top_k 件 (既定5件) に限定して
+Gemini (LIGHT) を呼ぶ (--no-translate で無効化可、翻訳失敗時も英語表示に
+フォールバックしレーダー自体は止めない)。要約・記事生成は引き続き
+tool_paper_digest 側の責務。
+
+--jev (use_jev=True) を付けたときだけ、候補プール全体に対して Jev (TypeSafe AI)
+の Score で興味キーワードとの関連度を追加シグナルとして補助的に付与する
+(既定 OFF。候補数だけ API 呼び出しが線形に増えるため大きな候補プールでは注意)。
 
 「影響力」の測り方 (設計判断):
   - 被引用数の生値は古い論文が常に勝つ。月あたりの被引用速度に直してから
@@ -31,6 +36,7 @@ Usage:
   py tools/tool_paper_radar.py --query "cat:cs.AI AND abs:agent" --days 14
   py tools/tool_paper_radar.py --no-save             # Obsidian に書かない
   py tools/tool_paper_radar.py --no-translate        # 日本語訳をせず英語のまま (Gemini呼び出しゼロ)
+  py tools/tool_paper_radar.py --jev                 # Jev(TypeSafe AI)の興味関連度シグナルを追加 (実験的、既定OFF)
 """
 import argparse
 import datetime
@@ -58,6 +64,13 @@ load_dotenv(ENV_PATH)
 
 from lib.lib_shared import MODEL_NAME, client, safe_json_loads
 from lib.engagement_log import log_impressions
+
+# Jev (TypeSafe AI) 版の興味関連度シグナルは任意機能: 不在・障害でも Paper Radar 本体は止めない
+try:
+    from tools.tool_jev import jev_score
+except Exception as _jev_err:
+    print(f"[PaperRadar] ⚠️ tools.tool_jev unavailable ({_jev_err}) — --jev disabled.")
+    jev_score = None
 
 # ---------------------------------------------------------
 # CONFIGURATION
@@ -111,6 +124,7 @@ WEIGHTS = {
     "influential": 0.8,        # 本質的な引用 (S2 判定)
     "recency": 1.0,            # 新しさ (半減期14日の指数減衰)
     "interest": 0.6,           # ユーザーの興味キーワードとの一致
+    "jev_relevance": 0.8,      # Jev (Score) による興味関連度の補助シグナル (--jev 時のみ)
 }
 RECENCY_HALF_LIFE_DAYS = 14.0
 
@@ -177,6 +191,13 @@ def score_paper(paper: dict, now: datetime.datetime, interests=(),
         "recency": round(WEIGHTS["recency"] * recency, 3),
         "interest": round(WEIGHTS["interest"] * math.log1p(interest_hits), 3),
     }
+    # jev_relevance は _enrich_with_jev_relevance (use_jev=True のときだけ実行) が
+    # 事前に paper dict へ merge した値を読むだけ (hf_upvotes/citations と同じ流儀)。
+    # 未設定 (None) なら breakdown に鍵を追加しない = use_jev=False の出力は
+    # この機能追加前と完全に同一の形になる (回帰保証)。
+    jev_relevance = paper.get("jev_relevance")
+    if jev_relevance is not None:
+        breakdown["jev_relevance"] = round(WEIGHTS["jev_relevance"] * jev_relevance, 3)
     return {
         "score": round(sum(breakdown.values()), 3),
         "breakdown": breakdown,
@@ -580,6 +601,34 @@ def _enrich_with_metrics(papers: list, days: int = 7) -> list:
     return papers
 
 
+def _enrich_with_jev_relevance(papers: list, interests: list) -> None:
+    """興味キーワードとの関連度を Jev (Score) で補助的に付与する (in-place)。
+
+    use_jev=True のときだけ呼ばれる (既定は呼ばれず、Gemini/Jev課金ゼロの契約を保つ)。
+    候補1件につき1回 Jev を呼ぶため、候補プールが大きいと呼び出し回数が線形に増える。
+    1件の失敗が全体を止めないよう、失敗した論文は jev_relevance=None (score_paper側で
+    0点扱い) にして続行する (HF/S2 の _enrich_with_metrics と同じ方針)。
+    """
+    if not papers or jev_score is None:
+        return
+    interests_text = "、".join(interests) if interests else "(特になし)"
+    for p in papers:
+        try:
+            state = json.dumps(
+                {"title": p.get("title", ""), "abstract": (p.get("abstract", "") or "")[:1000]},
+                ensure_ascii=False,
+            )
+            result = jev_score(
+                state,
+                f"この論文はユーザーの興味キーワード ({interests_text}) にどれだけ関連するか",
+            )
+            score = result.get("score", 0.0)
+            p["jev_relevance"] = max(0.0, min(1.0, float(score)))
+        except Exception as e:
+            print(f"[PaperRadar] ⚠️ Jev関連度判定に失敗 ({p.get('arxiv_id', '?')}): {e} — 0点扱いで続行")
+            p["jev_relevance"] = None
+
+
 def collect_candidates(fields: list, days: int = 7, max_per_field: int = MAX_FETCH_PER_QUERY) -> list:
     """分野ごとに arXiv を引き、指標を付けて1つのリストにまとめる。"""
     return _enrich_with_metrics(_search_fields(fields, days=days, max_per_field=max_per_field), days=days)
@@ -625,8 +674,13 @@ def _finalize_report(ranked: list, fields: list, now: datetime.datetime,
 
 
 def run_paper_radar(field: str = "", top_k: int = 5, days: int = 7,
-                    save: bool = True, include_seen: bool = False, translate: bool = True) -> str:
-    """分野の注目論文を判別してレポートを返す (ツール層の戻り値契約: 失敗は "Error: ...")。"""
+                    save: bool = True, include_seen: bool = False, translate: bool = True,
+                    use_jev: bool = False) -> str:
+    """分野の注目論文を判別してレポートを返す (ツール層の戻り値契約: 失敗は "Error: ...")。
+
+    use_jev: True のときだけ Jev (TypeSafe AI) の Score で興味関連度を追加シグナルとして
+    付与する (既定False、候補数だけ呼び出しが線形に増えるため無条件にはしない)。
+    """
     print("[Tool] 📡 Paper Radar 起動中...")
     fields = [f.strip() for f in field.split(",") if f.strip()] or DEFAULT_FIELDS
     now = datetime.datetime.now()
@@ -647,6 +701,8 @@ def run_paper_radar(field: str = "", top_k: int = 5, days: int = 7,
     interests = read_interest_keywords()
     from lib.preference_weights import keyword_affinity  # 遅延import (Phase2)
     keyword_weights = keyword_affinity(interests)
+    if use_jev:
+        _enrich_with_jev_relevance(papers, interests)
     exclude = [] if include_seen else load_seen_ids()
     ranked = rank_papers(papers, now, top_k=top_k, interests=interests,
                         exclude_ids=exclude, keyword_weights=keyword_weights)
@@ -658,7 +714,8 @@ def run_paper_radar(field: str = "", top_k: int = 5, days: int = 7,
 
 
 def run_paper_radar_grouped(groups: list, days: int = 7, save: bool = True,
-                            include_seen: bool = False, translate: bool = True) -> str:
+                            include_seen: bool = False, translate: bool = True,
+                            use_jev: bool = False) -> str:
     """(分野, 件数) の組ごとに上位件数を確保してから1本のレポートに合算する。
 
     単純に全分野をまとめて上位N件を選ぶと、HF注目度・被引用の実績が厚い定番分野
@@ -690,6 +747,8 @@ def run_paper_radar_grouped(groups: list, days: int = 7, save: bool = True,
         combined_raw.extend(papers)
 
     _enrich_with_metrics(combined_raw, days=days)
+    if use_jev:
+        _enrich_with_jev_relevance(combined_raw, interests)
     total_count = len(combined_raw)
 
     ranked_all = []
@@ -724,6 +783,8 @@ def main():
     parser.add_argument("--no-save", action="store_true", help="Obsidian に書かない")
     parser.add_argument("--include-seen", action="store_true", help="既出論文も候補に含める")
     parser.add_argument("--no-translate", action="store_true", help="タイトル・要旨を日本語訳しない (Gemini呼び出しゼロ)")
+    parser.add_argument("--jev", action="store_true",
+                        help="Jev(TypeSafe AI)のScoreで興味関連度を追加シグナルとして付与する (既定OFF、候補数だけ呼び出しが線形に増える)")
     args = parser.parse_args()
 
     result = run_paper_radar(
@@ -733,6 +794,7 @@ def main():
         save=not args.no_save,
         include_seen=args.include_seen,
         translate=not args.no_translate,
+        use_jev=args.jev,
     )
     print("\n" + result)
 
