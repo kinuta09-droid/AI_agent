@@ -747,6 +747,53 @@ def test_run_paper_digest_continues_when_wiki_compile_fails():
     print("✅ [5e] run_paper_digest: Wiki統合失敗はRaw保存を道連れにせず、戻り値に明示する")
 
 
+def test_run_paper_digest_populates_sns_draft_out_when_given():
+    """sns_draft_out を渡すとXティザー投稿本文がそのまま書き込まれること。
+
+    Discordボタン (commands.bot_views.PostToXView) が実際の投稿本文を取得するのに使う
+    依存性注入引数。デフォルト None では何も書き込まれず、既存呼び出し元 (CLI/他テスト)
+    の挙動は変えない (Known Bug Patterns C の freq_lookup_fn と同型の設計)。
+    """
+    import tools.tool_paper_digest as digest
+
+    paper = _paper("2607.00120", title="Draft Out Paper")
+    stub_digest = {"one_liner": "要約", "keywords": ["k1"]}
+    stub_capture = {"text": "本文", "backend": "docling", "chars": 4,
+                    "truncated": False, "source": "", "warnings": []}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        originals = (digest._resolve_paper, digest.capture_paper, digest.summarize_paper,
+                     digest.build_sns_post, digest.PAPERS_DIR, radar.SEEN_PATH, radar.LOGS_DIR)
+        digest._resolve_paper = lambda **kwargs: paper
+        digest.capture_paper = lambda p, use_docling=True: stub_capture
+        digest.summarize_paper = lambda p, body: stub_digest
+        digest.build_sns_post = lambda d, p: f"stub post\n{paper['abs_url']}"
+        digest.PAPERS_DIR = os.path.join(tmp, "Papers")
+        radar.SEEN_PATH = os.path.join(tmp, "seen.json")
+        radar.LOGS_DIR = tmp
+        try:
+            out: dict = {}
+            msg = digest.run_paper_digest(mode="sns", save=True, sns_draft_out=out)
+            assert not is_failure_result(msg), msg
+            assert out.get("text") == f"stub post\n{paper['abs_url']}", out
+            assert out.get("title") == "Draft Out Paper", out
+            assert out.get("arxiv_id") == "2607.00120", out
+
+            # mode="none" では下書き自体を作らないので、渡した辞書に書き込まれない
+            out_none: dict = {}
+            msg2 = digest.run_paper_digest(mode="none", save=True, sns_draft_out=out_none)
+            assert not is_failure_result(msg2), msg2
+            assert out_none == {}, "mode='none'ではsns_draft_outに書き込んではいけない"
+
+            # sns_draft_out を渡さない既定呼び出しは従来どおり例外にならない
+            msg3 = digest.run_paper_digest(mode="sns", save=True)
+            assert not is_failure_result(msg3), msg3
+        finally:
+            (digest._resolve_paper, digest.capture_paper, digest.summarize_paper,
+             digest.build_sns_post, digest.PAPERS_DIR, radar.SEEN_PATH, radar.LOGS_DIR) = originals
+    print("✅ [5f] run_paper_digest: sns_draft_out にXティザー投稿本文を書き込む")
+
+
 def test_registry_entries_registered():
     from lib.tool_registry import TOOL_ENTRIES
     names = {e["name"] for e in TOOL_ENTRIES}

@@ -721,11 +721,21 @@ def _compile_to_field_wiki(field: str, digest: dict, paper: dict, raw_note_filen
 # ---------------------------------------------------------
 
 def run_paper_digest(index: int = 1, arxiv_id: str = "", field: str = "",
-                     mode: str = "sns", use_docling: bool = True, save: bool = True) -> str:
+                     mode: str = "sns", use_docling: bool = True, save: bool = True,
+                     sns_draft_out: dict | None = None) -> str:
     """注目論文1本をキャプチャ→要約→下書き生成する。
 
     mode: "sns" (Xスレッドのみ) / "note" (note記事のみ) / "both" / "none" (要約ノートだけ)
     戻り値はツール層の契約に従い、失敗時は "Error: ..." で始まる文字列。
+
+    sns_draft_out: 呼び出し側が生成済みのXティザー投稿本文をそのまま受け取りたいとき用の
+    出力先辞書 (依存性注入、Known Bug Patterns Cの freq_lookup_fn と同型)。生成に成功すると
+    {"text": ..., "title": ..., "arxiv_id": ...} を書き込む。既定 None では一切書き込まず
+    戻り値の文字列フォーマットも変えないため、この引数を渡さない既存の呼び出し元
+    (CLIやテスト) の挙動には影響しない。モジュールdocstringの設計判断「投稿経路を足す
+    ときは、この関数の戻り値ではなく別ツールとして分離すること」を守るため、ここでは
+    生成済みの下書きテキストを渡すだけで、実際のX投稿 (tools/tool_twitter_post.py) は
+    呼び出し元 (Discordボタン等) が別途明示的に実行する。
     """
     print(f"[Tool] 📄 Paper Digest (index={index}, arxiv={arxiv_id or '-'}, mode={mode})")
     try:
@@ -790,6 +800,10 @@ def run_paper_digest(index: int = 1, arxiv_id: str = "", field: str = "",
         except Exception as e:
             print(f"[PaperDigest] ❌ X投稿の生成に失敗: {e}")
             return f"Error: X投稿の生成に失敗しました ({e})"
+        if sns_draft_out is not None and sns_post:
+            sns_draft_out["text"] = sns_post
+            sns_draft_out["title"] = paper.get("title", "")
+            sns_draft_out["arxiv_id"] = paper.get("arxiv_id", "")
 
     article_title, article_body = "", ""
     if mode in ("note", "both"):

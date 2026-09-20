@@ -381,6 +381,54 @@ class AgentFeedbackView(AllowedUserView):
 
 
 # ---------------------------------------------------------
+# X (Twitter) 投稿ボタン (/paper-digest 等が生成した下書きをそのまま投稿)
+# ---------------------------------------------------------
+
+_POST_TO_X_TIMEOUT = 3600  # 1時間 (AgentFeedbackView と同じ有限期限パターン)
+
+
+class PostToXView(AllowedUserView):
+    """生成済みのXティザー投稿下書きを、人間の確認後にそのままXへ投稿するボタン。
+
+    tools/tool_twitter_post.py の投稿はPay Per Use課金 (1件$0.015〜) が発生するため、
+    下書き生成 (tools/tool_paper_digest.py 等) 側では自動投稿しない設計になっている
+    (tool_paper_digest.py モジュールdocstring: 「投稿経路を足すときは、この関数の
+    戻り値ではなく別ツールとして分離すること」)。このViewはその橋渡し役に徹し、
+    投稿の実処理は tool_post_tweet に一切手を加えず呼ぶだけにする。
+    Bot再起動をまたぐ永続化はしない (投稿本文をインスタンス状態としてクロージャに
+    持つため、AgentFeedbackViewと同じ理由で永続化できず、有限timeoutにする)。
+    """
+
+    def __init__(self, sns_post: str):
+        super().__init__(timeout=_POST_TO_X_TIMEOUT)
+        self._sns_post = sns_post
+        self.message: discord.Message | None = None
+
+    @discord.ui.button(label="🐦 Xに投稿する", style=discord.ButtonStyle.primary)
+    async def post(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 二重クリックによる二重課金・二重投稿を防ぐため、実行前にボタンを無効化する
+        # (NotePromotionViewの_promo_runningと違い、この操作は1メッセージにつき
+        # ボタン1個・専用インスタンスなので、disabled化だけで足りる)。
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+
+        from tools.tool_twitter_post import tool_post_tweet
+        result = await asyncio.to_thread(tool_post_tweet, self._sns_post)
+
+        icon = "❌" if is_failure_result(result) else "✅"
+        await interaction.followup.send(f"{icon} {result}", ephemeral=True)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+
+# ---------------------------------------------------------
 # ノート昇格パイプライン (承認/却下ボタン)
 # ---------------------------------------------------------
 
