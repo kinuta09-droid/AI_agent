@@ -65,6 +65,7 @@ GitHub MCP は個人の PAT が要るため `.mcp.json` に含めていない。
 | `llm-output-safety` | Verifier、プロンプトインジェクション対策、判定器設計、LLM出力のJSONパース |
 | `discord-bot-patterns` | discord.ui.View の永続化、interaction token、失敗プレフィックス判定 |
 | `parallel-execution-safety` | engine_plan_execute.py の fan-out、parallel_safe 宣言、副作用の順序依存 |
+| `external-api-integration` | 新しい外部AI/APIサービスの初統合、ドキュメント取得不能時の調査、推測実装の隔離 |
 
 @.claude/rules/known-bug-patterns.md
 
