@@ -12,8 +12,9 @@
 | `tool_calendar.py` | Google Calendar + Google Tasks (gws CLI) integration (5 tools) |
 | `tool_daily_note.py` | Daily note auto-generation from template |
 | `tool_lora_factory.py` | LoRA/ComfyUI image generation |
-| `tool_paper_radar.py` | 注目論文の自動判別 (arXiv × HF upvote × 被引用速度 × 新しさ)。Gemini不使用=課金ゼロ |
+| `tool_paper_radar.py` | 注目論文の自動判別 (arXiv × HF upvote × 被引用速度 × 新しさ)。既定はGemini/Jev不使用=課金ゼロ (`--jev` でJev興味関連度シグナルを追加可能、実験的) |
 | `tool_paper_digest.py` | 論文本文を docling でキャプチャ→要約→X スレッド/note 記事の下書き生成 |
+| `tool_jev.py` | Jev (TypeSafe AI の判断特化AI System One model) クライアント。Choice/Score/Noulの3判断プリミティブ。Critic クロスチェック (engine_plan_execute._jev_goal_check、診断専用・判定には使わない) と Skill Radar (`--fit-engine jev`) / Paper Radar (`--jev`) のオプトイン補助シグナルで使用 |
 | `tool_form_fill.py` | 手書き書類記入補助 (枠検出→OCR→Gemini分類→自動入力→ブラウザ確認→PDF出力)。Discord非対応、スタンドアロン |
 
 ## Coding Standards & Stability
@@ -64,6 +65,7 @@ GitHub MCP は個人の PAT が要るため `.mcp.json` に含めていない。
 | `llm-output-safety` | Verifier、プロンプトインジェクション対策、判定器設計、LLM出力のJSONパース |
 | `discord-bot-patterns` | discord.ui.View の永続化、interaction token、失敗プレフィックス判定 |
 | `parallel-execution-safety` | engine_plan_execute.py の fan-out、parallel_safe 宣言、副作用の順序依存 |
+| `external-api-integration` | 新しい外部AI/APIサービスの初統合、ドキュメント取得不能時の調査、推測実装の隔離 |
 
 @.claude/rules/known-bug-patterns.md
 

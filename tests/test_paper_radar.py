@@ -85,7 +85,9 @@ def test_score_missing_metrics_does_not_crash():
     p = {"title": "New", "abstract": "", "published_dt": NOW}
     result = radar.score_paper(p, NOW)
     assert result["score"] > 0, f"指標ゼロでも recency 分は残るはず: {result}"
-    assert set(result["breakdown"]) == set(radar.WEIGHTS), "breakdown は全重みを網羅すること"
+    # jev_relevance は use_jev 時のみ加わる任意シグナルで、未設定なら breakdown に鍵を出さない設計
+    # ([13a] が保証)。それ以外の全重みは指標欠損でも breakdown に出ること。
+    assert set(result["breakdown"]) == set(radar.WEIGHTS) - {"jev_relevance"}, "breakdown は(jev以外の)全重みを網羅すること"
     print("✅ [2] score_paper: 指標欠損でも採点できる")
 
 
@@ -457,6 +459,147 @@ def test_registry_entries_registered():
     names = {e["name"] for e in TOOL_ENTRIES}
     assert {"tool_paper_radar", "tool_paper_digest"} <= names, sorted(names)
     print("✅ [12] registry: paper 系ツールが登録されている")
+
+
+# ---------------------------------------------------------
+# [13] use_jev (Jev/TypeSafe AI の興味関連度シグナル、既定OFF)
+# ---------------------------------------------------------
+
+def test_score_paper_jev_relevance_not_in_breakdown_when_absent():
+    """paper に jev_relevance が無い (use_jev=False の既定) 場合、breakdownに
+    jev_relevance キーが一切追加されないこと (この機能追加前と完全に同じ形の回帰保証)。"""
+    p = _paper("2401.00001", upvotes=5, citations=2)
+    result = radar.score_paper(p, NOW)
+    assert "jev_relevance" not in result["breakdown"], result["breakdown"]
+    print("✅ [13a] score_paper: jev_relevance未設定なら breakdown に鍵が増えない")
+
+
+def test_score_paper_jev_relevance_monotonic_when_present():
+    """jev_relevance が設定されていれば breakdown に反映され、値が大きいほどスコアも増える。"""
+    p_low = _paper("2401.00002", upvotes=5, citations=2)
+    p_low["jev_relevance"] = 0.1
+    p_high = dict(p_low)
+    p_high["jev_relevance"] = 0.9
+
+    r_low = radar.score_paper(p_low, NOW)
+    r_high = radar.score_paper(p_high, NOW)
+    assert "jev_relevance" in r_low["breakdown"], r_low["breakdown"]
+    assert r_high["score"] > r_low["score"], (r_low, r_high)
+    print("✅ [13b] score_paper: jev_relevance が大きいほどスコアが増える")
+
+
+def test_score_paper_jev_relevance_none_treated_as_absent():
+    """Jev呼び出し失敗時 (_enrich_with_jev_relevance が None を merge) は
+    breakdown に鍵を足さず0点相当で扱われること (score_paper の None ガード)。"""
+    p_none = _paper("2401.00003", upvotes=5, citations=2)
+    p_none["jev_relevance"] = None
+    p_absent = _paper("2401.00003", upvotes=5, citations=2)
+
+    r_none = radar.score_paper(p_none, NOW)
+    r_absent = radar.score_paper(p_absent, NOW)
+    assert "jev_relevance" not in r_none["breakdown"], r_none["breakdown"]
+    assert r_none["score"] == r_absent["score"], (r_none, r_absent)
+    print("✅ [13c] score_paper: jev_relevance=None はキー無しと同じ扱い")
+
+
+def test_enrich_with_jev_relevance_per_paper_failure_is_skipped_not_fatal():
+    """1論文の jev_score 呼び出しが失敗しても他論文に影響せず、例外も外に出ないこと。
+
+    jev_score は公式APIの必須criteria契約により (state, instructions, criteria) の
+    3引数で呼ばれる。score=0.7 は _JEV_RELEVANCE_LEVELS (3水準・最大インデックス2) を
+    基準に 0.7/2=0.35 へ正規化される。
+    """
+    papers = [_paper("2401.00004", title="broken"), _paper("2401.00005", title="ok")]
+
+    def _flaky(state, instructions, criteria):
+        assert criteria == radar._JEV_RELEVANCE_LEVELS, criteria
+        if "broken" in state:
+            raise RuntimeError("jev down")
+        return {"score": 0.7, "confidence": 0.6}
+
+    orig = radar.jev_score
+    radar.jev_score = _flaky
+    try:
+        radar._enrich_with_jev_relevance(papers, ["agent"])  # 例外を投げないこと
+    finally:
+        radar.jev_score = orig
+
+    by_id = {p["arxiv_id"]: p for p in papers}
+    assert by_id["2401.00004"]["jev_relevance"] is None, by_id["2401.00004"]
+    assert by_id["2401.00005"]["jev_relevance"] == 0.35, by_id["2401.00005"]
+    print("✅ [13d] _enrich_with_jev_relevance: 1論文の失敗は他論文を巻き込まない")
+
+
+def test_enrich_with_jev_relevance_unavailable_is_noop():
+    """tools.tool_jev が不在 (jev_score=None) なら何もしない (paper dict は変更されない)。"""
+    papers = [_paper("2401.00006")]
+    orig = radar.jev_score
+    radar.jev_score = None
+    try:
+        radar._enrich_with_jev_relevance(papers, ["agent"])
+    finally:
+        radar.jev_score = orig
+    assert "jev_relevance" not in papers[0], papers[0]
+    print("✅ [13e] _enrich_with_jev_relevance: jev_score 不在なら no-op")
+
+
+def test_run_paper_radar_use_jev_false_output_identical_to_baseline():
+    """use_jev を省略した既定動作が、この機能追加前と完全に同じ (jev_score は一切呼ばれない)。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        orig_seen, orig_logs, orig_latest = radar.SEEN_PATH, radar.LOGS_DIR, radar.LATEST_JSON
+        orig_collect = radar.collect_candidates
+        orig_translate = radar.translate_papers_ja
+        orig_log_impr = radar.log_impressions
+        radar.SEEN_PATH = os.path.join(tmp, "paper_seen_ids.json")
+        radar.LOGS_DIR = tmp
+        radar.LATEST_JSON = os.path.join(tmp, "paper_radar_latest.json")
+        radar.collect_candidates = lambda *a, **k: [_paper("2401.00007", upvotes=10)]
+        radar.translate_papers_ja = lambda ranked: None
+        radar.log_impressions = lambda *a, **k: None
+        jev_called = []
+        radar.jev_score = lambda *a, **k: jev_called.append(1)
+        try:
+            msg = radar.run_paper_radar(field="ai_agent", top_k=1, save=False,
+                                        translate=False)  # use_jev省略
+        finally:
+            radar.collect_candidates = orig_collect
+            radar.translate_papers_ja = orig_translate
+            radar.log_impressions = orig_log_impr
+            radar.SEEN_PATH, radar.LOGS_DIR, radar.LATEST_JSON = orig_seen, orig_logs, orig_latest
+
+    assert jev_called == [], "use_jev省略時にjev_scoreが呼ばれている (既定挙動が変わっている)"
+    assert "Some Paper" in msg, msg  # 出力にarXiv IDは載らずタイトルが載る
+    print("✅ [13f] run_paper_radar: use_jev省略時は従来通りjev不使用")
+
+
+def test_run_paper_radar_use_jev_true_calls_enrichment():
+    """use_jev=True のときは _enrich_with_jev_relevance が候補プールに対して呼ばれること。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        orig_seen, orig_logs, orig_latest = radar.SEEN_PATH, radar.LOGS_DIR, radar.LATEST_JSON
+        orig_collect = radar.collect_candidates
+        orig_translate = radar.translate_papers_ja
+        orig_log_impr = radar.log_impressions
+        orig_enrich = radar._enrich_with_jev_relevance
+        radar.SEEN_PATH = os.path.join(tmp, "paper_seen_ids.json")
+        radar.LOGS_DIR = tmp
+        radar.LATEST_JSON = os.path.join(tmp, "paper_radar_latest.json")
+        radar.collect_candidates = lambda *a, **k: [_paper("2401.00008", upvotes=10)]
+        radar.translate_papers_ja = lambda ranked: None
+        radar.log_impressions = lambda *a, **k: None
+        called = []
+        radar._enrich_with_jev_relevance = lambda papers, interests: called.append(len(papers))
+        try:
+            radar.run_paper_radar(field="ai_agent", top_k=1, save=False,
+                                  translate=False, use_jev=True)
+        finally:
+            radar.collect_candidates = orig_collect
+            radar.translate_papers_ja = orig_translate
+            radar.log_impressions = orig_log_impr
+            radar._enrich_with_jev_relevance = orig_enrich
+            radar.SEEN_PATH, radar.LOGS_DIR, radar.LATEST_JSON = orig_seen, orig_logs, orig_latest
+
+    assert called == [1], f"use_jev=True なのに _enrich_with_jev_relevance が呼ばれていない: {called}"
+    print("✅ [13g] run_paper_radar: use_jev=True で _enrich_with_jev_relevance が呼ばれる")
 
 
 if __name__ == "__main__":

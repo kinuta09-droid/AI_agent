@@ -1,0 +1,14 @@
+---
+name: external-api-integration
+description: 新しい外部AI/APIサービスを初めてこのリポジトリに統合するとき (tools/tool_*.py での新規HTTPクライアント実装、ベンダーAPI仕様の調査、既存パイプラインへの組み込み) の既知バグパターン。ドキュメント取得不能時の調査手順、一次情報源と二次情報源の優先順位、推測実装の隔離、config既定値の安全側設計に関する規約。新しい外部サービスクライアントを追加/レビューするときに読む。
+---
+
+# Integrating a Brand-New External API/Service
+
+## ドキュメントが取得できないときの調査と実装の隔離
+
+- **Claude Code web sandboxのegressプロキシは、統合対象のベンダーサイトだけでなく無関係な第三者ドキュメントサイトも一律ブロックしうる。ブロックは「怪しいから」ではなく一般的なsandboxポリシーであることを先に確認する** (2026-09-20、TypeSafe AI "Jev" API初統合)。症状: `docs.typesafe.ai` と `typesafe.ai` に加え、qiita.com・note.com・gihyo.jp・ai-souken.com・datacamp.com・langchain.com という無関係な第三者ドキュメントサイトまで**全て** `EGRESS_BLOCKED`/403のCONNECTトンネルエラーで到達不能だった。`curl "$HTTPS_PROXY/__agentproxy/status"` を見ると、統合と無関係な `mcp.context7.com` 等にも `connect_rejected` が出ており、「Jev固有の遮断」ではなく sandbox 全体の egress ポリシーだと切り分けられた。WebSearch のスニペットは断片的ながら参照可能だった。唯一有効だった手段: ベンダー公式の Claude Code プラグイン (`claude plugin marketplace add typesafe-ai/skills` + `claude plugin install typesafe@typesafe-ai`) をインストールし、ローカルのプラグインキャッシュ (`~/.claude/plugins/cache/...`) に展開された `SKILL.md`/`README.md` を直接読む方法 — WebFetch経由の断片的な情報より、質問プリミティブの仕様やフィールドの意味について遥かに具体的な情報が得られた。**対処 (実際に配線した設計)**: (a) 推測せざるを得ないHTTPワイヤーフォーマット (リクエスト/レスポンスのフィールド対応) を `tools/tool_jev.py::_jev_request` という**1関数だけ**に閉じ込め、確認すべきドキュメントページを引用するTODOコメントを残す。(b) `ARMS_LIVE_TESTS=1` でのみ動く実ネットワーク経由のliveテストを追加し、実際にネットワークへ到達できるユーザーの実機で初めて実装を検証できるゲートとして機能させる (Category C の「課金・副作用のあるテストはオプトインの後ろに置く」作法をそのまま転用)。(c) ベースURLの環境変数は「もっともらしいURLを決め打ちで埋める」のではなく既定を空文字にし、未設定時は明確な設定エラーで落とす — 誤ったホストへ静かに投げ続けるより、起動時に気付ける形にする。**一般化**: 新しい外部APIをドキュメント不到達のまま実装せざるを得ないときは、推測箇所を最小の1関数に隔離し、検証はユーザーの実機でのlive testゲートに委ね、設定値は「もっともらしい推測」より「明示的なエラー」を選ぶ。**追記 (同日、ユーザーが公式APIリファレンスの実物を貼ってくれた後)**: 推測は実際にエンドポイントパス (`/v1/judgments`と推測→実際は`/v1/systemone`)・リクエスト形状 (`questions`を配列と推測→実際はマップ、必須`model`フィールドを欠落)・レスポンスのフィールド名 (Noulの`probability`と推測→実際は`noul`)・Choice/Scoreの`criteria`必須性、の少なくとも5箇所で外れていたが、隔離設計のおかげで実際の修正は `_jev_request()` 1関数の書き直し+3箇所の呼び出し元の軽微な追従 (map変換・正規化・必須引数チェック) で完結し、Critic/Radarへの配線コード自体は無改修で済んだ。**隔離しておく価値は「当たるかもしれないから」ではなく「外れたときの修正範囲を1関数に閉じ込めるため」にある**ことが実例で裏付けられた
+
+## 一次情報源と二次情報源が食い違うとき
+
+- **ブランドニュース記事 (二次情報源) とベンダー公式ドキュメント (一次情報源) がAPIの型そのものについて食い違うことがある。新しい/変化の速いAPIほど二次情報源は既に古い/簡略化されている可能性を疑う** (2026-09-20、同上)。症状: WebSearchで見つかったForbes JP・PC Watch等の記事は、Jevの "Noul" プリミティブが**真偽値 (boolean)** を返すと説明していた。一方、上記の方法で読めたベンダー公式インストール済み `SKILL.md` には "Probability of yes; no separate confidence" (=浮動小数の確率であり、真偽値でもconfidenceの別フィールドも無い) と明記されていた。真因: ブランド横断ニュースは要約の過程で型を単純化しがちで、公開から間もないAPI (Jevは2026-09-15launch) では特にこの乖離が起きやすい。対処: `jev_noul()` を一次情報源どおり `{"probability": float}` を返す実装にし、`tests/test_tool_jev.py::test_jev_noul_returns_probability_not_boolean` で戻り値の型が明示的に `bool` ではないことをassertする回帰テストを追加した (コードコメントに書くだけでは将来の変更で静かに壊れうるため)。**一般化**: 食い違いを見つけたら一次情報源 (ベンダー公式ドキュメント、公式のClaude Code skill/SDKなど、インストール可能ならなお良い) を優先し、二次情報源のみに依拠しない。そして採用した一次情報源の主張は、コードコメントではなく実際の回帰テストとして固定する — テストにしておけば、後日別の二次情報源に引きずられた変更が入ってもCIが止める

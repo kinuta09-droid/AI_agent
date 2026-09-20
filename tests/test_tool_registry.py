@@ -109,6 +109,7 @@ EXPECTED_PARALLEL_SAFE = {
     "tool_fetch_url",
     "tool_fetch_context",
     "tool_get_tasks",
+    "tool_jev",  # Jev への判断API問い合わせのみ。ファイル書き込み等の副作用なし
 }
 
 # 逆方向の固定: 書き込み/対話を伴うのに parallel_safe が付いたら落とす。

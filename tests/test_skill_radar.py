@@ -439,6 +439,123 @@ def test_run_skill_radar_no_comment_skips_ai_fit_call():
     print("✅ [9b] run_skill_radar: comment=False は evaluate_fit_ja を呼ばない")
 
 
+# ---------------------------------------------------------
+# [10] evaluate_fit_jev / fit_engine="jev" (Jev/TypeSafe AI 版 AI適合度判定)
+# ---------------------------------------------------------
+
+def test_evaluate_fit_jev_returns_fit_with_empty_comment():
+    """evaluate_fit_ja と同じ契約 ({full_name: {"fit":, "comment_ja":}}) を返すが、
+    Jev は文章を生成しないので comment_ja は常に空文字になること。"""
+    candidates = [_repo("a/example", stars=10)]
+    orig = radar.jev_choice
+    radar.jev_choice = lambda state, instructions, criteria: {"choice": "high", "probability": 0.9}
+    try:
+        result = radar.evaluate_fit_jev(candidates, [])
+    finally:
+        radar.jev_choice = orig
+
+    assert result == {"a/example": {"fit": "high", "comment_ja": ""}}, result
+    print("✅ [10a] evaluate_fit_jev: fit を返す (comment_ja は空文字)")
+
+
+def test_evaluate_fit_jev_per_candidate_failure_is_skipped_not_fatal():
+    """1候補の jev_choice が失敗しても、他候補の判定は続行され例外は外に出ないこと。"""
+    candidates = [_repo("a/broken", stars=5), _repo("b/ok", stars=5)]
+
+    def _flaky(state, instructions, criteria):
+        if "a/broken" in state:
+            raise RuntimeError("jev down")
+        return {"choice": "medium", "probability": 0.5}
+
+    orig = radar.jev_choice
+    radar.jev_choice = _flaky
+    try:
+        result = radar.evaluate_fit_jev(candidates, [])  # 例外を投げないこと
+    finally:
+        radar.jev_choice = orig
+
+    assert result == {"b/ok": {"fit": "medium", "comment_ja": ""}}, result
+    print("✅ [10b] evaluate_fit_jev: 1候補の失敗は他候補を巻き込まず、例外も外に出ない")
+
+
+def test_evaluate_fit_jev_unavailable_returns_empty_dict():
+    """tools.tool_jev が不在 (jev_choice=None) でも空dictで継続すること (fit_engine未導入環境)。"""
+    candidates = [_repo("a/example", stars=10)]
+    orig = radar.jev_choice
+    radar.jev_choice = None
+    try:
+        result = radar.evaluate_fit_jev(candidates, [])
+    finally:
+        radar.jev_choice = orig
+    assert result == {}, result
+    print("✅ [10c] evaluate_fit_jev: jev_choice 不在なら空dict")
+
+
+def test_run_skill_radar_fit_engine_jev_reaches_ranking():
+    """fit_engine='jev' でも evaluate_fit_ja と同じ経路でランキングの逆転まで届くこと
+    (test_run_skill_radar_applies_ai_fit_to_ranking の Jev 版)。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        orig_seen, orig_logs, orig_latest = radar.SEEN_PATH, radar.LOGS_DIR, radar.LATEST_JSON
+        orig_collect = radar.collect_candidates
+        orig_jev = radar.jev_choice
+        radar.SEEN_PATH = os.path.join(tmp, "skill_seen_ids.json")
+        radar.LOGS_DIR = tmp
+        radar.LATEST_JSON = os.path.join(tmp, "skill_radar_latest.json")
+        radar.collect_candidates = lambda *a, **k: (
+            [_repo("big/product", stars=80000), _repo("small/plan-helper", stars=10)], 1)
+
+        def _fake_jev_choice(state, instructions, criteria):
+            if "big/product" in state:
+                return {"choice": "not_applicable", "probability": 0.8}
+            return {"choice": "high", "probability": 0.9}
+
+        radar.jev_choice = _fake_jev_choice
+        try:
+            msg = radar.run_skill_radar(top_k=2, save=False, comment=True, fit_engine="jev")
+        finally:
+            radar.collect_candidates = orig_collect
+            radar.jev_choice = orig_jev
+            radar.SEEN_PATH, radar.LOGS_DIR, radar.LATEST_JSON = orig_seen, orig_logs, orig_latest
+
+    assert "small/plan-helper" in msg and "big/product" in msg, msg
+    assert msg.index("small/plan-helper") < msg.index("big/product"), \
+        f"fit_engine='jev' でもAI適合度が反映されずstars優位のままの並びになっている:\n{msg}"
+    print("✅ [10d] run_skill_radar: fit_engine='jev' でもランキングの逆転まで届く")
+
+
+def test_run_skill_radar_default_fit_engine_is_gemini_and_unchanged():
+    """fit_engine を省略した既定動作が、この機能追加前と完全に同じ (evaluate_fit_ja のまま)
+    であることの回帰保証。jev_choice は一切呼ばれない。"""
+    import lib.lib_shared as lib_shared
+    with tempfile.TemporaryDirectory() as tmp:
+        orig_seen, orig_logs, orig_latest = radar.SEEN_PATH, radar.LOGS_DIR, radar.LATEST_JSON
+        orig_collect = radar.collect_candidates
+        orig_jev = radar.jev_choice
+        original_fn = lib_shared.client.models.generate_content
+        radar.SEEN_PATH = os.path.join(tmp, "skill_seen_ids.json")
+        radar.LOGS_DIR = tmp
+        radar.LATEST_JSON = os.path.join(tmp, "skill_radar_latest.json")
+        radar.collect_candidates = lambda *a, **k: (
+            [_repo("big/product", stars=80000), _repo("small/plan-helper", stars=10)], 1)
+        lib_shared.client.models.generate_content = (
+            lambda model, contents: _FakeResp(
+                '[{"full_name": "big/product", "fit": "not_applicable", "comment_ja": ""}, '
+                '{"full_name": "small/plan-helper", "fit": "high", "comment_ja": ""}]'))
+        jev_called = []
+        radar.jev_choice = lambda *a, **k: jev_called.append(1)
+        try:
+            msg = radar.run_skill_radar(top_k=2, save=False, comment=True)  # fit_engine省略
+        finally:
+            radar.collect_candidates = orig_collect
+            radar.jev_choice = orig_jev
+            lib_shared.client.models.generate_content = original_fn
+            radar.SEEN_PATH, radar.LOGS_DIR, radar.LATEST_JSON = orig_seen, orig_logs, orig_latest
+
+    assert jev_called == [], "fit_engine省略時にjev_choiceが呼ばれている (既定挙動が変わっている)"
+    assert msg.index("small/plan-helper") < msg.index("big/product"), msg
+    print("✅ [10e] run_skill_radar: fit_engine省略時は従来どおりGemini経路のみ (jev不使用)")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
