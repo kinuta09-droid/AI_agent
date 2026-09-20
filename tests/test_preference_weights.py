@@ -31,7 +31,14 @@ def check(name: str, cond: bool, detail: str = ""):
         print(f"  ❌ {name} — {detail}")
 
 
-NOW = datetime.datetime(2026, 8, 21, 12, 0, 0)
+# 絶対日時 (例: datetime(2026, 8, 21, 12, 0, 0)) を固定していると、
+# engagement_context_block/read_events (lib/engagement_log.py) は now=NOW を
+# 注入できず内部で実際の datetime.now() を使うため、実行日が積み重なって
+# NOWからdays日 (既定30日) を過ぎた瞬間にテストが無言で壊れる「時限爆弾」になる
+# (2026-09-20、Aug 21固定値がちょうど30日超過して[7]が赤くなった実例)。
+# 実行時刻からの相対値にすれば、キャリブレーション対象のwindow(30日)より
+# 十分内側に収まり続け、日付経過で壊れることがなくなる。
+NOW = datetime.datetime.now() - datetime.timedelta(days=1)
 _TS = NOW.strftime("%Y-%m-%dT%H:%M:%S")
 
 
