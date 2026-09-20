@@ -406,9 +406,15 @@ class PostToXView(AllowedUserView):
 
     @discord.ui.button(label="🐦 Xに投稿する", style=discord.ButtonStyle.primary)
     async def post(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 二重クリックによる二重課金・二重投稿を防ぐため、実行前にボタンを無効化する
-        # (NotePromotionViewの_promo_runningと違い、この操作は1メッセージにつき
-        # ボタン1個・専用インスタンスなので、disabled化だけで足りる)。
+        # 二重クリックによる二重課金・二重投稿を防ぐガード。button.disabled の
+        # チェックとセットの間に await を挟まない (NotePromotionViewの_promo_running
+        # と同じ理由: 後に立てると2回目のクリックが1回目の defer/edit_message 中に
+        # 割り込みチェックをすり抜ける、という既知のgrill指摘と同型)。
+        if button.disabled:
+            await interaction.response.send_message(
+                "⏳ この投稿は処理中か、既に投稿済みです。", ephemeral=True
+            )
+            return
         button.disabled = True
         await interaction.response.edit_message(view=self)
 
