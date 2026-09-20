@@ -349,9 +349,12 @@ async def cmd_paper_digest(interaction: discord.Interaction, index: int = 1,
     # docling の変換 + Gemini 2回で数分かかりうる。defer を先に返さないと
     # interaction token が3秒で切れる (skill discord-bot-patterns)。
     await interaction.response.defer()
+    sns_draft: dict = {}
     try:
         run_paper_digest = _import_paper_digest()
-        result = await asyncio.to_thread(run_paper_digest, index, arxiv_id, "", mode)
+        result = await asyncio.to_thread(
+            run_paper_digest, index, arxiv_id, "", mode, True, True, sns_draft
+        )
     except Exception as e:
         result = log_command_error("/paper-digest", e, "❌ Paper Digest Error")
 
@@ -365,6 +368,22 @@ async def cmd_paper_digest(interaction: discord.Interaction, index: int = 1,
         await _send_with_fallback(interaction, result, title="Paper Digest", emoji="📄", file=file)
     else:
         await interaction.followup.send(result[:2000])
+
+    # 生成に成功していれば、X投稿ツール(tools/tool_twitter_post.py)への導線を
+    # ボタンで出す。課金が発生するため自動投稿はせず、人間がボタンを押した時だけ
+    # 実行する (commands/bot_views.PostToXView のdocstring参照)。
+    sns_text = sns_draft.get("text", "")
+    if sns_text and interaction.channel is not None:
+        from commands import bot_views
+        view = bot_views.PostToXView(sns_text)
+        try:
+            msg = await interaction.channel.send(
+                "🐦 上記のXティザー投稿下書きをそのままXに投稿できます (課金が発生します):",
+                view=view,
+            )
+            view.message = msg
+        except discord.HTTPException as e:
+            print(f"[PaperDigest] Warning: failed to send X post button: {e}")
 
 
 def _import_skill_digest():
