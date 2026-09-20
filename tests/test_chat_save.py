@@ -16,6 +16,7 @@ tests/test_idea_brainstorm.py と同じ AsyncMock ベースの偽物を使う。
 実行: py tests/test_chat_save.py
 """
 import asyncio
+import datetime
 import os
 import sys
 import time
@@ -199,6 +200,71 @@ def test_idle_archive_minutes_is_15():
     _check("8 IDLE_ARCHIVE_MINUTES == 15", chat_mod.IDLE_ARCHIVE_MINUTES == 15)
 
 
+def _stale_session(history):
+    return {
+        "history": history,
+        "last_activity": datetime.datetime.now()
+        - datetime.timedelta(minutes=chat_mod.IDLE_ARCHIVE_MINUTES + 1),
+    }
+
+
+async def _run_idle_loop_preserves_turns_not_met():
+    """turns不足のSkippedは「未判定」であり畳んではいけない — 畳むと1往復で
+    15分放置される会話が永久にターン数リセットされ続け、一度もVaultに保存
+    されなくなるバグの回帰確認 (grillで検出)。"""
+    user_id = 9
+    original = _make_history(2)  # 1往復
+    chat_mod._chat_sessions[user_id] = _stale_session(list(original))
+    try:
+        with patch.object(
+            chat_mod, "archive_chat_session",
+            lambda h, lenient=False: "Skipped: turns=1 (閾値2未満)",
+        ):
+            await chat_mod._idle_archive_loop.coro()
+        _check(
+            "11 turns不足のSkippedはhistoryが温存される (次回に持ち越して閾値到達を待つ)",
+            chat_mod._chat_sessions[user_id]["history"] == original,
+            detail=f"history={chat_mod._chat_sessions[user_id]['history']}",
+        )
+    finally:
+        chat_mod._chat_sessions.pop(user_id, None)
+
+
+async def _run_idle_loop_discards_on_success():
+    user_id = 10
+    chat_mod._chat_sessions[user_id] = _stale_session(_make_history(4))
+    try:
+        with patch.object(
+            chat_mod, "archive_chat_session",
+            lambda h, lenient=False: "Success: Archived chat session to [[Foo]]",
+        ):
+            await chat_mod._idle_archive_loop.coro()
+        _check(
+            "12 Successではhistoryが畳まれる",
+            chat_mod._chat_sessions[user_id]["history"] == [],
+        )
+    finally:
+        chat_mod._chat_sessions.pop(user_id, None)
+
+
+async def _run_idle_loop_preserves_on_error():
+    user_id = 11
+    original = _make_history(4)
+    chat_mod._chat_sessions[user_id] = _stale_session(list(original))
+    try:
+        with patch.object(
+            chat_mod, "archive_chat_session",
+            lambda h, lenient=False: "Error: Gemini budget exceeded",
+        ):
+            await chat_mod._idle_archive_loop.coro()
+        _check(
+            "13 Error文字列でもhistoryが温存される (/save の非対称設計と同じ)",
+            chat_mod._chat_sessions[user_id]["history"] == original,
+        )
+    finally:
+        chat_mod._chat_sessions.pop(user_id, None)
+
+
 async def _run_lenient_flag_passed():
     """/save は archive_chat_session に lenient=True を渡すこと (雑談スキップ回避の要)。"""
     user_id = 6
@@ -271,6 +337,9 @@ def main():
     asyncio.run(_run_lenient_flag_passed())
     asyncio.run(_run_lock_serializes_concurrent_saves())
     test_idle_archive_minutes_is_15()
+    asyncio.run(_run_idle_loop_preserves_turns_not_met())
+    asyncio.run(_run_idle_loop_discards_on_success())
+    asyncio.run(_run_idle_loop_preserves_on_error())
 
 
 if __name__ == "__main__":

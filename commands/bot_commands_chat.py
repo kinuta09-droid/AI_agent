@@ -135,9 +135,15 @@ async def _idle_archive_loop():
                 print(f"[Chat] Idle archive (user={user_id}): {result}")
             except Exception as e:
                 log_command_error("chat idle-archive", e)
-            # 成否に関わらず畳む — Skipped/Error でも snapshot 分は再判定し続けても
-            # 無駄なだけ (turns は増えないので無害)。
-            session["history"] = session["history"][len(snapshot):]
+                result = None
+            # 実際にLLM判定が完了した場合 (Success / "LLM judged not worth saving")
+            # のみ畳む。"turns=N (閾値未満)" は「まだ判定できるだけの量が無い」という
+            # 未判定状態であり、次にメッセージが届けばターン数が増えて閾値を超えうる。
+            # ここで無条件に畳むと、15分以内に1往復しか無い会話が続く限りターン数が
+            # 毎回リセットされ閾値に永久到達できず、一度もVaultに保存されない
+            # (grillで検出。/save の Error 時温存と同じ非対称設計を Skipped 側にも適用)。
+            if result is not None and not is_failure_result(result) and not result.startswith("Skipped: turns="):
+                session["history"] = session["history"][len(snapshot):]
 
 
 def start_idle_archive_loop():
