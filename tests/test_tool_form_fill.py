@@ -514,7 +514,11 @@ def test_centered_text_origin_centers_both_axes():
     横方向は文字列幅の半分ぶん、縦方向はフォントのascender/descenderを使って
     (単純に箱の中央をベースラインにすると下寄りに見えるため) 中央に来ることを確認する。
     """
-    font = fitz.Font(fontfile=form_fill.FORM_FILL_FONT_PATH)
+    # FORM_FILL_FONT_PATH (既定=明朝体) を直接使うと、それが実在しない環境
+    # (例: yumin.ttf の無い GitHub Actions Windows ランナー) で例外になる。
+    # render_pdf 自身も _resolve_font() 経由でフォールバックする設計
+    # (test_render_pdf_uses_mincho_font と同じ理由) なので、テストも同じ解決経路を使う。
+    font = fitz.Font(fontfile=form_fill._resolve_font())
     box = {"x": 100, "y": 200, "w": 300, "h": 60}
     scale = 1.0
     text = "テスト"
