@@ -25,4 +25,5 @@ rapidocr  # tools/tool_form_fill.py (印字ラベルのローカルOCR、pip完�
 onnxruntime  # tools/tool_form_fill.py (rapidocrの推論エンジン。rapidocr自体は同梱せずImportErrorになることをCIで実測、明示的な依存として追加)
 PyMuPDF  # tools/tool_form_fill.py (fitz、PDFへのテキスト重ね書き出力)
 Flask  # tools/tool_form_fill.py (記入前レビュー画面のローカルサーバ、localhost限定)
+PyYAML  # tools/tool_article_project.py (管理ノートのfrontmatter読み書き。他依存の推移依存で入っていたがCI用に明示)
 requests-oauthlib  # tools/tool_twitter_post.py (X API v2 OAuth1.0a。google-auth-oauthlibの推移依存で入っていたがCI用に明示)

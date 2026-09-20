@@ -91,7 +91,7 @@ LEARNING_DB_ARCHIVE_PATH = os.path.join(PROJECT_ROOT, "learning_db_archive.jsonl
 PERFORMANCE_DASHBOARD_PATH = os.path.join(VAULT_ROOT, "Dev_Logs", "Agent_Performance.md")
 
 # 除外したいフォルダ
-EXCLUDE_DIRS = {'.git', '.obsidian', 'Dev_Logs', 'Trash'}
+EXCLUDE_DIRS = {'.git', '.obsidian', 'Dev_Logs', 'Trash', 'ArticleProjects'}
 
 # Gemini 共通文体ルール（ニュース／キュレーション等で共有）
 EDITORIAL_STYLE_RULES = """【文体ルール】

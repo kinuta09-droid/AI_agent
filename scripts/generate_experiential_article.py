@@ -73,14 +73,50 @@ def extract_points_and_questions(draft_text: str) -> list:
         print(f"\n[エラー] 要点の抽出に失敗しました: {e}")
         return []
 
-def generate_final_article(draft_text: str, qa_pairs: list) -> str:
-    """下書きとQ&Aの回答（文体）を元に最終的な記事を生成する"""
-    
+_PERSONAL_INFO_PROMPT_RULE = (
+    "[参考資料]に個人を特定できる情報（住所・電話番号・メールアドレス・家族/友人の実名・"
+    "勤務先の詳細・SNSアカウント等）が含まれていても、記事に転記しないこと。"
+    "ただし本人がインタビューで語った体験談自体はこの制約の対象外で、主題として自由に使ってよい。"
+)
+
+
+def _build_reference_material_block(reference_material: str) -> str:
+    if not reference_material:
+        return ""
+    return (
+        f"\n[参考資料]\n{reference_material}\n\n"
+        "[参考資料の扱いに関する絶対条件]\n"
+        "- 参考資料に書かれた事実・数値・エピソードのみを情報源として使ってよく、"
+        "資料にない体験や数値を本人の体験であるかのように創作しないこと。\n"
+        "- 資料から採った記述には文末に出典 `[[ファイル名]]` を付けること。"
+        "本人のQ&A回答由来の体験談部分には出典を付けない。\n"
+        f"- {_PERSONAL_INFO_PROMPT_RULE}\n"
+    )
+
+
+def _build_audience_block(audience: str) -> str:
+    if not audience:
+        return ""
+    return f"\n[想定読者]\n{audience}\n"
+
+
+def generate_final_article(draft_text: str, qa_pairs: list, reference_material: str = "", audience: str = "") -> str:
+    """下書きとQ&Aの回答（文体）を元に最終的な記事を生成する。
+
+    reference_material（Vault検索で採用した参考資料、既定は空文字＝従来通りの下書きのみ）を
+    渡すと、出典明示・個人情報転記禁止の制約付きで記事にその内容を織り込む。
+    audience（想定読者、既定は空文字）を渡すと、その読者に向けた説明の粒度・専門用語の
+    かみ砕き方を調整する。
+    """
+
     qa_text = ""
     for idx, qa in enumerate(qa_pairs, 1):
         qa_text += f"\n【ポイント{idx}: {qa['point']}】\n"
         qa_text += f"質問: {qa['question']}\n"
         qa_text += f"ユーザーの回答: {qa['answer']}\n"
+
+    reference_block = _build_reference_material_block(reference_material)
+    audience_block = _build_audience_block(audience)
 
     prompt = f"""
 あなたはプロのライターですが、今回は「ゴーストライター」として完全にユーザー自身になりきって記事を執筆してください。
@@ -92,11 +128,13 @@ def generate_final_article(draft_text: str, qa_pairs: list) -> str:
 
 [深掘りインタビューの回答]
 {qa_text}
-
+{reference_block}
+{audience_block}
 [執筆の絶対条件]
 1. 【文体の完全模倣】: インタビューの回答テキストに含まれる「ユーザー本人の言葉遣い、トーン、語尾（です・ます、だ・である等の判定）、個人的な癖」を分析し、記事全体の文体をそれに完全に一致させてください。AI特有の無機質なまとめ文章や、過剰に劇的な表現は避けてください。
 2. 【体験の統合】: 回答で得られた具体的なエピソードや「その時どう感じたか」という感情の動きを、記事のメインコンテンツとして自然に織り交ぜてください。
 3. 【構成】: 読者が惹きつけられるタイトル（# ﾀｲﾄﾙ）、導入、本文、まとめの構成をMarkdown形式で出力してください。
+4. 【読者への配慮】: [想定読者]が指定されている場合、その読者が理解できる粒度で専門用語をかみ砕いてください。
 """
     try:
         print("\n⏳ 記事を執筆しています... (これには少し時間がかかります)")
@@ -109,16 +147,68 @@ def generate_final_article(draft_text: str, qa_pairs: list) -> str:
         print(f"\n[エラー] 記事の生成に失敗しました: {e}")
         return ""
 
+def extract_missing_info_questions(goal: str, reference_material: str = "", audience: str = "") -> list:
+    """目標と採用済み参考資料を踏まえ、記事完成に不足する体験・具体情報を質問として抽出する。
+
+    extract_points_and_questions（下書きを深掘りする質問）とは目的が異なる
+    （目標達成に足りない情報の洗い出し）が、出力形式は完全に揃えてあり、
+    既存のQ&A送信・回答記録ロジックをそのまま流用できる。
+    """
+    reference_block = f"\n[採用した参考資料]\n{reference_material}\n" if reference_material else ""
+    audience_block = _build_audience_block(audience)
+    prompt = f"""
+あなたはプロの編集者であり、インタビュアーです。
+以下の[目標]の記事を完成させるために、まだ足りていない「本人にしか語れない体験・具体的なエピソード・感情」を
+洗い出すための質問を3〜5個作成してください。
+{reference_block}
+{audience_block}
+[目標]
+{goal}
+
+[出力要件]
+以下の構造のJSON配列（リスト）のみを出力してください。Markdownバッククォート(```json ... ```)は付けないでください。
+[
+  {{
+    "point": "抽出した要点の短い見出し（例: 技術の導入背景）",
+    "question": "ユーザーへの質問（例: この目標に取り組もうと決断したとき、どんな焦りや期待がありましたか？）"
+  }},
+  ...
+]
+"""
+    try:
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+        )
+        text = response.text.strip()
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+
+        return json.loads(text.strip())
+    except Exception as e:
+        print(f"\n[エラー] 不足情報の質問抽出に失敗しました: {e}")
+        return []
+
+
 from tools.tool_client_review import evaluate_deliverable
 from lib.lib_persona import build_persona_prompt
 
-def refine_article(draft_article: str, draft_text: str, qa_pairs: list, evaluation_result: dict, persona_id: str = "writing") -> str:
+def refine_article(draft_article: str, draft_text: str, qa_pairs: list, evaluation_result: dict, persona_id: str = "writing", reference_material: str = "", audience: str = "") -> str:
     qa_text = ""
     for idx, qa in enumerate(qa_pairs, 1):
         qa_text += f"\n【ポイント{idx}: {qa['point']}】\n"
         qa_text += f"ユーザーの回答: {qa['answer']}\n"
 
     persona_prompt = build_persona_prompt(persona_id)
+    # generate_final_article と同じ参考資料ブロック(本文・出典維持・創作禁止・個人情報禁止の
+    # 全条件込み)を渡す。推敲時に資料本文そのものが見えないと、出典を保てているか・
+    # 資料にない記述を混入させていないかをLLMが判定しようがない。
+    reference_block = _build_reference_material_block(reference_material)
+    audience_block = _build_audience_block(audience)
 
     prompt = f"""
 あなたはプロフェッショナルな編集者であり、同時に優れたゴーストライターです。
@@ -131,7 +221,7 @@ def refine_article(draft_article: str, draft_text: str, qa_pairs: list, evaluati
 {draft_article}
 
 【プロ編集者からのフィードバック】
-・平均スコア: {evaluation_result.get('scores', {{}}).get('average', 0)} / 10.0
+・平均スコア: {evaluation_result.get('scores', {}).get('average', 0)} / 10.0
 ・フィードバック: {evaluation_result.get('feedback', '')}
 ・最優先改善点: {evaluation_result.get('priority_improvement', '')}
 
@@ -139,7 +229,9 @@ def refine_article(draft_article: str, draft_text: str, qa_pairs: list, evaluati
 1. **ユーザーの生々しい文体の完全維持**: ユーザーの生の言葉（以下の「Q&A回答」）の文脈、言葉遣い（です・ます等の語尾、一人称）、感情表現は**絶対に崩さない**でください。フィードバックを受けても「AI臭い美辞麗句（革新的な〜など）」は絶対に追加しないこと。
 2. フィードバックで指摘された構成の甘さ、説得力の弱さ、読者のペインポイント解決に関する部分のみを、ユーザーのトーンに合わせた自然な形で補強してください。
 3. Markdown形式で出力し、挨拶や「修正しました」などの前置き・後書きは一切不要です。完成した記事本文のみを出力してください。
-
+4. 参考資料に基づく記述の出典 `[[ファイル名]]` を推敲後も維持し、新たに資料にない体験・数値を創作しないこと。
+{reference_block}
+{audience_block}
 【ユーザー自身の生の言葉（Q&A回答） - 文体のベースとして必ず維持すること】
 {qa_text}
 """
@@ -153,30 +245,74 @@ def refine_article(draft_article: str, draft_text: str, qa_pairs: list, evaluati
         print(f"\n[エラー] 記事の推敲に失敗しました: {e}")
         return draft_article
 
-def run_article_reflection_loop(draft_article: str, draft_text: str, qa_pairs: list, max_loops: int = 2) -> str:
+def run_article_reflection_loop(draft_article: str, draft_text: str, qa_pairs: list, max_loops: int = 2, reference_material: str = "", audience: str = "") -> str:
     """初稿に対して自己評価と推敲のループを実行し、最終版を返す"""
     current_article = draft_article
     job_description = f"読者の共感を呼ぶ、ユーザーの等身大の体験に基づいた自分らしい体験談記事の作成。\n元の下書き: {draft_text[:500]}..."
-    
+    if reference_material:
+        job_description += f"\n\n[審査基準への追加事項] {_PERSONAL_INFO_PROMPT_RULE}"
+    if audience:
+        job_description += f"\n[想定読者] {audience}"
+
     for i in range(max_loops):
         print(f"[Reflection] Loop {i+1} starting...")
         eval_result = evaluate_deliverable(current_article, job_description, persona_id="writing")
-        
+
         status = eval_result.get("status", "fail")
         avg_score = eval_result.get("scores", {}).get("average", 0)
         print(f"[Reflection] Score: {avg_score} ({status})")
         print(f"[Reflection] Feedback: {eval_result.get('feedback', '')}")
-        
+
         if status == "pass" or avg_score >= 8.5:
             print("[Reflection] Passed! Quality is sufficient.")
             break
-            
+
         if i < max_loops - 1:
             print("[Reflection] Revising based on feedback...")
-            current_article = refine_article(current_article, draft_text, qa_pairs, eval_result, persona_id="writing")
-            
+            current_article = refine_article(current_article, draft_text, qa_pairs, eval_result, persona_id="writing", reference_material=reference_material, audience=audience)
+
     return current_article
-    
+
+
+def apply_user_revision(article: str, revision_request: str, reference_material: str = "", audience: str = "") -> str:
+    """完成記事へのユーザーの自由文による修正依頼を反映する単発修正。
+
+    refine_article(AIの自己評価フィードバックに基づく全面推敲)とは異なり、ユーザーが
+    直接指示した変更点だけを反映する。評価・推敲ループ(evaluate_deliverable/
+    run_article_reflection_loop)は呼ばない — ユーザーの直接指示を汎用品質フィードバックで
+    上書きしてしまうと、せっかく本人の言葉で確定した記事が意図せず書き換わるため。
+    """
+    reference_block = _build_reference_material_block(reference_material)
+    audience_block = _build_audience_block(audience)
+
+    prompt = f"""
+あなたはプロの編集者です。以下の[完成記事]に対して、ユーザーから[修正依頼]が届きました。
+指示された変更点だけを反映し、それ以外の文体・構成・出典表記は一切変更しないでください。
+
+[完成記事]
+{article}
+
+[修正依頼]
+{revision_request}
+{reference_block}
+{audience_block}
+[修正の絶対条件]
+1. [修正依頼]で指示された箇所のみを変更し、指示されていない部分の文章・語順・見出し構成は元のまま維持すること。
+2. ユーザー本人の言葉遣い・文体は変更しないこと。
+3. 資料由来の記述に付いている出典 `[[ファイル名]]` は、その記述を残す限り維持すること。
+4. Markdown形式で出力し、挨拶や「修正しました」などの前置き・後書きは一切不要です。完成した記事本文のみを出力してください。
+"""
+    try:
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+        )
+        return response.text.strip()
+    except Exception as e:
+        print(f"\n[エラー] 記事の修正に失敗しました: {e}")
+        return article
+
+
 def main():
     print("="*60)
     print(" 体験談記事化 ジェネレーター (Generate Experiential Article) ")
