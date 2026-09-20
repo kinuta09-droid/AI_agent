@@ -11,6 +11,7 @@ import datetime
 import inspect
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from enum import Enum
 
 from google.genai import types
 
@@ -938,12 +939,33 @@ def _summarize_results(results: list) -> str:
     return "\n".join(parts)
 
 
+class CriticStatus(str, Enum):
+    """critique_results() の判定結果 (str派生なので JSON化・既存の文字列比較と両方互換)。
+
+    EVAL_ERROR は Gemini呼び出し自体が失敗した(=Criticが一度も評価できなかった)ことを
+    表す、OK/NEEDS_REVISION/FAILED とは独立した第4の状態。以前は例外時に
+    `{"status": "ok", ...}` を返しており、「未評価」が「目標達成と判定された」と
+    区別つかなかった (learning_db の critique_status が実態と食い違って記録される
+    無言の死。tool_session_archive.archive_chat_session の "Skipped: turns=" バグと
+    同型、2026-08-31 grillで検出)。
+    """
+    OK = "ok"
+    NEEDS_REVISION = "needs_revision"
+    FAILED = "failed"
+    EVAL_ERROR = "eval_error"
+
+    def __str__(self) -> str:
+        # Enum既定の __str__ は "CriticStatus.OK" を返す (str派生でもEnum側が勝つ)。
+        # ログ出力 (print(f"...{status}...")) がそのまま読めるよう value を返す。
+        return self.value
+
+
 def critique_results(user_query: str, plan: list, results: list) -> dict:
     """実行結果を評価し、必要なら修正計画を返す。
 
     Returns:
         {
-            "status": "ok" | "needs_revision" | "failed",
+            "status": CriticStatus,
             "feedback": "フィードバック内容",
             "revised_plan": [...] (needs_revision の場合のみ)
         }
@@ -1018,11 +1040,19 @@ def critique_results(user_query: str, plan: list, results: list) -> dict:
 - status=failed: 根本的に失敗、リトライ不可"""
 
     try:
-        return _gemini_json_call(
+        result = _gemini_json_call(
             MODEL_NAME, prompt, _build_critique_schema(valid_tools)
         )
+        # CriticStatus(...) は未知の値 (スキーマ非経由のフォールバック応答が
+        # 壊れている場合等) だと ValueError を投げ、下の except で EVAL_ERROR に
+        # 落ちる — "status" 欠落時の下流 KeyError もここで同様に吸収される。
+        result["status"] = CriticStatus(result["status"])
+        return result
     except Exception as e:
-        return {"status": "ok", "feedback": f"Critic evaluation failed ({e}), accepting results."}
+        return {
+            "status": CriticStatus.EVAL_ERROR,
+            "feedback": f"Critic evaluation failed ({e}); results accepted without verification.",
+        }
 
 
 MAX_REVISIONS = 1  # 品質向上のため1回に制限（2回は時間浪費の原因）
@@ -1110,10 +1140,10 @@ def run_plan_and_execute(user_query: str, step_callback=None,
         last_critique = critique
         print(f"[P&E] 🔍 Critic: {critique.get('status')} - {critique.get('feedback', '')[:100]}")
 
-        if critique["status"] == "ok":
+        if critique["status"] == CriticStatus.OK:
             _log(critique)
             return _final_report(user_query, all_results, critique)
-        elif critique["status"] == "needs_revision":
+        elif critique["status"] == CriticStatus.NEEDS_REVISION:
             revised = critique.get("revised_plan", [])
             if revised:
                 plan = revised
@@ -1121,9 +1151,21 @@ def run_plan_and_execute(user_query: str, step_callback=None,
             else:
                 _log(critique)
                 return _final_report(user_query, all_results, critique)
-        else:
+        elif critique["status"] == CriticStatus.FAILED:
             _log(critique)
             return f"タスク失敗: {critique.get('feedback', 'Unknown error')}"
+        elif critique["status"] == CriticStatus.EVAL_ERROR:
+            # Criticが一度も評価できなかった場合。_final_report はstep単位の成否
+            # (results) だけで✅/⚠️/❌を決めるのでここでfail-closedにする必要は
+            # 無いが、critique_status には "eval_error" が残るため learning_db 上
+            # で「Criticがokと判定した」と誤読されなくなる (今回の修正の核心)。
+            _log(critique)
+            return _final_report(user_query, all_results, critique)
+        else:
+            # CriticStatus の全メンバーを上で網羅している前提。ここに来るのは
+            # 新しい状態を足したのに分岐を更新し忘れた場合だけなので、無言で
+            # 素通りさせず落とす (Category A「無言の死」の再発防止)。
+            raise NotImplementedError(f"Unhandled critique status: {critique['status']!r}")
 
     _log(last_critique)
     return _final_report(user_query, all_results, last_critique)

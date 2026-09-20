@@ -330,6 +330,88 @@ def test_execute_plan_defaults_to_empty_context_when_omitted():
     print("✅ execute_plan: initial_context省略時は空contextのまま (後方互換)")
 
 
+# ---------------------------------------------------------
+# CriticStatus: EVAL_ERROR が OK に丸め込まれないこと
+# ---------------------------------------------------------
+
+def test_critique_status_str_enum_behaves_like_plain_string():
+    """CriticStatus は str派生なので、既存コードの `status == "ok"` 型の比較や
+    log_execution 経由の json.dump もそのまま通ることを確認する。"""
+    assert engine.CriticStatus.OK == "ok"
+    assert engine.CriticStatus.EVAL_ERROR == "eval_error"
+    assert str(engine.CriticStatus.EVAL_ERROR) == "eval_error", (
+        "Enum既定の __str__ だと 'CriticStatus.EVAL_ERROR' になりログが読みにくい")
+    assert json.dumps({"status": engine.CriticStatus.EVAL_ERROR}) == '{"status": "eval_error"}'
+    print("✅ CriticStatus: str派生としての互換性 (==比較 / str() / JSON化)")
+
+
+def test_critique_results_distinguishes_eval_error_from_ok():
+    """Critic呼び出し自体が例外を投げた場合、status は EVAL_ERROR になり OK とは
+    区別できること。2026-08-31以前は例外時に status="ok" を返しており、
+    「一度も評価できなかった」が「目標達成と判定された」に化けていた
+    (tool_session_archive.archive_chat_session の "Skipped: turns=" 未判定バグと
+    同型、grillで検出して修正)。"""
+    orig_get_tools = engine._get_tools_config
+    orig_json_call = engine._gemini_json_call
+    engine._get_tools_config = lambda: (
+        [{"name": "tool_probe", "usage": "tool_probe()", "description": "probe"}], {})
+
+    def _boom(*a, **kw):
+        raise RuntimeError("Gemini budget exceeded")
+
+    engine._gemini_json_call = _boom
+    try:
+        results = [{"step": 1, "task": "x", "tool": "tool_probe",
+                    "success": True, "observation": "ok"}]
+        critique = engine.critique_results("query", [], results)
+        assert critique["status"] == engine.CriticStatus.EVAL_ERROR, critique
+        assert critique["status"] != engine.CriticStatus.OK, critique
+        assert "Gemini budget exceeded" in critique["feedback"], critique
+    finally:
+        engine._get_tools_config = orig_get_tools
+        engine._gemini_json_call = orig_json_call
+    print("✅ critique_results: Critic呼び出し失敗時は EVAL_ERROR (OKに丸め込まれない)")
+
+
+def test_run_plan_and_execute_records_eval_error_not_ok_in_learning_db():
+    """critique_results が EVAL_ERROR を返した実行は、learning_db の
+    critique_status にも "eval_error" が記録され "ok" に化けないこと。
+    (壊れると Agent_Performance.md の成功率が『Criticが一度も評価していない
+    実行』込みで水増しされる — Category A の "水増し" バグと同型のリスク。)"""
+    import contextlib
+    import io as _io
+
+    plan = [{"step": 1, "task": "検索", "tool": "tool_x"}]
+    success_step = {"step": 1, "task": "検索", "tool": "tool_x",
+                     "observation": "Success: ok", "success": True}
+
+    orig = {name: getattr(engine, name) for name in
+            ("generate_plan", "execute_plan", "critique_results",
+             "log_execution", "_generate_final_summary")}
+    logged_critiques = []
+    engine.generate_plan = lambda q, session_context="": {
+        "plan": list(plan), "expected_outcome": "x"}
+    engine.execute_plan = lambda p, cb=None, initial_context=None: {
+        "success": True, "results": [dict(success_step)], "final_output": ""}
+    engine.critique_results = lambda *a: {
+        "status": engine.CriticStatus.EVAL_ERROR,
+        "feedback": "Critic evaluation failed (budget exceeded); results accepted without verification."}
+    engine._generate_final_summary = lambda q, r: "## 📋 結論\n取得できました"
+    engine.log_execution = lambda query, plan, results, critique, duration, parallel=None: (
+        logged_critiques.append(critique["status"]))
+
+    try:
+        with contextlib.redirect_stdout(_io.StringIO()):
+            result = engine.run_plan_and_execute("何かして")
+        assert logged_critiques == [engine.CriticStatus.EVAL_ERROR], logged_critiques
+        assert logged_critiques[0] != engine.CriticStatus.OK
+        assert "結論" in result, result
+    finally:
+        for name, func in orig.items():
+            setattr(engine, name, func)
+    print("✅ run_plan_and_execute: EVAL_ERROR が learning_db に ok として紛れ込まない")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
