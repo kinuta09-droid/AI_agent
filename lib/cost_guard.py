@@ -17,13 +17,14 @@ GeminiBudgetExceeded を送出するセーフティネット。メータリン�
   本体のAPI呼び出しを止めてはならない。破損は count 0 扱いで続行する。
 """
 import os
+import sys
 import math
 import datetime
 import threading
 
 from dotenv import load_dotenv
 
-from lib.paths import ENV_PATH, LOGS_DIR
+from lib.paths import ENV_PATH, LOGS_DIR, PROJECT_ROOT
 
 # lib_shared より先に import されても上限値の env を読めるようにする (冪等)
 load_dotenv(ENV_PATH)
@@ -61,6 +62,24 @@ def get_limit(env_var: str, default: int) -> int:
     return max(value, 0)  # 負値は 0 (無効) に丸める
 
 
+# 呼び出し元の特定で読み飛ばすラッパー層 (ここを通って来た呼び出しは、その外側の呼び出し元に帰属させる)
+_WRAPPER_FILES = tuple(os.path.normcase(os.path.join(PROJECT_ROOT, *p)) for p in (
+    ("lib", "cost_guard.py"), ("lib", "lib_shared.py"), ("tools", "tool_jev.py")))
+_ROOT_NC = os.path.normcase(PROJECT_ROOT) + os.sep
+
+
+def _caller_label() -> str:
+    """スタックを遡り、ラッパー層以外で最初に現れるプロジェクト内フレームを "相対パス:関数名" で返す。"""
+    f = sys._getframe(1)
+    while f is not None:
+        fn = os.path.normcase(os.path.abspath(f.f_code.co_filename))
+        if fn.startswith(_ROOT_NC) and fn not in _WRAPPER_FILES:
+            rel = os.path.relpath(fn, os.path.normcase(PROJECT_ROOT)).replace(os.sep, "/")
+            return f"{rel}:{f.f_code.co_name}"
+        f = f.f_back
+    return "unknown"
+
+
 class DailyCounter:
     """日次呼び出しカウンタ (ファイル永続・日付ロールオーバー付き)。
 
@@ -80,7 +99,8 @@ class DailyCounter:
         self._lock = threading.Lock()
 
     def _fresh(self, today: str) -> dict:
-        return {"date": today, "count": 0, "warned": False, "limit_notified": False}
+        return {"date": today, "count": 0, "warned": False, "limit_notified": False,
+                "by_caller": {}}
 
     def _load(self, today: str) -> dict:
         # lib_shared が本モジュールを import するため、循環回避で遅延 import
@@ -92,6 +112,8 @@ class DailyCounter:
         data.setdefault("count", 0)
         data.setdefault("warned", False)
         data.setdefault("limit_notified", False)
+        if not isinstance(data.get("by_caller"), dict):
+            data["by_caller"] = {}
         # bool は int のサブクラスなので明示除外 (count: true が 1 扱いで素通りする穴)
         if (not isinstance(data["count"], int) or isinstance(data["count"], bool)
                 or data["count"] < 0):
@@ -144,6 +166,9 @@ class DailyCounter:
                     )
             else:
                 data["count"] += n
+                # どこが予算を食っているかを後から見るための内訳 (Jev前段ゲート候補の洗い出し、2026-09-21)
+                caller = _caller_label()
+                data["by_caller"][caller] = data["by_caller"].get(caller, 0) + n
                 if (self.limit > 0 and not data["warned"]
                         and data["count"] >= math.ceil(self.limit * self.warn_ratio)):
                     data["warned"] = True

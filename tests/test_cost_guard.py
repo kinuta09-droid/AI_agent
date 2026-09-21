@@ -359,6 +359,34 @@ def test_future_search_blocked_when_counter_full():
     print("✅ test_future_search_blocked_when_counter_full")
 
 
+def test_by_caller_attributes_past_wrappers():
+    """内訳 by_caller は lib_shared のラッパー層を読み飛ばし、実際の呼び出し元に帰属すること。
+    by_caller を持たない旧形式のファイルもそのまま引き継いで加算できること。"""
+    import lib.lib_shared as ls
+    from lib import cost_guard
+
+    root = tempfile.mkdtemp(prefix="cost_guard_by_caller_")
+    path = os.path.join(root, "light.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"date": _TODAY, "count": 2, "warned": False, "limit_notified": False}, f)
+    light = DailyCounter(path=path, limit=0, name="LIGHT-test", notify=False)
+    orig_light, orig_call = cost_guard.GEMINI_LIGHT_COUNTER, ls._original_generate_content
+    try:
+        cost_guard.GEMINI_LIGHT_COUNTER = light
+        ls._original_generate_content = lambda *a, **k: "stub-response"
+        ls.client.models.generate_content(model=ls.MODEL_NAME, contents="x")
+        ls.client.models.generate_content(model=ls.MODEL_NAME, contents="x")
+        data = _read(path)
+        me = "tests/test_cost_guard.py:test_by_caller_attributes_past_wrappers"
+        assert data["count"] == 4, data
+        assert data["by_caller"] == {me: 2}, f"呼び出し元の帰属が違う: {data['by_caller']}"
+    finally:
+        cost_guard.GEMINI_LIGHT_COUNTER = orig_light
+        ls._original_generate_content = orig_call
+        shutil.rmtree(root, ignore_errors=True)
+    print("✅ test_by_caller_attributes_past_wrappers")
+
+
 if __name__ == "__main__":
     tests = [
         test_first_call_creates_file_with_today,
@@ -377,6 +405,7 @@ if __name__ == "__main__":
         test_heavy_falls_back_to_light_when_heavy_exhausted,
         test_heavy_fallback_raises_when_light_also_exhausted,
         test_future_search_blocked_when_counter_full,
+        test_by_caller_attributes_past_wrappers,
     ]
     for t in tests:
         t()
