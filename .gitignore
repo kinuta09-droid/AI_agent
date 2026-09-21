@@ -72,3 +72,8 @@ tmp_web_design/
 # PostToolUseフックが編集のたびに自動再生成するため、追跡すると毎回差分ノイズになる
 docs/codebase-map.html
 docs/codebase-map.json
+
+# Codexデスクトップアプリの外部エージェント設定同期が Claude Code の設定から自動生成するもの (連携は中断中)
+.agents/
+.codex/
+AGENTS.md
