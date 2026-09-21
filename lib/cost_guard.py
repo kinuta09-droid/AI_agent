@@ -232,12 +232,14 @@ X_POST_COUNTER = DailyCounter(
 # --- Jev (TypeSafe AI System One model) 呼び出し回数カウンタ -----------------
 # $0.042/M入力トークン・出力無料と極めて安価だが、Gemini系カウンタと同様
 # 「セーフティネット」として日次上限を持たせる (実行系バグでループした場合の歯止め)。
+# 1回あたり高々~3kトークンなので 5000回/日でも ~$0.6。500 だと A/B 評価1回
+# (約100件×2回) と通常運用が重なっただけで枯渇したため引き上げた (2026-09-21)。
 # Critic クロスチェック (engine_plan_execute._jev_goal_check) と Skill/Paper Radar
 # のオプトイン判断シグナルが共有する単一カウンタ (用途別に分けるほどの実績が無いため)。
 JEV_COUNTER_PATH = os.path.join(LOGS_DIR, "jev_daily_calls.json")
 JEV_COUNTER = DailyCounter(
     path=JEV_COUNTER_PATH,
-    limit=get_limit("DAILY_JEV_CALL_LIMIT", 500),
+    limit=get_limit("DAILY_JEV_CALL_LIMIT", 5000),
     name="Jev API",
 )
 
