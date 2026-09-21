@@ -94,6 +94,17 @@ _install_module_stubs()
 
 import tools.tool_web as tw  # noqa: E402
 
+# dotenv スタブで .env の DAILY_GEMINI_*_LIMIT=0 が読まれず既定200に落ちる一方、
+# lib_shared の予算ラッパーは本番 logs/gemini_*_daily_calls.json を加算し続ける →
+# 本番カウントが200を超えた日だけ赤くなる (test_curate_note_save と同じ罠、2026-09-21再発)。
+# カウンタを一時パス・上限無し・通知無しに差し替えて隔離する。
+import tempfile  # noqa: E402
+from lib import cost_guard as _cg  # noqa: E402
+_counter_dir = tempfile.mkdtemp(prefix="web_test_counter_")
+for _attr in ("GEMINI_LIGHT_COUNTER", "GEMINI_HEAVY_COUNTER"):
+    setattr(_cg, _attr, _cg.DailyCounter(path=os.path.join(_counter_dir, _attr + ".json"),
+                                        limit=0, name=f"test:{_attr}", notify=False))
+
 
 def _reset():
     tw.tavily_client.calls = []
