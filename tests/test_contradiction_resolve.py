@@ -459,7 +459,32 @@ def test_build_contradiction_names_and_links_handles_missing_related():
     print("--- [0] done ---")
 
 
+def test_find_file_in_vault_resolves_subfolder_relpath():
+    """Vault Watcher は 30_Main/Knowledge_Base/X.md を own_name="Knowledge_Base/X" で
+    渡す。旧実装はベース名一致しか見ず常に None → 裁定ボタンが「ノートが見つかりません」。"""
+    with _Vault() as v:
+        sub = os.path.join(v.root, "30_Main", "Knowledge_Base")
+        os.makedirs(sub)
+        target = os.path.join(sub, "NoteX.md")
+        open(target, "w", encoding="utf-8").write("x")
+        other = os.path.join(v.root, "40_Report", "NoteX.md")  # 同名の別ファイル
+        os.makedirs(os.path.dirname(other))
+        open(other, "w", encoding="utf-8").write("y")
+        own_name = build_contradiction_names_and_links("Knowledge_Base/NoteX.md", "")[0]
+        got = _ls.find_file_in_vault(own_name)
+        check("[S1] サブフォルダ相対パスで解決できる", got == target, str(got))
+        check("[S2] Vaultルート相対パスも従来どおり解決",
+              os.path.normpath(_ls.find_file_in_vault("30_Main/Knowledge_Base/NoteX") or "")
+              == target)
+        check("[S3] ベース名だけでも従来どおり見つかる",
+              _ls.find_file_in_vault("NoteX") in (target, other))
+        check("[S4] 末尾一致しないパスは None",
+              _ls.find_file_in_vault("Wrong_Dir/NoteX") is None)
+    print("--- [S] done ---")
+
+
 if __name__ == "__main__":
+    test_find_file_in_vault_resolves_subfolder_relpath()
     test_build_contradiction_names_and_links_handles_missing_related()
     test_queue_contradiction_registers_pending_and_notifies()
     test_queue_contradiction_skips_when_related_note_unresolvable()

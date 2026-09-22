@@ -260,16 +260,26 @@ def save_json(path: str, data):
 
 
 def find_file_in_vault(filename: str) -> str | None:
-    """Vault内でファイルを検索し、見つかった場合はパスを返す"""
+    """Vault内でファイルを検索し、見つかった場合はパスを返す。
+
+    filename はベース名 ("X") でも、Vault内の途中からの相対パス
+    ("Knowledge_Base/X" = 30_Main/Knowledge_Base/X.md) でもよい。後者は
+    Obsidian の wikilink と同じく末尾一致で解決する (Vault Watcher の
+    note_relpath がこの形で渡ってきて、旧実装はベース名一致しか見ず常に None だった)。
+    """
     if not filename.endswith('.md'):
         filename += '.md'
     direct_path = os.path.join(WORK_DIR, filename)
     if os.path.exists(direct_path):
         return direct_path
+    rel = os.path.normpath(filename)
+    base = os.path.basename(rel)
     for root, dirs, files in os.walk(VAULT_ROOT):
         dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
-        if filename in files:
-            return os.path.join(root, filename)
+        if base in files:
+            path = os.path.join(root, base)
+            if rel == base or path.endswith(os.sep + rel):
+                return path
     return None
 
 def resolve_obsidian_links(text: str) -> str:
