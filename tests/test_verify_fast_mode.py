@@ -369,6 +369,16 @@ def test_paths_module_is_the_single_source():
               f"式が {expr!r} — 直書きに戻っている疑い")
 
 
+def test_prod_optional_deps_check_detects_missing():
+    """[7] 本番 `py` での任意依存チェックが、無いものを無いと言う。"""
+    from verify_project import missing_prod_optional_deps as chk
+    got = chk(("json", "no_such_module_arms_xyz"))
+    if got is None:
+        print("  ⏭️  `py` ランチャーが無い環境のため SKIP")
+        return
+    check("[7] 未導入モジュールだけを返す", got == ["no_such_module_arms_xyz"], str(got))
+
+
 if __name__ == "__main__":
     test_fast_skips_only_the_expensive_sections()
     test_fast_actually_fails_on_broken_source()
@@ -377,6 +387,7 @@ if __name__ == "__main__":
     test_hardcoded_data_path_is_blocked()
     test_hardcoded_data_path_forms_and_false_positives()
     test_paths_module_is_the_single_source()
+    test_prod_optional_deps_check_detects_missing()
 
     print("\n" + "=" * 55)
     print(f"PASS: {len(_PASS)} / FAIL: {len(_FAIL)}")

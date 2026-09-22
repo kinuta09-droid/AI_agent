@@ -705,6 +705,7 @@ def run_verification(fast=False):
     run_discord_checks(errors)
     if not fast:
         run_briefing_check(errors, batch_results)
+        run_prod_optional_deps_check()
 
     # 判定
     print("\n" + "="*50)
@@ -881,6 +882,45 @@ def run_briefing_check(errors, results):
         print(f"  ❌ {msg}")
     else:
         print(f"  ✅ Registered: {','.join(registered)}")
+
+
+# 本番 (scriptsrms_core.bat の `py -u main.py`) で使う任意依存。未導入でも
+# 劣化フォールバックが黙って動くため、入れ忘れると誰も気付けない
+# (2026-08-01 docling を antigravity_env にだけ入れて本番が毎回 HTML 抽出に落ちていた)。
+PROD_OPTIONAL_DEPS = ("docling",)
+
+
+def missing_prod_optional_deps(modules=PROD_OPTIONAL_DEPS):
+    """本番と同じ `py` ランチャーで find_spec し、見つからないモジュール名を返す。
+
+    `py` は activate 中の venv (VIRTUAL_ENV) を優先するので、それを外した env で
+    呼ぶ — 外さないと antigravity_env を見て「入っている」と誤判定する。
+    `py` が無い環境 (非Windows) では None。
+    """
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    code = ("import importlib.util,sys;"
+            "print(','.join(m for m in sys.argv[1:] if importlib.util.find_spec(m) is None))")
+    try:
+        r = subprocess.run(["py", "-c", code, *modules], env=env, capture_output=True,
+                           text=True, encoding="utf-8", timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    return [m for m in r.stdout.strip().split(",") if m]
+
+
+def run_prod_optional_deps_check():
+    """[7] 本番 Python の任意依存。警告のみ (CI には入っていないので error にしない)。"""
+    print("\n[7] Checking Optional Deps on Production Python (`py`)...")
+    missing = missing_prod_optional_deps()
+    if missing is None:
+        print("  ⏭️  `py` ランチャーを実行できないため未検査")
+    elif missing:
+        print(f"  ⚠️  未導入: {', '.join(missing)} — 劣化フォールバックで動き続けます。"
+              f"本番で使うなら `py -m pip install` (venv を deactivate した状態で)")
+    else:
+        print(f"  ✅ {', '.join(PROD_OPTIONAL_DEPS)}")
 
 
 def run_discord_checks(errors):
