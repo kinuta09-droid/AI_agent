@@ -64,7 +64,7 @@ def load_xtrend_markdown(filepath: str) -> str:
 
 def extract_top_features(md_text: str, top_n: int = 5) -> list[dict]:
     """
-    Markdownから各機能のデータを抽出し、ARMS親和性スコア上位N件を返す。
+    Markdownから各機能のデータを抽出し、エンゲージメント上位N件を返す。
     スコアは '★★★★★ (5/5)' のような表記から数値を取り出す。
     """
     # ### NN. 機能名 のブロックで分割
@@ -93,6 +93,10 @@ def extract_top_features(md_text: str, top_n: int = 5) -> list[dict]:
         m2 = re.search(r'\((\d)/5\)', diff_raw)
         diff_score = int(m2.group(1)) if m2 else 0
 
+        # engagement_score は Gemini が出力するので "7597.0" 等の揺れを許容する
+        m3 = re.search(r'\d+', get_field('エンゲージメント'))
+        eng_score = int(m3.group()) if m3 else 0
+
         url = get_field('元投稿')
 
         features.append({
@@ -102,12 +106,16 @@ def extract_top_features(md_text: str, top_n: int = 5) -> list[dict]:
             'stack': get_field('技術スタック'),
             'difficulty': diff_score,
             'arms': arms_score,
+            'engagement': eng_score,
             'rationale': get_field('ARMS評価理由'),
             'url': url,
         })
 
-    # ARMS親和性降順 → 難易度昇順（読者が試しやすいものを前に）
-    features.sort(key=lambda x: (-x['arms'], x['difficulty']))
+    # 記事は一般読者向けなので「話題になっている順」で選ぶ。ARMS親和性順だと
+    # 導入済みの技術 (Claude Code/MCP 等、読者の関心は最も高い) が★1〜2 で
+    # 落ちてしまう (2026-09-23 arms_affinity に ARMS 構成を渡した副作用)。
+    # エンゲージメント行の無い旧レポートは全件0になり、安定ソートで元の順を保つ。
+    features.sort(key=lambda x: -x['engagement'])
     return features[:top_n]
 
 

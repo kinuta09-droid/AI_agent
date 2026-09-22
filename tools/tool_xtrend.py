@@ -389,6 +389,7 @@ def save_to_obsidian(features: list[dict], queries: list[str]) -> str:
             f"| 実装難易度 | {'★' * diff}{'☆' * (5-diff)} ({diff}/5) |",
             f"| ARMS親和性 | {'★' * arms}{'☆' * (5-arms)} ({arms}/5) |",
             f"| ARMS評価理由 | {f.get('arms_rationale', '')} |",
+            f"| エンゲージメント | {f.get('engagement_score', 0)} |",
             f"| 元投稿 | {f.get('post_url', '')} |",
             "",
         ]

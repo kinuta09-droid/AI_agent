@@ -158,8 +158,41 @@ def test_analyze_prompt_includes_arms_architecture():
           "導入済み" in _ARMS_ARCHITECTURE_SUMMARY and "Windows" in _ARMS_ARCHITECTURE_SUMMARY)
 
 
+def test_note_article_picks_by_engagement_not_arms():
+    """note記事は一般読者向け: ARMS親和性★1でも話題の技術を上位に選ぶ。
+    save_to_obsidian の出力を xtrend_to_note が読む往復で確認する。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "xtrend_to_note", os.path.join(_PROJECT_ROOT, "scripts", "xtrend_to_note.py"))
+    to_note = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(to_note)
+
+    tmp = tempfile.mkdtemp()
+    orig_dir = xtrend.XTREND_DIR
+    xtrend.XTREND_DIR = tmp
+    try:
+        features = [
+            {"feature_name": "Niche", "difficulty": 2, "arms_affinity": 5, "engagement_score": 900},
+            {"feature_name": "Claude Code", "difficulty": 3, "arms_affinity": 1, "engagement_score": 7597},
+            {"feature_name": "Mid", "difficulty": 1, "arms_affinity": 3, "engagement_score": "2750.0"},
+        ]
+        xtrend.save_to_obsidian(features, [])
+        md_files = [f for f in os.listdir(tmp) if f.endswith(".md")]
+        md = open(os.path.join(tmp, md_files[0]), encoding="utf-8").read()
+        names = [f["name"] for f in to_note.extract_top_features(md, top_n=3)]
+        check("記事の題材はエンゲージメント順", names == ["Claude Code", "Mid", "Niche"], str(names))
+        old_md = md.replace("| エンゲージメント |", "| (旧形式) |")
+        names_old = [f["name"] for f in to_note.extract_top_features(old_md, top_n=3)]
+        check("エンゲージメント行の無い旧レポートは元の順を保つ",
+              names_old == ["Niche", "Claude Code", "Mid"], str(names_old))
+    finally:
+        xtrend.XTREND_DIR = orig_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     print("=== test_xtrend ===")
+    test_note_article_picks_by_engagement_not_arms()
     test_analyze_prompt_includes_arms_architecture()
     test_analyze_posts_attaches_source_query()
     test_analyze_posts_unknown_post_url_is_empty()
