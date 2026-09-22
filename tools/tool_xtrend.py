@@ -42,6 +42,7 @@ from lib.lib_shared import (
     retry,
 )
 from lib.engagement_log import log_impressions
+from tools.tool_skill_radar import _ARMS_ARCHITECTURE_SUMMARY
 
 import requests
 
@@ -203,16 +204,25 @@ def fetch_trending_ai_posts(
 # PHASE 2: ANALYZE
 # ---------------------------------------------------------
 
+# ARMSの構成を渡さないと Gemini は名前だけで arms_affinity を付け、導入済みの
+# Claude Code/MCP/Jev や MLX 専用ツールを★5 で上位に並べていた (2026-09-18〜22 実測)。
+# summary/problem_solved は xtrend_to_note.py で外部公開記事の材料になるため、
+# ARMS 固有の情報は arms_rationale にだけ書かせる (tool_skill_digest.py:99 と同じ懸念)。
 ANALYZE_SYSTEM = """あなたはシニアAIエンジニアです。
 以下のXの投稿リスト（JSON配列）を分析し、各投稿に含まれる「AIの新技術・手法・ツール」を抽出して構造化してください。
 
+## ARMSの構成 (arms_affinity の判定材料)
+""" + _ARMS_ARCHITECTURE_SUMMARY + """
+
 各アイテムについて以下のフィールドを持つJSONオブジェクトを生成してください:
 - feature_name: 機能・技術・ツールの名前（日本語、15文字以内）
-- summary: 何ができるか（日本語、50文字以内）
-- problem_solved: 解決する課題（日本語、40文字以内）
+- summary: 何ができるか（日本語、50文字以内）。技術そのものの説明のみ、ARMSには触れない
+- problem_solved: 解決する課題（日本語、40文字以内）。ARMSには触れない
 - tech_stack: 必要な技術・ライブラリ（英語、カンマ区切り）
 - difficulty: 実装難易度 1〜5（1=簡単、5=高度）
-- arms_affinity: 個人AIエージェント「ARMS」への導入適性 1〜5（1=不向き、5=最適）
+- arms_affinity: 上記ARMSへの「新規」導入適性 1〜5（1=不向き、5=最適）。
+  導入済みの技術そのものは1〜2、ARMSの動作環境で動かない技術は1、
+  導入済み技術の新しい使い方・拡張なら内容に応じて評価する
 - arms_rationale: 適性の理由（日本語、40文字以内）
 - post_url: 元投稿URL
 - engagement_score: likes + retweets*2 の数値

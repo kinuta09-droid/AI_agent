@@ -413,6 +413,9 @@ _ARMS_ARCHITECTURE_SUMMARY = (
     "ノート自動生成・保存、暗号資産シグナル監視、論文レーダー、スケジューラによる"
     "定時ジョブ実行が中心機能。Claude Code の `.claude/skills/*/SKILL.md` 形式で"
     "既知バグパターンや作業手順を蓄積している。"
+    "Windows 11 + Python 3.13 で常駐 (Apple Silicon/MLX・Linux専用の技術は動かない)。"
+    "導入済み: Claude Code (開発)、MCP (context7/chrome-devtools/code-review-graph)、"
+    "Jev (判断特化API)、BitNet (ローカル推論)、docling、Playwright。"
 )
 
 

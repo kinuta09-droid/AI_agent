@@ -148,8 +148,19 @@ def test_run_logs_impressions_without_touching_production_log():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_analyze_prompt_includes_arms_architecture():
+    """arms_affinity の判定材料として ARMS の構成要約がプロンプトに入っている。
+    抜けると Gemini は名前だけで採点し、導入済みの Claude Code/MCP/Jev を★5 にする。"""
+    from tools.tool_skill_radar import _ARMS_ARCHITECTURE_SUMMARY
+    check("ANALYZE_SYSTEM に ARMS 構成要約が含まれる",
+          _ARMS_ARCHITECTURE_SUMMARY in xtrend.ANALYZE_SYSTEM)
+    check("構成要約に導入済み技術と動作環境が載っている",
+          "導入済み" in _ARMS_ARCHITECTURE_SUMMARY and "Windows" in _ARMS_ARCHITECTURE_SUMMARY)
+
+
 if __name__ == "__main__":
     print("=== test_xtrend ===")
+    test_analyze_prompt_includes_arms_architecture()
     test_analyze_posts_attaches_source_query()
     test_analyze_posts_unknown_post_url_is_empty()
     test_run_logs_impressions_without_touching_production_log()
