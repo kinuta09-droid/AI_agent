@@ -12,7 +12,7 @@
   [9]  _default_search: 本番検索呼び出しに log_fn=no-op を渡し、Watcherの内部検索が
        logs/vault_search_log.jsonl を自己言及的に汚染しない (2026-08-22 grill発見の回帰)
 
-本番 Vault・logs/gemini_daily_calls.json には一切触れない
+本番 Vault・logs/gemini_{light,heavy}_daily_calls.json には一切触れない
 (SCAN_DIR/SEEN_MTIMES_CACHE/INSIGHT_LOG をテスト毎に tempfile へ差し替える)。
 """
 import json
