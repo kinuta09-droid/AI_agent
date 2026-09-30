@@ -138,7 +138,6 @@ PARALLEL_TESTS = frozenset({
     "test_eval_radar.py",
     "test_eval_retrieval.py",
     "test_file_lock.py",
-    "test_folder_create.py",
     "test_future_search_pipeline.py",
     "test_generate_experiential_article.py",
     "test_generate_idea_dialogue.py",
