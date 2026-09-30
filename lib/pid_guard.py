@@ -154,6 +154,16 @@ def is_previous_boot(recorded_boot, current_boot, tolerance=_BOOT_TOLERANCE):
     return abs(current_boot - recorded_boot) > tolerance
 
 
+def _image_name(kernel32, handle):
+    """プロセスの実行ファイル名 (小文字)。取得できなければ None。"""
+    import ctypes
+    buf = ctypes.create_unicode_buffer(1024)
+    size = ctypes.c_ulong(len(buf))
+    if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+        return os.path.basename(buf.value).lower()
+    return None
+
+
 def is_process_alive(pid):
     """PID のプロセスが生存しているか (Windows)。
 
@@ -194,7 +204,14 @@ def is_process_alive(pid):
     if handle:
         try:
             # timeout=0 (ms): 待たずに即座にシグナル状態を問い合わせる
-            return kernel32.WaitForSingleObject(handle, 0) != WAIT_OBJECT_0
+            if kernel32.WaitForSingleObject(handle, 0) == WAIT_OBJECT_0:
+                return False
+            # PID 再利用対策: 同一ブート内でも死んだ PID が無関係プロセス
+            # (例: GoogleIMEJaConverter) に再割当されうる。ARMS の各プロセスは
+            # 全て Python なので、イメージ名が python*/py* 以外なら別物 = 死亡扱い。
+            # 名前が取れない場合は従来どおり安全側 (生存) に倒す。
+            name = _image_name(kernel32, handle)
+            return name is None or name.startswith(('python', 'py.'))
         finally:
             kernel32.CloseHandle(handle)
     return ctypes.get_last_error() == ERROR_ACCESS_DENIED

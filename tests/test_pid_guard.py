@@ -337,3 +337,13 @@ if __name__ == "__main__":
             print(f"❌ {t.__name__}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     sys.exit(1 if failed else 0)
+
+
+def test_is_process_alive_false_for_non_python_pid_reuse():
+    """PID が無関係プロセスに再利用された場合は死亡扱い (2026-09-28 IME 誤kill)。"""
+    proc = subprocess.Popen(["ping", "-n", "30", "127.0.0.1"], stdout=subprocess.DEVNULL)
+    try:
+        assert pid_guard.is_process_alive(proc.pid) is False
+    finally:
+        proc.kill()
+        proc.wait()
